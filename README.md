@@ -53,6 +53,7 @@ The project is private while it is incubating, but the repository structure, doc
 | Workspace boundary | File tools refuse to read or write outside the selected project root |
 | Explicit permissions | Writes require `--apply`; shell execution requires `--allow-shell` |
 | Runtime telemetry | Header shows CPU, memory, GPU, VRAM, temperature, power, request tokens, generation speed, and latency |
+| Remote Ollama | `/connect` scans the LAN and only lists hosts that answer Ollama's `/api/version` endpoint |
 | Tool-visible loop | The model can list files, read files, search text, write files, and run commands |
 | JSON agent protocol | Model responses are parsed through a typed command envelope |
 | CI-ready repo | TypeScript build, tests, and GitHub Actions are included from day one |
@@ -164,16 +165,18 @@ Inside the TUI, use `/help` to see available commands. Permissions can be change
 | `/permissions` | Show current write and shell permissions |
 | `/mode plan` | Read-only planning mode |
 | `/mode build` | Implementation mode; writes and shell can be enabled |
+| `/plan` | Shortcut for `/mode plan` |
+| `/build` | Shortcut for `/mode build` |
 | `/write on\|off` | Enable or disable workspace writes |
 | `/shell on\|off` | Enable or disable shell commands |
 | `/model <name>` | Switch the Ollama model for the current session |
 | `/model uncensored` | Switch to `huihui_ai/qwen2.5-coder-abliterate:7b` |
 | `/model default` | Switch back to `qwen2.5-coder:7b` |
-| `/connect` | Scan for reachable Ollama hosts and list remembered hosts |
+| `/connect` | Auto-scan the LAN for reachable Ollama servers |
 | `/connect <url>` | Connect to another Ollama host for the current session |
 | `/connect <number>` | Connect to a numbered host from the `/connect` list |
-| `/connect local` | Switch back to local Ollama at `127.0.0.1:11434` |
-| `/hosts` | List remembered and suggested Ollama hosts |
+| `/connect local` | Switch back to local Ollama at `127.0.0.1:11434` on non-macOS clients |
+| `/hosts` | Re-scan reachable Ollama hosts |
 | `/doctor` | Check Node, Git, and Ollama from inside the TUI |
 | `/clear` | Clear the current transcript |
 | `/exit` | Quit PatchPilot |
@@ -182,7 +185,20 @@ Inside the TUI, use `/help` to see available commands. Permissions can be change
 
 PatchPilot can run the agent on one machine while using an Ollama server on another machine. This is useful when your Windows desktop has the GPU and your MacBook is where you are editing code.
 
-For now, macOS is treated as a remote-client platform. If PatchPilot starts on macOS without a remote Ollama URL, it shows a warning and waits for `/connect`. Local macOS model execution will be added later.
+For now, macOS is treated as a remote-client platform. If PatchPilot starts on macOS without a remote Ollama URL, it shows a warning and waits for `/connect`. Local macOS model execution will be added later, so the intended Mac flow is:
+
+```bash
+patchpilot
+```
+
+Then in the TUI:
+
+```text
+/connect
+/connect 1
+```
+
+PatchPilot keeps file reads, file writes, shell commands, Git, and tests on the Mac. Only the model request is sent to the selected remote Ollama server.
 
 On the Windows desktop, expose Ollama on the LAN:
 
@@ -197,7 +213,7 @@ From the MacBook, run PatchPilot inside the project you want to edit and connect
 patchpilot --ollama-url http://<windows-pc-ip>:11434
 ```
 
-Or switch inside the TUI:
+Or switch inside the TUI from any supported platform:
 
 ```text
 /connect
@@ -205,7 +221,7 @@ Or switch inside the TUI:
 /connect http://<windows-pc-ip>:11434
 ```
 
-The files and shell commands still run on the MacBook. Only model inference runs on the Windows desktop.
+The scan verifies `GET /api/version`, so it does not list random local interfaces or machines that merely have port `11434` open.
 
 ## Safety Model
 

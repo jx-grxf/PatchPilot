@@ -94,27 +94,17 @@ export class AgentRunner {
         message: parsedResponse.message
       };
 
-      const toolResults = [];
-      for (const toolCall of parsedResponse.tool_calls) {
-        const toolResult = await this.tools.execute(toolCall).catch((error: unknown) => ({
-          ok: false,
-          summary: error instanceof Error ? error.message : String(error),
-          content: error instanceof Error ? error.stack ?? error.message : String(error)
-        }));
+      const toolResults = parsedResponse.tool_calls.every(isReadOnlyToolCall)
+        ? await Promise.all(parsedResponse.tool_calls.map((toolCall) => executeToolSafely(this.tools, toolCall)))
+        : await executeToolCallsSequentially(this.tools, parsedResponse.tool_calls);
 
+      for (const toolResult of toolResults) {
         yield {
           type: "tool",
-          name: toolCall.name,
+          name: toolResult.tool,
           summary: toolResult.summary,
           ok: toolResult.ok
         };
-
-        toolResults.push({
-          tool: toolCall.name,
-          ok: toolResult.ok,
-          summary: toolResult.summary,
-          content: toolResult.content
-        });
       }
 
       messages.push({
@@ -162,6 +152,7 @@ function buildSystemPrompt(workspaceRoot: string): string {
     "- run_shell: {\"command\":\"command to run in the workspace\"}",
     "",
     "Be conservative. Prefer reading before writing. Keep changes focused.",
+    "Batch independent read-only tool calls in one response when it helps avoid extra thinking steps.",
     "Keep tool requests and final answers compact."
   ].join("\n");
 }
@@ -172,4 +163,32 @@ function looksLikeClarification(message: string): boolean {
     normalizedMessage.endsWith("?") &&
     /\b(what|which|please provide|would you like|do you want|can you specify|welche|was genau|bitte)\b/.test(normalizedMessage)
   );
+}
+
+function isReadOnlyToolCall(toolCall: { name: string }): boolean {
+  return toolCall.name === "list_files" || toolCall.name === "read_file" || toolCall.name === "search_text";
+}
+
+async function executeToolCallsSequentially(tools: WorkspaceTools, toolCalls: Parameters<WorkspaceTools["execute"]>[0][]) {
+  const results = [];
+  for (const toolCall of toolCalls) {
+    results.push(await executeToolSafely(tools, toolCall));
+  }
+
+  return results;
+}
+
+async function executeToolSafely(tools: WorkspaceTools, toolCall: Parameters<WorkspaceTools["execute"]>[0]) {
+  const toolResult = await tools.execute(toolCall).catch((error: unknown) => ({
+    ok: false,
+    summary: error instanceof Error ? error.message : String(error),
+    content: error instanceof Error ? error.stack ?? error.message : String(error)
+  }));
+
+  return {
+    tool: toolCall.name,
+    ok: toolResult.ok,
+    summary: toolResult.summary,
+    content: toolResult.content
+  };
 }

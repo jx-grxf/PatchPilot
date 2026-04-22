@@ -36,6 +36,16 @@ export const slashCommands: SlashCommand[] = [
     description: "Switch between read-only planning and implementation mode."
   },
   {
+    name: "plan",
+    usage: "/plan",
+    description: "Shortcut for /mode plan."
+  },
+  {
+    name: "build",
+    usage: "/build",
+    description: "Shortcut for /mode build."
+  },
+  {
     name: "connect",
     usage: "/connect <host|local>",
     description: "Connect to a remote Ollama host."
@@ -77,4 +87,8 @@ export function filterSlashCommands(input: string): SlashCommand[] {
 
 export function formatCommandList(): string {
   return slashCommands.map((command) => command.usage).join("  ");
+}
+
+export function formatCommandDetail(): string {
+  return slashCommands.map((command) => `${command.usage} - ${command.description}`).join("\n");
 }

@@ -1,13 +1,14 @@
 import { networkInterfaces } from "node:os";
-import { Socket } from "node:net";
 
 export type OllamaHost = {
   label: string;
   url: string;
-  source: "default" | "env" | "suggested";
+  source: "default" | "env" | "current" | "discovered";
+  version?: string;
 };
 
 const localOllamaUrl = "http://127.0.0.1:11434";
+const defaultOllamaPort = 11434;
 
 export function getOllamaHostCandidates(currentUrl: string): OllamaHost[] {
   const hosts: OllamaHost[] = [];
@@ -31,15 +32,7 @@ export function getOllamaHostCandidates(currentUrl: string): OllamaHost[] {
     hosts.push({
       label: "current",
       url: normalizeOllamaUrl(currentUrl),
-      source: "suggested"
-    });
-  }
-
-  for (const ipAddress of getPrivateNetworkAddresses()) {
-    hosts.push({
-      label: `lan-${ipAddress}`,
-      url: `http://${ipAddress}:11434`,
-      source: "suggested"
+      source: "current"
     });
   }
 
@@ -48,8 +41,18 @@ export function getOllamaHostCandidates(currentUrl: string): OllamaHost[] {
 
 export async function discoverOllamaHosts(currentUrl: string): Promise<OllamaHost[]> {
   const candidates = getOllamaHostCandidates(currentUrl);
+  const verifiedCandidates = await runPool(candidates, 8, async (candidate) =>
+    checkOllamaHost(candidate.url, {
+      label: candidate.label,
+      source: candidate.source,
+      timeoutMs: 350
+    })
+  );
   const discoveredHosts = await scanLanOllamaHosts();
-  return dedupeHosts([...candidates, ...discoveredHosts]);
+  return dedupeHosts([
+    ...verifiedCandidates.filter((host): host is OllamaHost => host !== null),
+    ...discoveredHosts
+  ]);
 }
 
 export function normalizeOllamaUrl(value: string): string {
@@ -62,6 +65,48 @@ export function normalizeOllamaUrl(value: string): string {
   }
 
   return `http://${value}`.replace(/\/$/, "");
+}
+
+export async function checkOllamaHost(
+  value: string,
+  options: {
+    label?: string;
+    source?: OllamaHost["source"];
+    timeoutMs?: number;
+  } = {}
+): Promise<OllamaHost | null> {
+  const url = normalizeOllamaUrl(value);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), options.timeoutMs ?? 500);
+
+  try {
+    const response = await fetch(`${url}/api/version`, {
+      signal: controller.signal,
+      headers: {
+        accept: "application/json"
+      }
+    });
+
+    if (!response.ok) {
+      return null;
+    }
+
+    const body = (await response.json()) as { version?: unknown };
+    if (typeof body.version !== "string" || body.version.length === 0) {
+      return null;
+    }
+
+    return {
+      label: options.label ?? `ollama-${new URL(url).hostname}`,
+      url,
+      source: options.source ?? "discovered",
+      version: body.version
+    };
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 function getPrivateNetworkAddresses(): string[] {
@@ -85,51 +130,20 @@ async function scanLanOllamaHosts(): Promise<OllamaHost[]> {
   const discoveredHosts: OllamaHost[] = [];
 
   for (const prefix of prefixes.filter(shouldScanPrefix).slice(0, 1)) {
-    const urls = Array.from({ length: 254 }, (_, index) => `http://${prefix}.${index + 1}:11434`);
-    const results = await runPool(urls, 96, probeOllamaHost);
-    for (const url of results.filter((result): result is string => typeof result === "string")) {
-      discoveredHosts.push({
-        label: new URL(url).hostname,
-        url,
-        source: "suggested"
-      });
+    const urls = Array.from({ length: 254 }, (_, index) => `http://${prefix}.${index + 1}:${defaultOllamaPort}`);
+    const results = await runPool(urls, 96, (url) =>
+      checkOllamaHost(url, {
+        label: `ollama-${new URL(url).hostname}`,
+        source: "discovered",
+        timeoutMs: 180
+      })
+    );
+    for (const host of results.filter((result): result is OllamaHost => result !== null)) {
+      discoveredHosts.push(host);
     }
   }
 
   return discoveredHosts;
-}
-
-async function probeOllamaHost(url: string): Promise<string | null> {
-  try {
-    const parsedUrl = new URL(url);
-    const isOpen = await isTcpPortOpen(parsedUrl.hostname, Number.parseInt(parsedUrl.port || "11434", 10), 120);
-    return isOpen ? url : null;
-  } catch {
-    return null;
-  }
-}
-
-function isTcpPortOpen(host: string, port: number, timeoutMs: number): Promise<boolean> {
-  return new Promise((resolve) => {
-    const socket = new Socket();
-    let settled = false;
-
-    function finish(result: boolean): void {
-      if (settled) {
-        return;
-      }
-
-      settled = true;
-      socket.destroy();
-      resolve(result);
-    }
-
-    socket.setTimeout(timeoutMs);
-    socket.once("connect", () => finish(true));
-    socket.once("timeout", () => finish(false));
-    socket.once("error", () => finish(false));
-    socket.connect(port, host);
-  });
 }
 
 function shouldScanPrefix(prefix: string): boolean {

@@ -8,7 +8,7 @@ export type LocalConversationResult =
       handled: false;
     };
 
-export function routeLocalConversation(task: string): LocalConversationResult {
+export function routeLocalConversation(task: string, now = new Date()): LocalConversationResult {
   const normalizedTask = task.trim().toLowerCase();
   const plainTask = normalizedTask.replace(/[!?.\s]/g, "");
 
@@ -16,7 +16,23 @@ export function routeLocalConversation(task: string): LocalConversationResult {
     return {
       handled: true,
       tone: "accent",
-      message: "Hey. Sag mir, was ich im aktuellen Projekt bauen, fixen, testen oder erklären soll."
+      message: "Bereit. Sag kurz, welches Projektziel ich anfassen soll."
+    };
+  }
+
+  if (asksForCurrentTime(normalizedTask)) {
+    return {
+      handled: true,
+      tone: "accent",
+      message: `Es ist ${formatLocalTime(now)}.`
+    };
+  }
+
+  if (asksHowAreYou(normalizedTask)) {
+    return {
+      handled: true,
+      tone: "accent",
+      message: "Läuft. Ich bin bereit für den nächsten PatchPilot-Task."
     };
   }
 
@@ -24,7 +40,7 @@ export function routeLocalConversation(task: string): LocalConversationResult {
     return {
       handled: true,
       tone: "accent",
-      message: "Passt. Gib mir einfach den nächsten konkreten Coding-Task."
+      message: "Passt."
     };
   }
 
@@ -81,4 +97,21 @@ function looksLikeAmbiguousCodingVerb(value: string): boolean {
     "write",
     "edit"
   ].includes(value);
+}
+
+function asksForCurrentTime(value: string): boolean {
+  return /\b(wie spät|uhrzeit|welche uhrzeit|what time|current time|time is it)\b/.test(value);
+}
+
+function asksHowAreYou(value: string): boolean {
+  return /\b(wie gehts|wie geht es dir|how are you)\b/.test(value);
+}
+
+function formatLocalTime(value: Date): string {
+  return new Intl.DateTimeFormat("de-DE", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    timeZoneName: "short"
+  }).format(value);
 }

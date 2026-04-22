@@ -11,6 +11,15 @@ describe("routeLocalConversation", () => {
     );
   });
 
+  it("answers time questions from the local clock", () => {
+    expect(routeLocalConversation("wie spät ist es", new Date(2026, 3, 22, 12, 34, 56))).toEqual(
+      expect.objectContaining({
+        handled: true,
+        message: expect.stringContaining("12:34")
+      })
+    );
+  });
+
   it("rejects tiny ambiguous inputs", () => {
     expect(routeLocalConversation("files maybe")).toEqual(
       expect.objectContaining({

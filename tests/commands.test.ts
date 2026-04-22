@@ -9,4 +9,8 @@ describe("filterSlashCommands", () => {
   it("filters commands by prefix", () => {
     expect(filterSlashCommands("/con").map((command) => command.name)).toEqual(["connect"]);
   });
+
+  it("includes build mode shortcut", () => {
+    expect(filterSlashCommands("/b").map((command) => command.name)).toContain("build");
+  });
 });
