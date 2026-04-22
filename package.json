@@ -1,0 +1,43 @@
+{
+  "name": "patchpilot",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local-first coding agent TUI powered by Ollama.",
+  "type": "module",
+  "bin": {
+    "patchpilot": "./dist/cli.js"
+  },
+  "scripts": {
+    "dev": "tsx src/cli.tsx",
+    "build": "tsc",
+    "start": "node dist/cli.js",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "ollama",
+    "agent",
+    "tui",
+    "coding-agent",
+    "local-ai"
+  ],
+  "author": "Johannes Grof",
+  "license": "MIT",
+  "dependencies": {
+    "commander": "^14.0.3",
+    "ink": "^7.0.1",
+    "ink-text-input": "^6.0.0",
+    "react": "^19.2.1",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.0",
+    "@types/react": "^19.2.6",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.5"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
