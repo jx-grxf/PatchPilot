@@ -45,11 +45,17 @@ export class AgentRunner {
         message: `thinking step ${stepIndex + 1}/${this.options.maxSteps}`
       };
 
-      const rawResponse = await this.client.chat({
+      const modelResponse = await this.client.chat({
         model: this.options.model,
         messages,
         formatJson: true
       });
+      const rawResponse = modelResponse.content;
+
+      yield {
+        type: "metrics",
+        metrics: modelResponse.telemetry
+      };
 
       let parsedResponse;
       try {

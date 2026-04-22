@@ -2,7 +2,8 @@ import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { Box, Text, useApp, useInput } from "ink";
 import TextInput from "ink-text-input";
 import { AgentRunner, type AgentRunnerOptions } from "../core/agent.js";
-import type { AgentEvent } from "../core/types.js";
+import type { AgentEvent, ModelTelemetry } from "../core/types.js";
+import { readSystemStats, type SystemStats } from "./systemStats.js";
 
 export type PatchPilotAppProps = AgentRunnerOptions & {
   initialTask?: string;
@@ -21,6 +22,8 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   const [lines, setLines] = useState<LogLine[]>([]);
   const [isRunning, setIsRunning] = useState(false);
   const [status, setStatus] = useState("idle");
+  const [telemetry, setTelemetry] = useState<ModelTelemetry | null>(null);
+  const [systemStats, setSystemStats] = useState<SystemStats>(() => readSystemStats().stats);
   const runner = useMemo(() => new AgentRunner(props), [props]);
 
   const appendLine = useCallback((line: Omit<LogLine, "id">) => {
@@ -49,6 +52,11 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
 
       try {
         for await (const event of runner.run(task)) {
+          if (event.type === "metrics") {
+            setTelemetry(event.metrics);
+            continue;
+          }
+
           setStatus(eventToStatus(event));
           appendLine(eventToLine(event));
         }
@@ -78,6 +86,19 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
     }
   });
 
+  useEffect(() => {
+    let previousSnapshot = readSystemStats().snapshot;
+    const timer = setInterval(() => {
+      const nextReading = readSystemStats(previousSnapshot);
+      previousSnapshot = nextReading.snapshot;
+      setSystemStats(nextReading.stats);
+    }, 1000);
+
+    return () => {
+      clearInterval(timer);
+    };
+  }, []);
+
   return (
     <Box flexDirection="column" paddingX={1}>
       <Header
@@ -86,6 +107,8 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         status={status}
         allowWrite={props.allowWrite}
         allowShell={props.allowShell}
+        telemetry={telemetry}
+        systemStats={systemStats}
       />
 
       <Box borderStyle="round" borderColor="gray" flexDirection="column" paddingX={1} minHeight={18}>
@@ -125,6 +148,8 @@ function Header(props: {
   status: string;
   allowWrite: boolean;
   allowShell: boolean;
+  telemetry: ModelTelemetry | null;
+  systemStats: SystemStats;
 }): React.ReactElement {
   return (
     <Box flexDirection="column" marginBottom={1}>
@@ -139,6 +164,22 @@ function Header(props: {
         <Text color="green">{props.model}</Text>
         <Text color="gray">  status </Text>
         <Text color={props.status === "idle" ? "gray" : "yellow"}>{props.status}</Text>
+      </Box>
+      <Box>
+        <Text color="gray">cpu </Text>
+        <Text color={usageColor(props.systemStats.cpuPercent)}>{formatPercent(props.systemStats.cpuPercent)}</Text>
+        <Text color="gray">  mem </Text>
+        <Text color={usageColor(props.systemStats.memoryPercent)}>
+          {props.systemStats.memoryPercent}%/{props.systemStats.usedMemoryGb}G
+        </Text>
+        <Text color="gray">  tokens </Text>
+        <Text color="cyan">{formatTokens(props.telemetry)}</Text>
+        <Text color="gray">  speed </Text>
+        <Text color="cyan">{formatSpeed(props.telemetry)}</Text>
+        <Text color="gray">  latency </Text>
+        <Text color="cyan">{formatLatency(props.telemetry)}</Text>
+      </Box>
+      <Box>
         <Text color="gray">  write </Text>
         <Text color={props.allowWrite ? "green" : "red"}>{props.allowWrite ? "on" : "off"}</Text>
         <Text color="gray">  shell </Text>
@@ -181,6 +222,12 @@ function eventToLine(event: AgentEvent): Omit<LogLine, "id"> {
         label: "error",
         text: event.message
       };
+    case "metrics":
+      return {
+        tone: "muted",
+        label: "metrics",
+        text: formatTokens(event.metrics)
+      };
   }
 }
 
@@ -211,4 +258,56 @@ function toneToColor(tone: LogLine["tone"]): "gray" | "white" | "green" | "yello
     case "normal":
       return "white";
   }
+}
+
+function formatTokens(telemetry: ModelTelemetry | null): string {
+  if (!telemetry) {
+    return "-";
+  }
+
+  return `${telemetry.promptTokens} in/${telemetry.responseTokens} out/${telemetry.totalTokens} total`;
+}
+
+function formatSpeed(telemetry: ModelTelemetry | null): string {
+  if (!telemetry?.evalTokensPerSecond) {
+    return "-";
+  }
+
+  return `${telemetry.evalTokensPerSecond.toFixed(1)} tok/s`;
+}
+
+function formatLatency(telemetry: ModelTelemetry | null): string {
+  if (!telemetry) {
+    return "-";
+  }
+
+  return `${formatDuration(telemetry.totalDurationMs)}`;
+}
+
+function formatDuration(durationMs: number): string {
+  if (durationMs >= 1000) {
+    return `${(durationMs / 1000).toFixed(1)}s`;
+  }
+
+  return `${durationMs}ms`;
+}
+
+function formatPercent(value: number | null): string {
+  return value === null ? "-" : `${value}%`;
+}
+
+function usageColor(value: number | null): "gray" | "green" | "yellow" | "red" {
+  if (value === null) {
+    return "gray";
+  }
+
+  if (value >= 85) {
+    return "red";
+  }
+
+  if (value >= 65) {
+    return "yellow";
+  }
+
+  return "green";
 }

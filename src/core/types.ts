@@ -34,6 +34,10 @@ export type AgentEvent =
       message: string;
     }
   | {
+      type: "metrics";
+      metrics: ModelTelemetry;
+    }
+  | {
       type: "assistant";
       message: string;
     }
@@ -56,4 +60,14 @@ export type ToolResult = {
   ok: boolean;
   summary: string;
   content: string;
+};
+
+export type ModelTelemetry = {
+  promptTokens: number;
+  responseTokens: number;
+  totalTokens: number;
+  evalTokensPerSecond: number | null;
+  promptDurationMs: number;
+  responseDurationMs: number;
+  totalDurationMs: number;
 };

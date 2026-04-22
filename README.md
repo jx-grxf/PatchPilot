@@ -52,6 +52,7 @@ The project is private while it is incubating, but the repository structure, doc
 | TUI workflow | Ink-powered terminal UI with status, transcript, model, and workspace context |
 | Workspace boundary | File tools refuse to read or write outside the selected project root |
 | Explicit permissions | Writes require `--apply`; shell execution requires `--allow-shell` |
+| Runtime telemetry | Header shows CPU, memory, request tokens, generation speed, and latency |
 | Tool-visible loop | The model can list files, read files, search text, write files, and run commands |
 | JSON agent protocol | Model responses are parsed through a typed command envelope |
 | CI-ready repo | TypeScript build, tests, and GitHub Actions are included from day one |
@@ -157,6 +158,7 @@ PatchPilot is designed to make local execution boring in the best way:
 - Shell tools are disabled unless `--allow-shell` is set.
 - Shell commands run with timeouts.
 - Tool output is fed back into the agent instead of hidden from the user.
+- The TUI surfaces CPU, memory, token counts, token throughput, and request latency.
 
 This does not make local agents harmless. Review diffs before committing, especially when using small local models.
 

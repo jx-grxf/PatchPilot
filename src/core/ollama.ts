@@ -1,10 +1,16 @@
-import type { ChatMessage } from "./types.js";
+import type { ChatMessage, ModelTelemetry } from "./types.js";
 
 type OllamaChatResponse = {
   message?: {
     content?: string;
   };
   error?: string;
+  total_duration?: number;
+  load_duration?: number;
+  prompt_eval_count?: number;
+  prompt_eval_duration?: number;
+  eval_count?: number;
+  eval_duration?: number;
 };
 
 type OllamaTagsResponse = {
@@ -20,6 +26,11 @@ export type OllamaChatOptions = {
   signal?: AbortSignal;
 };
 
+export type OllamaChatResult = {
+  content: string;
+  telemetry: ModelTelemetry;
+};
+
 export class OllamaClient {
   private readonly baseUrl: string;
 
@@ -27,7 +38,7 @@ export class OllamaClient {
     this.baseUrl = baseUrl.replace(/\/$/, "");
   }
 
-  async chat(options: OllamaChatOptions): Promise<string> {
+  async chat(options: OllamaChatOptions): Promise<OllamaChatResult> {
     const response = await fetch(`${this.baseUrl}/api/chat`, {
       method: "POST",
       headers: {
@@ -51,7 +62,10 @@ export class OllamaClient {
       throw new Error(payload.error);
     }
 
-    return payload.message?.content?.trim() ?? "";
+    return {
+      content: payload.message?.content?.trim() ?? "",
+      telemetry: toTelemetry(payload)
+    };
   }
 
   async listModels(): Promise<string[]> {
@@ -63,4 +77,25 @@ export class OllamaClient {
     const payload = (await response.json()) as OllamaTagsResponse;
     return payload.models?.map((model) => model.name).sort() ?? [];
   }
+}
+
+function toTelemetry(payload: OllamaChatResponse): ModelTelemetry {
+  const promptTokens = payload.prompt_eval_count ?? 0;
+  const responseTokens = payload.eval_count ?? 0;
+  const responseDurationMs = nanosToMillis(payload.eval_duration ?? 0);
+
+  return {
+    promptTokens,
+    responseTokens,
+    totalTokens: promptTokens + responseTokens,
+    evalTokensPerSecond:
+      responseTokens > 0 && responseDurationMs > 0 ? responseTokens / (responseDurationMs / 1000) : null,
+    promptDurationMs: nanosToMillis(payload.prompt_eval_duration ?? 0),
+    responseDurationMs,
+    totalDurationMs: nanosToMillis(payload.total_duration ?? 0)
+  };
+}
+
+function nanosToMillis(value: number): number {
+  return Math.round(value / 1_000_000);
 }
