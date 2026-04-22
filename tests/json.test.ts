@@ -25,4 +25,26 @@ describe("parseAgentResponse", () => {
       ]
     });
   });
+
+  it("accepts a single-object array from small local models", () => {
+    expect(parseAgentResponse('[{"action":"final","message":"done"}]')).toEqual({
+      action: "final",
+      message: "done"
+    });
+  });
+
+  it("infers tool action when a model omits the discriminator", () => {
+    expect(parseAgentResponse('{"message":"read files","tool_calls":[{"name":"list_files","arguments":{"path":"."}}]}')).toEqual({
+      action: "tools",
+      message: "read files",
+      tool_calls: [
+        {
+          name: "list_files",
+          arguments: {
+            path: "."
+          }
+        }
+      ]
+    });
+  });
 });

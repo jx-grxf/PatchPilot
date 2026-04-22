@@ -14,6 +14,7 @@ type LogLine = {
   tone: "muted" | "normal" | "success" | "warning" | "danger" | "accent";
   label: string;
   text: string;
+  detail?: string;
 };
 
 export function App(props: PatchPilotAppProps): React.ReactElement {
@@ -111,32 +112,25 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         systemStats={systemStats}
       />
 
-      <Box borderStyle="round" borderColor="gray" flexDirection="column" paddingX={1} minHeight={18}>
+      <Box borderStyle="round" borderColor={isRunning ? "cyan" : "gray"} flexDirection="column" paddingX={1} minHeight={18}>
         {lines.length === 0 ? (
-          <Text color="gray">Ask PatchPilot to inspect, edit, or test this workspace.</Text>
+          <EmptyState />
         ) : (
-          lines.map((line) => (
-            <Box key={line.id}>
-              <Text color={toneToColor(line.tone)} bold>
-                {line.label.padEnd(9)}
-              </Text>
-              <Text color={toneToColor(line.tone)}>{line.text}</Text>
-            </Box>
-          ))
+          lines.map((line) => <TranscriptLine key={line.id} line={line} />)
         )}
       </Box>
 
       <Box marginTop={1}>
-        <Text color={isRunning ? "yellow" : "cyan"}>{isRunning ? "running " : "prompt  "}</Text>
+        <Text color={isRunning ? "yellow" : "cyan"}>{isRunning ? "running  " : "patch >  "}</Text>
         {isRunning ? (
-          <Text color="gray">waiting for model/tool result...</Text>
+          <Text color="gray">waiting for model or tool result...</Text>
         ) : (
           <TextInput value={input} onChange={setInput} onSubmit={(value) => void runTask(value)} placeholder="Describe the patch..." />
         )}
       </Box>
 
       <Box marginTop={1}>
-        <Text color="gray">Press q to quit when idle. Use --apply for writes and --allow-shell for commands.</Text>
+        <Text color="gray">q quits when idle  |  --apply enables writes  |  --allow-shell enables commands</Text>
       </Box>
     </Box>
   );
@@ -152,40 +146,85 @@ function Header(props: {
   systemStats: SystemStats;
 }): React.ReactElement {
   return (
-    <Box flexDirection="column" marginBottom={1}>
-      <Box>
-        <Text color="cyan" bold>
-          PatchPilot
-        </Text>
-        <Text color="gray"> local coding agent</Text>
-      </Box>
-      <Box>
-        <Text color="gray">model </Text>
-        <Text color="green">{props.model}</Text>
-        <Text color="gray">  status </Text>
+    <Box borderStyle="round" borderColor="cyan" flexDirection="column" marginBottom={1} paddingX={1}>
+      <Box justifyContent="space-between">
+        <Box>
+          <Text color="cyan" bold>
+            PatchPilot
+          </Text>
+          <Text color="gray"> local coding agent</Text>
+        </Box>
         <Text color={props.status === "idle" ? "gray" : "yellow"}>{props.status}</Text>
       </Box>
+      <Box marginTop={1}>
+        <Stat label="model" value={props.model} color="green" />
+        <Stat label="cpu" value={formatPercent(props.systemStats.cpuPercent)} color={usageColor(props.systemStats.cpuPercent)} />
+        <Stat
+          label="mem"
+          value={`${props.systemStats.memoryPercent}%/${props.systemStats.usedMemoryGb}G`}
+          color={usageColor(props.systemStats.memoryPercent)}
+        />
+        <Stat label="tokens" value={formatTokens(props.telemetry)} color="cyan" />
+      </Box>
       <Box>
-        <Text color="gray">cpu </Text>
-        <Text color={usageColor(props.systemStats.cpuPercent)}>{formatPercent(props.systemStats.cpuPercent)}</Text>
-        <Text color="gray">  mem </Text>
-        <Text color={usageColor(props.systemStats.memoryPercent)}>
-          {props.systemStats.memoryPercent}%/{props.systemStats.usedMemoryGb}G
+        <Stat label="speed" value={formatSpeed(props.telemetry)} color="cyan" />
+        <Stat label="latency" value={formatLatency(props.telemetry)} color="cyan" />
+        <Stat label="write" value={props.allowWrite ? "on" : "off"} color={props.allowWrite ? "green" : "red"} />
+        <Stat label="shell" value={props.allowShell ? "on" : "off"} color={props.allowShell ? "green" : "red"} />
+      </Box>
+      <Text color="gray">cwd {props.workspace}</Text>
+    </Box>
+  );
+}
+
+function EmptyState(): React.ReactElement {
+  return (
+    <Box flexDirection="column">
+      <Text color="gray">No session activity yet.</Text>
+      <Text color="gray">Ask for a repo summary, a focused patch, or a test run.</Text>
+    </Box>
+  );
+}
+
+function TranscriptLine(props: { line: LogLine }): React.ReactElement {
+  const marker = toneToMarker(props.line.tone);
+  const color = toneToColor(props.line.tone);
+
+  return (
+    <Box flexDirection="column" marginBottom={props.line.detail ? 1 : 0}>
+      <Box>
+        <Box width={3}>
+          <Text color={color}>{marker}</Text>
+        </Box>
+        <Box width={13}>
+          <Text color={color} bold>
+            {props.line.label}
+          </Text>
+        </Box>
+        <Text color={color} wrap="wrap">
+          {props.line.text}
         </Text>
-        <Text color="gray">  tokens </Text>
-        <Text color="cyan">{formatTokens(props.telemetry)}</Text>
-        <Text color="gray">  speed </Text>
-        <Text color="cyan">{formatSpeed(props.telemetry)}</Text>
-        <Text color="gray">  latency </Text>
-        <Text color="cyan">{formatLatency(props.telemetry)}</Text>
       </Box>
-      <Box>
-        <Text color="gray">  write </Text>
-        <Text color={props.allowWrite ? "green" : "red"}>{props.allowWrite ? "on" : "off"}</Text>
-        <Text color="gray">  shell </Text>
-        <Text color={props.allowShell ? "green" : "red"}>{props.allowShell ? "on" : "off"}</Text>
-      </Box>
-      <Text color="gray">workspace {props.workspace}</Text>
+      {props.line.detail ? (
+        <Box marginLeft={16}>
+          <Text color="gray" wrap="wrap">
+            {props.line.detail}
+          </Text>
+        </Box>
+      ) : null}
+    </Box>
+  );
+}
+
+function Stat(props: {
+  label: string;
+  value: string;
+  color: "gray" | "green" | "yellow" | "red" | "cyan";
+}): React.ReactElement {
+  return (
+    <Box marginRight={3}>
+      <Text color="gray">{props.label} </Text>
+      <Text color={props.color}>{props.value}</Text>
     </Box>
   );
 }
@@ -195,7 +234,7 @@ function eventToLine(event: AgentEvent): Omit<LogLine, "id"> {
     case "status":
       return {
         tone: "muted",
-        label: "status",
+        label: "thinking",
         text: event.message
       };
     case "assistant":
@@ -257,6 +296,23 @@ function toneToColor(tone: LogLine["tone"]): "gray" | "white" | "green" | "yello
       return "cyan";
     case "normal":
       return "white";
+  }
+}
+
+function toneToMarker(tone: LogLine["tone"]): string {
+  switch (tone) {
+    case "muted":
+      return "-";
+    case "success":
+      return "+";
+    case "warning":
+      return "!";
+    case "danger":
+      return "x";
+    case "accent":
+      return ">";
+    case "normal":
+      return ":";
   }
 }
 

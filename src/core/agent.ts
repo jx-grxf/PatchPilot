@@ -1,4 +1,4 @@
-import { parseAgentResponse } from "./json.js";
+import { formatParseError, parseAgentResponse } from "./json.js";
 import { OllamaClient } from "./ollama.js";
 import type { AgentEvent, ChatMessage } from "./types.js";
 import { WorkspaceTools } from "./workspace.js";
@@ -63,11 +63,12 @@ export class AgentRunner {
       } catch (error) {
         yield {
           type: "error",
-          message: `invalid model JSON: ${error instanceof Error ? error.message : String(error)}`
+          message: `model response did not match protocol: ${formatParseError(error)}`
         };
         messages.push({
           role: "user",
-          content: "Your previous response was invalid. Return only valid JSON matching the PatchPilot protocol."
+          content:
+            "Your previous response was invalid. Return exactly one JSON object, not an array and not Markdown. Use either {\"action\":\"tools\",\"message\":\"...\",\"tool_calls\":[...]} or {\"action\":\"final\",\"message\":\"...\"}."
         });
         continue;
       }
@@ -132,6 +133,7 @@ function buildSystemPrompt(workspaceRoot: string): string {
     `Workspace root: ${workspaceRoot}`,
     "",
     "Return only JSON. Do not use Markdown outside JSON.",
+    "Return exactly one JSON object. Never return a JSON array.",
     "",
     "When you need context or want to act, return:",
     "{\"action\":\"tools\",\"message\":\"short reason\",\"tool_calls\":[{\"name\":\"list_files\",\"arguments\":{\"path\":\".\"}}]}",

@@ -27,8 +27,22 @@ const agentResponseSchema = z.discriminatedUnion("action", [
 ]);
 
 export function parseAgentResponse(rawContent: string): AgentResponse {
-  const parsed = JSON.parse(extractJson(rawContent));
+  const parsed = normalizeModelJson(JSON.parse(extractJson(rawContent)));
   return agentResponseSchema.parse(parsed);
+}
+
+export function formatParseError(error: unknown): string {
+  if (error instanceof z.ZodError) {
+    const firstIssue = error.issues[0];
+    if (!firstIssue) {
+      return "response did not match the PatchPilot protocol.";
+    }
+
+    const location = firstIssue.path.length > 0 ? ` at ${firstIssue.path.join(".")}` : "";
+    return `${firstIssue.message}${location}`;
+  }
+
+  return error instanceof Error ? error.message : String(error);
 }
 
 function extractJson(rawContent: string): string {
@@ -50,4 +64,51 @@ function extractJson(rawContent: string): string {
   }
 
   throw new Error("Model response did not contain a JSON object.");
+}
+
+function normalizeModelJson(parsed: unknown): unknown {
+  if (Array.isArray(parsed)) {
+    if (parsed.length === 1) {
+      return normalizeModelJson(parsed[0]);
+    }
+
+    if (parsed.every(isToolCallLike)) {
+      return {
+        action: "tools",
+        message: "Requesting tools.",
+        tool_calls: parsed
+      };
+    }
+  }
+
+  if (isRecord(parsed)) {
+    if (!("action" in parsed) && "tool_calls" in parsed) {
+      return {
+        action: "tools",
+        message: readString(parsed.message, "Requesting tools."),
+        tool_calls: parsed.tool_calls
+      };
+    }
+
+    if (!("action" in parsed) && "message" in parsed) {
+      return {
+        action: "final",
+        message: readString(parsed.message, "")
+      };
+    }
+  }
+
+  return parsed;
+}
+
+function isToolCallLike(value: unknown): boolean {
+  return isRecord(value) && "name" in value && "arguments" in value;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function readString(value: unknown, fallback: string): string {
+  return typeof value === "string" ? value : fallback;
 }
