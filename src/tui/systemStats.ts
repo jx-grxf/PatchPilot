@@ -1,10 +1,24 @@
 import { cpus, freemem, totalmem } from "node:os";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+
+const execFileAsync = promisify(execFile);
 
 export type SystemStats = {
   cpuPercent: number | null;
   memoryPercent: number;
   usedMemoryGb: number;
   totalMemoryGb: number;
+};
+
+export type GpuStats = {
+  name: string;
+  utilizationPercent: number;
+  usedMemoryGb: number;
+  totalMemoryGb: number;
+  temperatureCelsius: number | null;
+  powerDrawWatts: number | null;
+  powerLimitWatts: number | null;
 };
 
 type CpuSnapshot = {
@@ -63,4 +77,47 @@ function calculateCpuPercent(previousSnapshot: CpuSnapshot, currentSnapshot: Cpu
 
 function bytesToGb(value: number): number {
   return Math.round((value / 1024 ** 3) * 10) / 10;
+}
+
+export async function readGpuStats(): Promise<GpuStats | null> {
+  try {
+    const { stdout } = await execFileAsync("nvidia-smi", [
+      "--query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw,power.limit",
+      "--format=csv,noheader,nounits"
+    ]);
+    const firstGpuLine = stdout.trim().split(/\r?\n/)[0];
+    if (!firstGpuLine) {
+      return null;
+    }
+
+    const [name, utilization, memoryUsed, memoryTotal, temperature, powerDraw, powerLimit] = firstGpuLine
+      .split(",")
+      .map((value) => value.trim());
+
+    return {
+      name,
+      utilizationPercent: readNumber(utilization),
+      usedMemoryGb: mibToGb(readNumber(memoryUsed)),
+      totalMemoryGb: mibToGb(readNumber(memoryTotal)),
+      temperatureCelsius: readNullableNumber(temperature),
+      powerDrawWatts: readNullableNumber(powerDraw),
+      powerLimitWatts: readNullableNumber(powerLimit)
+    };
+  } catch {
+    return null;
+  }
+}
+
+function mibToGb(value: number): number {
+  return Math.round((value / 1024) * 10) / 10;
+}
+
+function readNumber(value: string | undefined): number {
+  const parsedValue = Number.parseFloat(value ?? "0");
+  return Number.isFinite(parsedValue) ? parsedValue : 0;
+}
+
+function readNullableNumber(value: string | undefined): number | null {
+  const parsedValue = Number.parseFloat(value ?? "");
+  return Number.isFinite(parsedValue) ? parsedValue : null;
 }

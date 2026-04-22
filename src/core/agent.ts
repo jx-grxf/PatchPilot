@@ -148,6 +148,7 @@ function buildSystemPrompt(workspaceRoot: string): string {
     "- write_file: {\"path\":\"relative/path\",\"content\":\"full file content\"}",
     "- run_shell: {\"command\":\"command to run in the workspace\"}",
     "",
-    "Be conservative. Prefer reading before writing. Keep changes focused."
+    "Be conservative. Prefer reading before writing. Keep changes focused.",
+    "Keep tool requests and final answers compact."
   ].join("\n");
 }

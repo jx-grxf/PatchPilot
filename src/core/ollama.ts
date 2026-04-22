@@ -48,6 +48,12 @@ export class OllamaClient {
         model: options.model,
         messages: options.messages,
         stream: false,
+        keep_alive: "15m",
+        options: {
+          num_ctx: 8192,
+          num_predict: 1024,
+          temperature: 0.1
+        },
         format: options.formatJson ? "json" : undefined
       }),
       signal: options.signal

@@ -2,8 +2,9 @@ import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { Box, Text, useApp, useInput } from "ink";
 import TextInput from "ink-text-input";
 import { AgentRunner, type AgentRunnerOptions } from "../core/agent.js";
+import { runDoctor } from "../core/doctor.js";
 import type { AgentEvent, ModelTelemetry } from "../core/types.js";
-import { readSystemStats, type SystemStats } from "./systemStats.js";
+import { readGpuStats, readSystemStats, type GpuStats, type SystemStats } from "./systemStats.js";
 
 export type PatchPilotAppProps = AgentRunnerOptions & {
   initialTask?: string;
@@ -25,7 +26,16 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   const [status, setStatus] = useState("idle");
   const [telemetry, setTelemetry] = useState<ModelTelemetry | null>(null);
   const [systemStats, setSystemStats] = useState<SystemStats>(() => readSystemStats().stats);
-  const runner = useMemo(() => new AgentRunner(props), [props]);
+  const [gpuStats, setGpuStats] = useState<GpuStats | null>(null);
+  const [settings, setSettings] = useState<AgentRunnerOptions>({
+    model: props.model,
+    ollamaUrl: props.ollamaUrl,
+    workspace: props.workspace,
+    allowWrite: props.allowWrite,
+    allowShell: props.allowShell,
+    maxSteps: props.maxSteps
+  });
+  const runner = useMemo(() => new AgentRunner(settings), [settings]);
 
   const appendLine = useCallback((line: Omit<LogLine, "id">) => {
     setLines((currentLines) => [
@@ -75,6 +85,133 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
     [appendLine, isRunning, runner]
   );
 
+  const handleSlashCommand = useCallback(
+    async (rawCommand: string) => {
+      const [commandName = "", ...args] = rawCommand.slice(1).trim().split(/\s+/);
+      const command = commandName.toLowerCase();
+
+      switch (command) {
+        case "":
+        case "help":
+          appendLine({
+            tone: "accent",
+            label: "commands",
+            text: "/help  /permissions  /write on|off  /shell on|off  /model <name|uncensored|default>  /doctor  /clear  /exit"
+          });
+          return;
+        case "permissions":
+        case "perms":
+          appendLine({
+            tone: "accent",
+            label: "permissions",
+            text: `write ${settings.allowWrite ? "on" : "off"} | shell ${settings.allowShell ? "on" : "off"}`
+          });
+          return;
+        case "write":
+        case "apply":
+          setSettings((currentSettings) => ({
+            ...currentSettings,
+            allowWrite: readToggle(args[0], !currentSettings.allowWrite)
+          }));
+          appendLine({
+            tone: "success",
+            label: "write",
+            text: `workspace writes ${readToggle(args[0], !settings.allowWrite) ? "enabled" : "disabled"}`
+          });
+          return;
+        case "shell":
+          setSettings((currentSettings) => ({
+            ...currentSettings,
+            allowShell: readToggle(args[0], !currentSettings.allowShell)
+          }));
+          appendLine({
+            tone: "success",
+            label: "shell",
+            text: `shell commands ${readToggle(args[0], !settings.allowShell) ? "enabled" : "disabled"}`
+          });
+          return;
+        case "model": {
+          const nextModel = normalizeModelAlias(args.join(" ").trim());
+          if (!nextModel) {
+            appendLine({
+              tone: "accent",
+              label: "model",
+              text: settings.model
+            });
+            return;
+          }
+
+          setSettings((currentSettings) => ({
+            ...currentSettings,
+            model: nextModel
+          }));
+          appendLine({
+            tone: "success",
+            label: "model",
+            text: `switched to ${nextModel}`
+          });
+          return;
+        }
+        case "status":
+          appendLine({
+            tone: "accent",
+            label: "status",
+            text: `model ${settings.model} | write ${settings.allowWrite ? "on" : "off"} | shell ${settings.allowShell ? "on" : "off"} | ${formatTokens(telemetry)}`
+          });
+          return;
+        case "doctor": {
+          appendLine({
+            tone: "muted",
+            label: "doctor",
+            text: "checking local requirements..."
+          });
+          const doctorResults = await runDoctor(settings.ollamaUrl);
+          for (const result of doctorResults) {
+            appendLine({
+              tone: result.ok ? "success" : "danger",
+              label: result.name,
+              text: result.details
+            });
+          }
+          return;
+        }
+        case "clear":
+          setLines([]);
+          return;
+        case "exit":
+        case "quit":
+        case "q":
+          exit();
+          return;
+        default:
+          appendLine({
+            tone: "warning",
+            label: "unknown",
+            text: `/${command} is not a PatchPilot command. Type /help.`
+          });
+      }
+    },
+    [appendLine, exit, settings, telemetry]
+  );
+
+  const handleSubmit = useCallback(
+    async (value: string) => {
+      const nextValue = value.trim();
+      if (!nextValue || isRunning) {
+        return;
+      }
+
+      setInput("");
+      if (nextValue.startsWith("/")) {
+        await handleSlashCommand(nextValue);
+        return;
+      }
+
+      await runTask(nextValue);
+    },
+    [handleSlashCommand, isRunning, runTask]
+  );
+
   useEffect(() => {
     if (props.initialTask) {
       void runTask(props.initialTask);
@@ -100,16 +237,38 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
     };
   }, []);
 
+  useEffect(() => {
+    let isMounted = true;
+
+    async function updateGpuStats(): Promise<void> {
+      const nextGpuStats = await readGpuStats();
+      if (isMounted) {
+        setGpuStats(nextGpuStats);
+      }
+    }
+
+    void updateGpuStats();
+    const timer = setInterval(() => {
+      void updateGpuStats();
+    }, 2500);
+
+    return () => {
+      isMounted = false;
+      clearInterval(timer);
+    };
+  }, []);
+
   return (
     <Box flexDirection="column" paddingX={1}>
       <Header
-        model={props.model}
-        workspace={props.workspace}
+        model={settings.model}
+        workspace={settings.workspace}
         status={status}
-        allowWrite={props.allowWrite}
-        allowShell={props.allowShell}
+        allowWrite={settings.allowWrite}
+        allowShell={settings.allowShell}
         telemetry={telemetry}
         systemStats={systemStats}
+        gpuStats={gpuStats}
       />
 
       <Box borderStyle="round" borderColor={isRunning ? "cyan" : "gray"} flexDirection="column" paddingX={1} minHeight={18}>
@@ -125,12 +284,12 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         {isRunning ? (
           <Text color="gray">waiting for model or tool result...</Text>
         ) : (
-          <TextInput value={input} onChange={setInput} onSubmit={(value) => void runTask(value)} placeholder="Describe the patch..." />
+          <TextInput value={input} onChange={setInput} onSubmit={(value) => void handleSubmit(value)} placeholder="Ask PatchPilot or type /help..." />
         )}
       </Box>
 
       <Box marginTop={1}>
-        <Text color="gray">q quits when idle  |  --apply enables writes  |  --allow-shell enables commands</Text>
+        <Text color="gray">/help for commands  |  /write on enables edits  |  /shell on enables commands  |  /exit quits</Text>
       </Box>
     </Box>
   );
@@ -144,6 +303,7 @@ function Header(props: {
   allowShell: boolean;
   telemetry: ModelTelemetry | null;
   systemStats: SystemStats;
+  gpuStats: GpuStats | null;
 }): React.ReactElement {
   return (
     <Box borderStyle="round" borderColor="cyan" flexDirection="column" marginBottom={1} paddingX={1}>
@@ -164,9 +324,13 @@ function Header(props: {
           value={`${props.systemStats.memoryPercent}%/${props.systemStats.usedMemoryGb}G`}
           color={usageColor(props.systemStats.memoryPercent)}
         />
+        <Stat label="gpu" value={formatGpuUtilization(props.gpuStats)} color={usageColor(props.gpuStats?.utilizationPercent ?? null)} />
+        <Stat label="vram" value={formatGpuMemory(props.gpuStats)} color={gpuMemoryColor(props.gpuStats)} />
         <Stat label="tokens" value={formatTokens(props.telemetry)} color="cyan" />
       </Box>
       <Box>
+        <Stat label="temp" value={formatGpuTemperature(props.gpuStats)} color={temperatureColor(props.gpuStats?.temperatureCelsius ?? null)} />
+        <Stat label="power" value={formatGpuPower(props.gpuStats)} color="cyan" />
         <Stat label="speed" value={formatSpeed(props.telemetry)} color="cyan" />
         <Stat label="latency" value={formatLatency(props.telemetry)} color="cyan" />
         <Stat label="write" value={props.allowWrite ? "on" : "off"} color={props.allowWrite ? "green" : "red"} />
@@ -181,7 +345,7 @@ function EmptyState(): React.ReactElement {
   return (
     <Box flexDirection="column">
       <Text color="gray">No session activity yet.</Text>
-      <Text color="gray">Ask for a repo summary, a focused patch, or a test run.</Text>
+      <Text color="gray">Ask for a repo summary, a focused patch, or type /help.</Text>
     </Box>
   );
 }
@@ -366,4 +530,77 @@ function usageColor(value: number | null): "gray" | "green" | "yellow" | "red" {
   }
 
   return "green";
+}
+
+function gpuMemoryColor(stats: GpuStats | null): "gray" | "green" | "yellow" | "red" {
+  if (!stats || stats.totalMemoryGb <= 0) {
+    return "gray";
+  }
+
+  return usageColor(Math.round((stats.usedMemoryGb / stats.totalMemoryGb) * 100));
+}
+
+function temperatureColor(value: number | null): "gray" | "green" | "yellow" | "red" {
+  if (value === null) {
+    return "gray";
+  }
+
+  if (value >= 85) {
+    return "red";
+  }
+
+  if (value >= 75) {
+    return "yellow";
+  }
+
+  return "green";
+}
+
+function formatGpuUtilization(stats: GpuStats | null): string {
+  return stats ? `${stats.utilizationPercent}%` : "-";
+}
+
+function formatGpuMemory(stats: GpuStats | null): string {
+  return stats ? `${stats.usedMemoryGb}/${stats.totalMemoryGb}G` : "-";
+}
+
+function formatGpuTemperature(stats: GpuStats | null): string {
+  return stats?.temperatureCelsius !== null && stats?.temperatureCelsius !== undefined ? `${stats.temperatureCelsius}C` : "-";
+}
+
+function formatGpuPower(stats: GpuStats | null): string {
+  if (!stats?.powerDrawWatts) {
+    return "-";
+  }
+
+  return stats.powerLimitWatts ? `${Math.round(stats.powerDrawWatts)}/${Math.round(stats.powerLimitWatts)}W` : `${Math.round(stats.powerDrawWatts)}W`;
+}
+
+function readToggle(value: string | undefined, fallback: boolean): boolean {
+  if (!value) {
+    return fallback;
+  }
+
+  const normalizedValue = value.toLowerCase();
+  if (["on", "true", "yes", "1", "enable", "enabled"].includes(normalizedValue)) {
+    return true;
+  }
+
+  if (["off", "false", "no", "0", "disable", "disabled"].includes(normalizedValue)) {
+    return false;
+  }
+
+  return fallback;
+}
+
+function normalizeModelAlias(value: string): string {
+  if (value === "uncensored" || value === "abliterate" || value === "abliterated") {
+    return "huihui_ai/qwen2.5-coder-abliterate:7b";
+  }
+
+  if (value === "default" || value === "official") {
+    return "qwen2.5-coder:7b";
+  }
+
+  return value;
 }

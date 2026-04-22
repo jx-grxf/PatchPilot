@@ -52,7 +52,7 @@ The project is private while it is incubating, but the repository structure, doc
 | TUI workflow | Ink-powered terminal UI with status, transcript, model, and workspace context |
 | Workspace boundary | File tools refuse to read or write outside the selected project root |
 | Explicit permissions | Writes require `--apply`; shell execution requires `--allow-shell` |
-| Runtime telemetry | Header shows CPU, memory, request tokens, generation speed, and latency |
+| Runtime telemetry | Header shows CPU, memory, GPU, VRAM, temperature, power, request tokens, generation speed, and latency |
 | Tool-visible loop | The model can list files, read files, search text, write files, and run commands |
 | JSON agent protocol | Model responses are parsed through a typed command envelope |
 | CI-ready repo | TypeScript build, tests, and GitHub Actions are included from day one |
@@ -113,19 +113,23 @@ ollama pull qwen2.5-coder:7b
 Run PatchPilot in a repository:
 
 ```bash
-npm run dev -- "explain the project structure"
+patchpilot
 ```
 
-Allow file writes for patching:
+Then type normal tasks directly into the TUI:
 
-```bash
-npm run dev -- "add a focused unit test for the parser" --apply
+```text
+summarize this repository
 ```
 
-Allow shell execution for test runs:
+Use slash commands inside the TUI:
 
-```bash
-npm run dev -- "run tests and fix the failing parser test" --apply --allow-shell
+```text
+/help
+/write on
+/shell on
+/model uncensored
+/doctor
 ```
 
 ## Usage
@@ -149,6 +153,21 @@ Run diagnostics:
 patchpilot doctor
 ```
 
+Inside the TUI, use `/help` to see available commands. Permissions can be changed without restarting:
+
+| Slash command | Description |
+|---|---|
+| `/help` | Show available commands |
+| `/permissions` | Show current write and shell permissions |
+| `/write on\|off` | Enable or disable workspace writes |
+| `/shell on\|off` | Enable or disable shell commands |
+| `/model <name>` | Switch the Ollama model for the current session |
+| `/model uncensored` | Switch to `huihui_ai/qwen2.5-coder-abliterate:7b` |
+| `/model default` | Switch back to `qwen2.5-coder:7b` |
+| `/doctor` | Check Node, Git, and Ollama from inside the TUI |
+| `/clear` | Clear the current transcript |
+| `/exit` | Quit PatchPilot |
+
 ## Safety Model
 
 PatchPilot is designed to make local execution boring in the best way:
@@ -158,7 +177,7 @@ PatchPilot is designed to make local execution boring in the best way:
 - Shell tools are disabled unless `--allow-shell` is set.
 - Shell commands run with timeouts.
 - Tool output is fed back into the agent instead of hidden from the user.
-- The TUI surfaces CPU, memory, token counts, token throughput, and request latency.
+- The TUI surfaces CPU, memory, GPU utilization, VRAM, temperature, power draw, token counts, token throughput, and request latency.
 
 This does not make local agents harmless. Review diffs before committing, especially when using small local models.
 
