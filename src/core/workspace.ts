@@ -102,8 +102,14 @@ export class WorkspaceTools {
       return denied("read_file requires a path.");
     }
 
+    if (isPlaceholderPath(requestedPath)) {
+      return denied(`read_file denied placeholder path: ${requestedPath}`);
+    }
+
     const absolutePath = this.resolveInsideWorkspace(requestedPath);
-    const content = await readFile(absolutePath, "utf8");
+    const content = await readFile(absolutePath, "utf8").catch((error: unknown) => {
+      throw new Error(`file not found or unreadable: ${requestedPath} (${error instanceof Error ? error.message : String(error)})`);
+    });
     const clippedContent = clip(content, 20_000);
     return {
       ok: true,
@@ -153,6 +159,10 @@ export class WorkspaceTools {
 
     if (!requestedPath) {
       return denied("write_file requires a path.");
+    }
+
+    if (isPlaceholderPath(requestedPath)) {
+      return denied(`write_file denied placeholder path: ${requestedPath}`);
     }
 
     const absolutePath = this.resolveInsideWorkspace(requestedPath);
@@ -251,6 +261,11 @@ function runCommand(command: string, cwd: string, timeoutMs: number): Promise<{ 
 
 function readString(value: unknown, fallback: string): string {
   return typeof value === "string" ? value : fallback;
+}
+
+function isPlaceholderPath(value: string): boolean {
+  const normalizedValue = value.trim().toLowerCase().replaceAll("\\", "/");
+  return ["relative/path", "path/to/file", "file/path", "<path>", "<file>", "filename"].includes(normalizedValue);
 }
 
 function denied(message: string): ToolResult {

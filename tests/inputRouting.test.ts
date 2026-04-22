@@ -25,4 +25,13 @@ describe("routeLocalConversation", () => {
       handled: false
     });
   });
+
+  it("clarifies single-word coding verbs", () => {
+    expect(routeLocalConversation("summarize")).toEqual(
+      expect.objectContaining({
+        handled: true,
+        tone: "warning"
+      })
+    );
+  });
 });

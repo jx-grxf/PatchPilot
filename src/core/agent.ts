@@ -81,6 +81,14 @@ export class AgentRunner {
         return;
       }
 
+      if (looksLikeClarification(parsedResponse.message)) {
+        yield {
+          type: "final",
+          message: parsedResponse.message
+        };
+        return;
+      }
+
       yield {
         type: "assistant",
         message: parsedResponse.message
@@ -132,6 +140,9 @@ function buildSystemPrompt(workspaceRoot: string): string {
     "You help inspect, edit, test, and explain code inside one workspace.",
     "Only use tools for explicit coding, repository, file, test, shell, or debugging tasks.",
     "For greetings, small talk, or ambiguous requests, return a final clarification question without tool calls.",
+    "If you ask the user a question, use a final response and do not call tools.",
+    "Never pass placeholder examples like relative/path, path/to/file, or <path> as tool arguments.",
+    "For repository summaries, inspect README.md, package.json, and top-level source files before answering.",
     `Workspace root: ${workspaceRoot}`,
     "",
     "Return only JSON. Do not use Markdown outside JSON.",
@@ -153,4 +164,12 @@ function buildSystemPrompt(workspaceRoot: string): string {
     "Be conservative. Prefer reading before writing. Keep changes focused.",
     "Keep tool requests and final answers compact."
   ].join("\n");
+}
+
+function looksLikeClarification(message: string): boolean {
+  const normalizedMessage = message.trim().toLowerCase();
+  return (
+    normalizedMessage.endsWith("?") &&
+    /\b(what|which|please provide|would you like|do you want|can you specify|welche|was genau|bitte)\b/.test(normalizedMessage)
+  );
 }

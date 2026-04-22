@@ -126,6 +126,7 @@ Use slash commands inside the TUI:
 
 ```text
 /help
+/mode build
 /write on
 /shell on
 /model uncensored
@@ -159,14 +160,20 @@ Inside the TUI, use `/help` to see available commands. Permissions can be change
 | Slash command | Description |
 |---|---|
 | `/help` | Show available commands |
+| `/` | Show command suggestions while typing |
 | `/permissions` | Show current write and shell permissions |
+| `/mode plan` | Read-only planning mode |
+| `/mode build` | Implementation mode; writes and shell can be enabled |
 | `/write on\|off` | Enable or disable workspace writes |
 | `/shell on\|off` | Enable or disable shell commands |
 | `/model <name>` | Switch the Ollama model for the current session |
 | `/model uncensored` | Switch to `huihui_ai/qwen2.5-coder-abliterate:7b` |
 | `/model default` | Switch back to `qwen2.5-coder:7b` |
+| `/connect` | Scan for reachable Ollama hosts and list remembered hosts |
 | `/connect <url>` | Connect to another Ollama host for the current session |
+| `/connect <number>` | Connect to a numbered host from the `/connect` list |
 | `/connect local` | Switch back to local Ollama at `127.0.0.1:11434` |
+| `/hosts` | List remembered and suggested Ollama hosts |
 | `/doctor` | Check Node, Git, and Ollama from inside the TUI |
 | `/clear` | Clear the current transcript |
 | `/exit` | Quit PatchPilot |
@@ -174,6 +181,8 @@ Inside the TUI, use `/help` to see available commands. Permissions can be change
 ## Remote Ollama
 
 PatchPilot can run the agent on one machine while using an Ollama server on another machine. This is useful when your Windows desktop has the GPU and your MacBook is where you are editing code.
+
+For now, macOS is treated as a remote-client platform. If PatchPilot starts on macOS without a remote Ollama URL, it shows a warning and waits for `/connect`. Local macOS model execution will be added later.
 
 On the Windows desktop, expose Ollama on the LAN:
 
@@ -191,6 +200,8 @@ patchpilot --ollama-url http://<windows-pc-ip>:11434
 Or switch inside the TUI:
 
 ```text
+/connect
+/connect 1
 /connect http://<windows-pc-ip>:11434
 ```
 

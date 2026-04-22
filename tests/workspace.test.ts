@@ -67,4 +67,22 @@ describe("WorkspaceTools", () => {
     expect(result.ok).toBe(false);
     expect(result.summary).toContain("--apply");
   });
+
+  it("rejects placeholder read paths", async () => {
+    const tools = new WorkspaceTools({
+      root: tempRoot,
+      allowWrite: false,
+      allowShell: false
+    });
+
+    const result = await tools.execute({
+      name: "read_file",
+      arguments: {
+        path: "relative/path"
+      }
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.summary).toContain("placeholder");
+  });
 });

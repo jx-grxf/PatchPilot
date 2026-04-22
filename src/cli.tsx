@@ -5,9 +5,10 @@ import { render } from "ink";
 import { Command } from "commander";
 import { runDoctor } from "./core/doctor.js";
 import { App } from "./tui/App.js";
+import { isMacOS } from "./tui/platform.js";
 
 const defaultModel = "qwen2.5-coder:7b";
-const defaultOllamaUrl = "http://127.0.0.1:11434";
+const defaultOllamaUrl = process.env.PATCHPILOT_OLLAMA_URL ?? (isMacOS() ? "" : "http://127.0.0.1:11434");
 
 const program = new Command();
 
@@ -34,7 +35,7 @@ program
   .argument("[task...]", "Task for the local coding agent.")
   .option("--workspace <path>", "Workspace root", process.cwd())
   .option("--model <name>", "Ollama model name", process.env.PATCHPILOT_MODEL ?? defaultModel)
-  .option("--ollama-url <url>", "Ollama base URL", process.env.PATCHPILOT_OLLAMA_URL ?? defaultOllamaUrl)
+  .option("--ollama-url <url>", "Ollama base URL", defaultOllamaUrl)
   .option("--steps <count>", "Maximum agent steps", "8")
   .option("--apply", "Allow file writes inside the workspace.", false)
   .option("--allow-shell", "Allow shell commands inside the workspace.", false)

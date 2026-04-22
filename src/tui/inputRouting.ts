@@ -28,7 +28,16 @@ export function routeLocalConversation(task: string): LocalConversationResult {
     };
   }
 
-  if (task.trim().split(/\s+/).length <= 2 && !looksLikeCodingTask(normalizedTask)) {
+  const wordCount = task.trim().split(/\s+/).filter(Boolean).length;
+  if (wordCount === 1 && looksLikeAmbiguousCodingVerb(plainTask)) {
+    return {
+      handled: true,
+      tone: "warning",
+      message: "Was genau soll ich damit machen? Beispiel: `summarize this repository` oder `summarize README.md`."
+    };
+  }
+
+  if (wordCount <= 2 && !looksLikeCodingTask(normalizedTask)) {
     return {
       handled: true,
       tone: "warning",
@@ -45,4 +54,31 @@ function looksLikeCodingTask(value: string): boolean {
   return /\b(add|build|fix|test|run|read|summarize|explain|refactor|implement|create|update|debug|commit|status|diff|search|find|install|rename|remove|write|edit)\b/.test(
     value
   );
+}
+
+function looksLikeAmbiguousCodingVerb(value: string): boolean {
+  return [
+    "add",
+    "build",
+    "fix",
+    "test",
+    "run",
+    "read",
+    "summarize",
+    "explain",
+    "refactor",
+    "implement",
+    "create",
+    "update",
+    "debug",
+    "commit",
+    "diff",
+    "search",
+    "find",
+    "install",
+    "rename",
+    "remove",
+    "write",
+    "edit"
+  ].includes(value);
 }

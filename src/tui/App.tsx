@@ -4,7 +4,10 @@ import TextInput from "ink-text-input";
 import { AgentRunner, type AgentRunnerOptions } from "../core/agent.js";
 import { runDoctor } from "../core/doctor.js";
 import type { AgentEvent, ModelTelemetry } from "../core/types.js";
+import { filterSlashCommands, formatCommandList, slashCommands } from "./commands.js";
+import { discoverOllamaHosts, getOllamaHostCandidates, normalizeOllamaUrl } from "./hosts.js";
 import { routeLocalConversation } from "./inputRouting.js";
+import { isLocalOllamaUrl, isMacOS } from "./platform.js";
 import { readGpuStats, readSystemStats, type GpuStats, type SystemStats } from "./systemStats.js";
 
 export type PatchPilotAppProps = AgentRunnerOptions & {
@@ -19,6 +22,8 @@ type LogLine = {
   detail?: string;
 };
 
+type AgentMode = "plan" | "build";
+
 export function App(props: PatchPilotAppProps): React.ReactElement {
   const { exit } = useApp();
   const [input, setInput] = useState(props.initialTask ?? "");
@@ -28,6 +33,12 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   const [telemetry, setTelemetry] = useState<ModelTelemetry | null>(null);
   const [systemStats, setSystemStats] = useState<SystemStats>(() => readSystemStats().stats);
   const [gpuStats, setGpuStats] = useState<GpuStats | null>(null);
+  const [agentMode, setAgentMode] = useState<AgentMode>(props.allowWrite || props.allowShell ? "build" : "plan");
+  const [notice, setNotice] = useState<string | null>(() =>
+    isMacOS() && (!props.ollamaUrl || isLocalOllamaUrl(props.ollamaUrl))
+      ? "macOS local models are not supported yet. Use /connect to use a remote Ollama host."
+      : null
+  );
   const [settings, setSettings] = useState<AgentRunnerOptions>({
     model: props.model,
     ollamaUrl: props.ollamaUrl,
@@ -51,6 +62,15 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   const runTask = useCallback(
     async (task: string) => {
       if (!task.trim() || isRunning) {
+        return;
+      }
+
+      if (isMacOS() && (!settings.ollamaUrl || isLocalOllamaUrl(settings.ollamaUrl))) {
+        appendLine({
+          tone: "warning",
+          label: "ollama",
+          text: "macOS local models are not supported yet. Connect to your PC with /connect <windows-pc-ip>:11434."
+        });
         return;
       }
 
@@ -97,9 +117,33 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           appendLine({
             tone: "accent",
             label: "commands",
-            text: "/help  /permissions  /write on|off  /shell on|off  /model <name|uncensored|default>  /connect <url|local>  /doctor  /clear  /exit"
+            text: formatCommandList()
           });
           return;
+        case "mode": {
+          const nextMode = args[0]?.toLowerCase();
+          if (nextMode !== "plan" && nextMode !== "build") {
+            appendLine({
+              tone: "accent",
+              label: "mode",
+              text: `current ${agentMode}. Use /mode plan or /mode build.`
+            });
+            return;
+          }
+
+          setAgentMode(nextMode);
+          setSettings((currentSettings) => ({
+            ...currentSettings,
+            allowWrite: nextMode === "build" ? currentSettings.allowWrite : false,
+            allowShell: nextMode === "build" ? currentSettings.allowShell : false
+          }));
+          appendLine({
+            tone: "success",
+            label: "mode",
+            text: `${nextMode} mode ${nextMode === "plan" ? "keeps tools read-only" : "allows write/shell permissions when enabled"}`
+          });
+          return;
+        }
         case "permissions":
         case "perms":
           appendLine({
@@ -110,6 +154,9 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           return;
         case "write":
         case "apply":
+          if (readToggle(args[0], !settings.allowWrite)) {
+            setAgentMode("build");
+          }
           setSettings((currentSettings) => ({
             ...currentSettings,
             allowWrite: readToggle(args[0], !currentSettings.allowWrite)
@@ -121,6 +168,9 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           });
           return;
         case "shell":
+          if (readToggle(args[0], !settings.allowShell)) {
+            setAgentMode("build");
+          }
           setSettings((currentSettings) => ({
             ...currentSettings,
             allowShell: readToggle(args[0], !currentSettings.allowShell)
@@ -163,17 +213,30 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         case "connect":
         case "host":
         case "ollama": {
-          const nextUrl = normalizeOllamaUrl(args.join(" ").trim());
-          if (!nextUrl) {
+          const requestedHost = args.join(" ").trim();
+          if (!requestedHost) {
+            appendLine({
+              tone: "muted",
+              label: "hosts",
+              text: "scanning LAN for Ollama hosts..."
+            });
+            const hosts = await discoverOllamaHosts(settings.ollamaUrl);
             appendLine({
               tone: "accent",
-              label: "ollama",
-              text: settings.ollamaUrl
+              label: "hosts",
+              text: hosts.map((host, index) => `${index + 1}. ${host.label} ${host.url}`).join("  ")
             });
             return;
           }
 
+          const hosts = getOllamaHostCandidates(settings.ollamaUrl);
+          const hostIndex = Number.parseInt(requestedHost, 10);
+          const nextUrl = Number.isInteger(hostIndex) && hosts[hostIndex - 1]
+            ? hosts[hostIndex - 1].url
+            : normalizeOllamaUrl(requestedHost);
+
           setTelemetry(null);
+          setNotice(null);
           setSettings((currentSettings) => ({
             ...currentSettings,
             ollamaUrl: nextUrl
@@ -182,6 +245,15 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
             tone: "success",
             label: "ollama",
             text: `connected to ${nextUrl}`
+          });
+          return;
+        }
+        case "hosts": {
+          const hosts = getOllamaHostCandidates(settings.ollamaUrl);
+          appendLine({
+            tone: "accent",
+            label: "hosts",
+            text: hosts.map((host, index) => `${index + 1}. ${host.label} ${host.url}`).join("  ")
           });
           return;
         }
@@ -296,11 +368,18 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         status={status}
         allowWrite={settings.allowWrite}
         allowShell={settings.allowShell}
+        agentMode={agentMode}
         ollamaUrl={settings.ollamaUrl}
         telemetry={telemetry}
         systemStats={systemStats}
         gpuStats={gpuStats}
       />
+
+      {notice ? (
+        <Box marginBottom={1}>
+          <Text color="yellow">{notice}</Text>
+        </Box>
+      ) : null}
 
       <Box borderStyle="round" borderColor={isRunning ? "cyan" : "gray"} flexDirection="column" paddingX={1} minHeight={18}>
         {lines.length === 0 ? (
@@ -319,6 +398,8 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         )}
       </Box>
 
+      {!isRunning && input.startsWith("/") ? <CommandSuggestions input={input} ollamaUrl={settings.ollamaUrl} /> : null}
+
       <Box marginTop={1}>
         <Text color="gray">/help for commands  |  /write on enables edits  |  /shell on enables commands  |  /exit quits</Text>
       </Box>
@@ -332,6 +413,7 @@ function Header(props: {
   status: string;
   allowWrite: boolean;
   allowShell: boolean;
+  agentMode: AgentMode;
   ollamaUrl: string;
   telemetry: ModelTelemetry | null;
   systemStats: SystemStats;
@@ -351,6 +433,7 @@ function Header(props: {
       <Box marginTop={1}>
         <Stat label="model" value={props.model} color="green" />
         <Stat label="host" value={formatOllamaHost(props.ollamaUrl)} color="cyan" />
+        <Stat label="mode" value={props.agentMode} color={props.agentMode === "build" ? "yellow" : "green"} />
         <Stat label="cpu" value={formatPercent(props.systemStats.cpuPercent)} color={usageColor(props.systemStats.cpuPercent)} />
         <Stat
           label="mem"
@@ -379,6 +462,39 @@ function EmptyState(): React.ReactElement {
     <Box flexDirection="column">
       <Text color="gray">No session activity yet.</Text>
       <Text color="gray">Ask for a repo summary, a focused patch, or type /help.</Text>
+    </Box>
+  );
+}
+
+function CommandSuggestions(props: { input: string; ollamaUrl: string }): React.ReactElement | null {
+  const suggestions = filterSlashCommands(props.input);
+  if (suggestions.length === 0) {
+    return null;
+  }
+
+  const isConnectInput = props.input.trimStart().startsWith("/connect");
+  const hosts = isConnectInput ? getOllamaHostCandidates(props.ollamaUrl).slice(0, 5) : [];
+
+  return (
+    <Box borderStyle="round" borderColor="gray" flexDirection="column" paddingX={1} marginTop={1}>
+      {suggestions.slice(0, 6).map((command) => (
+        <Box key={command.name}>
+          <Box width={30}>
+            <Text color="cyan">{command.usage}</Text>
+          </Box>
+          <Text color="gray">{command.description}</Text>
+        </Box>
+      ))}
+      {hosts.length > 0 ? (
+        <Box flexDirection="column" marginTop={1}>
+          <Text color="gray">Ollama hosts</Text>
+          {hosts.map((host, index) => (
+            <Text key={host.url} color="gray">
+              {index + 1}. {host.label} {host.url}
+            </Text>
+          ))}
+        </Box>
+      ) : null}
     </Box>
   );
 }
@@ -420,8 +536,10 @@ function Stat(props: {
 }): React.ReactElement {
   return (
     <Box marginRight={3}>
-      <Text color="gray">{props.label} </Text>
+      <Text color="gray">{props.label}</Text>
+      <Text color="gray"> </Text>
       <Text color={props.color}>{props.value}</Text>
+      <Text>  </Text>
     </Box>
   );
 }
@@ -638,19 +756,11 @@ function normalizeModelAlias(value: string): string {
   return value;
 }
 
-function normalizeOllamaUrl(value: string): string {
-  if (!value || value === "local" || value === "localhost") {
-    return "http://127.0.0.1:11434";
-  }
-
-  if (/^https?:\/\//i.test(value)) {
-    return value.replace(/\/$/, "");
-  }
-
-  return `http://${value}`.replace(/\/$/, "");
-}
-
 function formatOllamaHost(value: string): string {
+  if (!value) {
+    return "not connected";
+  }
+
   try {
     const url = new URL(value);
     if (url.hostname === "127.0.0.1" || url.hostname === "localhost") {
