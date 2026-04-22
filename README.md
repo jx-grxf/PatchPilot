@@ -129,6 +129,7 @@ Use slash commands inside the TUI:
 /write on
 /shell on
 /model uncensored
+/connect http://192.168.1.50:11434
 /doctor
 ```
 
@@ -164,9 +165,36 @@ Inside the TUI, use `/help` to see available commands. Permissions can be change
 | `/model <name>` | Switch the Ollama model for the current session |
 | `/model uncensored` | Switch to `huihui_ai/qwen2.5-coder-abliterate:7b` |
 | `/model default` | Switch back to `qwen2.5-coder:7b` |
+| `/connect <url>` | Connect to another Ollama host for the current session |
+| `/connect local` | Switch back to local Ollama at `127.0.0.1:11434` |
 | `/doctor` | Check Node, Git, and Ollama from inside the TUI |
 | `/clear` | Clear the current transcript |
 | `/exit` | Quit PatchPilot |
+
+## Remote Ollama
+
+PatchPilot can run the agent on one machine while using an Ollama server on another machine. This is useful when your Windows desktop has the GPU and your MacBook is where you are editing code.
+
+On the Windows desktop, expose Ollama on the LAN:
+
+1. Quit Ollama from the taskbar.
+2. Add a user environment variable named `OLLAMA_HOST` with value `0.0.0.0:11434`.
+3. Start Ollama again from the Start menu.
+4. Allow inbound TCP traffic on port `11434` in the Windows firewall for your private network.
+
+From the MacBook, run PatchPilot inside the project you want to edit and connect to the desktop:
+
+```bash
+patchpilot --ollama-url http://<windows-pc-ip>:11434
+```
+
+Or switch inside the TUI:
+
+```text
+/connect http://<windows-pc-ip>:11434
+```
+
+The files and shell commands still run on the MacBook. Only model inference runs on the Windows desktop.
 
 ## Safety Model
 

@@ -4,6 +4,7 @@ import TextInput from "ink-text-input";
 import { AgentRunner, type AgentRunnerOptions } from "../core/agent.js";
 import { runDoctor } from "../core/doctor.js";
 import type { AgentEvent, ModelTelemetry } from "../core/types.js";
+import { routeLocalConversation } from "./inputRouting.js";
 import { readGpuStats, readSystemStats, type GpuStats, type SystemStats } from "./systemStats.js";
 
 export type PatchPilotAppProps = AgentRunnerOptions & {
@@ -96,7 +97,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           appendLine({
             tone: "accent",
             label: "commands",
-            text: "/help  /permissions  /write on|off  /shell on|off  /model <name|uncensored|default>  /doctor  /clear  /exit"
+            text: "/help  /permissions  /write on|off  /shell on|off  /model <name|uncensored|default>  /connect <url|local>  /doctor  /clear  /exit"
           });
           return;
         case "permissions":
@@ -156,9 +157,34 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           appendLine({
             tone: "accent",
             label: "status",
-            text: `model ${settings.model} | write ${settings.allowWrite ? "on" : "off"} | shell ${settings.allowShell ? "on" : "off"} | ${formatTokens(telemetry)}`
+            text: `model ${settings.model} | host ${settings.ollamaUrl} | write ${settings.allowWrite ? "on" : "off"} | shell ${settings.allowShell ? "on" : "off"} | ${formatTokens(telemetry)}`
           });
           return;
+        case "connect":
+        case "host":
+        case "ollama": {
+          const nextUrl = normalizeOllamaUrl(args.join(" ").trim());
+          if (!nextUrl) {
+            appendLine({
+              tone: "accent",
+              label: "ollama",
+              text: settings.ollamaUrl
+            });
+            return;
+          }
+
+          setTelemetry(null);
+          setSettings((currentSettings) => ({
+            ...currentSettings,
+            ollamaUrl: nextUrl
+          }));
+          appendLine({
+            tone: "success",
+            label: "ollama",
+            text: `connected to ${nextUrl}`
+          });
+          return;
+        }
         case "doctor": {
           appendLine({
             tone: "muted",
@@ -207,9 +233,13 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         return;
       }
 
+      if (handleLocalConversation(nextValue, appendLine)) {
+        return;
+      }
+
       await runTask(nextValue);
     },
-    [handleSlashCommand, isRunning, runTask]
+    [appendLine, handleSlashCommand, isRunning, runTask]
   );
 
   useEffect(() => {
@@ -266,6 +296,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         status={status}
         allowWrite={settings.allowWrite}
         allowShell={settings.allowShell}
+        ollamaUrl={settings.ollamaUrl}
         telemetry={telemetry}
         systemStats={systemStats}
         gpuStats={gpuStats}
@@ -301,6 +332,7 @@ function Header(props: {
   status: string;
   allowWrite: boolean;
   allowShell: boolean;
+  ollamaUrl: string;
   telemetry: ModelTelemetry | null;
   systemStats: SystemStats;
   gpuStats: GpuStats | null;
@@ -318,6 +350,7 @@ function Header(props: {
       </Box>
       <Box marginTop={1}>
         <Stat label="model" value={props.model} color="green" />
+        <Stat label="host" value={formatOllamaHost(props.ollamaUrl)} color="cyan" />
         <Stat label="cpu" value={formatPercent(props.systemStats.cpuPercent)} color={usageColor(props.systemStats.cpuPercent)} />
         <Stat
           label="mem"
@@ -603,4 +636,48 @@ function normalizeModelAlias(value: string): string {
   }
 
   return value;
+}
+
+function normalizeOllamaUrl(value: string): string {
+  if (!value || value === "local" || value === "localhost") {
+    return "http://127.0.0.1:11434";
+  }
+
+  if (/^https?:\/\//i.test(value)) {
+    return value.replace(/\/$/, "");
+  }
+
+  return `http://${value}`.replace(/\/$/, "");
+}
+
+function formatOllamaHost(value: string): string {
+  try {
+    const url = new URL(value);
+    if (url.hostname === "127.0.0.1" || url.hostname === "localhost") {
+      return "local";
+    }
+
+    return url.host;
+  } catch {
+    return value;
+  }
+}
+
+function handleLocalConversation(task: string, appendLine: (line: Omit<LogLine, "id">) => void): boolean {
+  const route = routeLocalConversation(task);
+  if (route.handled) {
+    appendLine({
+      tone: "normal",
+      label: "you",
+      text: task
+    });
+    appendLine({
+      tone: route.tone,
+      label: "pilot",
+      text: route.message
+    });
+    return true;
+  }
+
+  return false;
 }

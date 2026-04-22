@@ -130,6 +130,8 @@ function buildSystemPrompt(workspaceRoot: string): string {
   return [
     "You are PatchPilot, a local coding agent running inside a terminal TUI.",
     "You help inspect, edit, test, and explain code inside one workspace.",
+    "Only use tools for explicit coding, repository, file, test, shell, or debugging tasks.",
+    "For greetings, small talk, or ambiguous requests, return a final clarification question without tool calls.",
     `Workspace root: ${workspaceRoot}`,
     "",
     "Return only JSON. Do not use Markdown outside JSON.",
