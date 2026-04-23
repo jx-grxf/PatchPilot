@@ -22,6 +22,7 @@ import {
   usageColor,
   type StatusColor
 } from "../format.js";
+import type { OllamaHostDetails } from "../hosts.js";
 import type { GpuStats, SystemStats } from "../systemStats.js";
 import type { AgentMode } from "../types.js";
 
@@ -40,11 +41,31 @@ export function Header(props: {
   draftTokens: number;
   systemStats: SystemStats;
   gpuStats: GpuStats | null;
+  activeHost: OllamaHostDetails | null;
 }): React.ReactElement {
   const computeTarget =
     props.provider === "gemini" || props.provider === "codex" ? { kind: "cloud" } : describeComputeTarget(props.ollamaUrl);
   const memoryColor = usageColor(props.systemStats.memoryPercent);
   const modelHint = getModelHint(props.model);
+  const hostLabel =
+    props.provider === "ollama" ? props.activeHost?.host.deviceName ?? formatOllamaHost(props.ollamaUrl) : `${props.provider} oauth`;
+  const hostRoute = props.provider === "ollama" ? shortenMiddle(props.activeHost?.host.url ?? props.ollamaUrl, 28) : `${props.provider} oauth`;
+  const hostVersion = props.activeHost?.host.version ? `v${props.activeHost.host.version}` : "-";
+  const hostModels = props.activeHost ? `${props.activeHost.models.length} available` : "-";
+  const hostLoaded = props.activeHost?.runningModels.length ? props.activeHost.runningModels.join(", ") : "idle";
+  const remoteHostMetrics =
+    props.provider === "ollama" && computeTarget.kind === "remote" && props.activeHost ? (
+      <HeaderMetricLine
+        items={[
+          ["device", shortenMiddle(hostLabel, 18), "yellow"],
+          ["route", hostRoute, "cyan"],
+          ["network", props.activeHost.host.kind, "green"],
+          ["version", hostVersion, "cyan"],
+          ["models", hostModels, "green"],
+          ["loaded", shortenMiddle(hostLoaded, 24), props.activeHost.runningModels.length > 0 ? "yellow" : "gray"]
+        ]}
+      />
+    ) : null;
 
   return (
     <Box borderStyle="round" borderColor={props.status === "idle" ? "cyan" : "yellow"} flexDirection="column" marginBottom={1} paddingX={1}>
@@ -67,7 +88,7 @@ export function Header(props: {
           items={[
             ["provider", props.provider, props.provider === "ollama" ? "green" : "cyan"],
             ["model", shortenMiddle(props.model, 30), modelHint.color],
-            ["host", props.provider === "ollama" ? shortenMiddle(formatOllamaHost(props.ollamaUrl), 22) : `${props.provider} oauth`, "cyan"],
+            ["host", shortenMiddle(hostLabel, 22), "cyan"],
             ["compute", computeTarget.kind, computeTarget.kind === "remote" ? "yellow" : "green"],
             ["mode", props.agentMode, props.agentMode === "build" ? "yellow" : "green"],
             ["advisors", props.subagents ? "on" : "off", props.subagents ? "cyan" : "gray"],
@@ -75,16 +96,18 @@ export function Header(props: {
             ["shell", props.allowShell ? "on" : "off", props.allowShell ? "green" : "red"]
           ]}
         />
-        <HeaderMetricLine
-          items={[
-            ["cpu", formatPercent(props.systemStats.cpuPercent), usageColor(props.systemStats.cpuPercent)],
-            ["mem", `${props.systemStats.memoryPercent}%/${props.systemStats.usedMemoryGb}G`, memoryColor],
-            ["gpu", formatGpuUtilization(props.gpuStats), usageColor(props.gpuStats?.utilizationPercent ?? null)],
-            ["vram", formatGpuMemory(props.gpuStats), gpuMemoryColor(props.gpuStats)],
-            ["temp", formatGpuTemperature(props.gpuStats), temperatureColor(props.gpuStats?.temperatureCelsius ?? null)],
-            ["power", formatGpuPower(props.gpuStats), "cyan"]
-          ]}
-        />
+        {remoteHostMetrics ?? (
+          <HeaderMetricLine
+            items={[
+              ["cpu", formatPercent(props.systemStats.cpuPercent), usageColor(props.systemStats.cpuPercent)],
+              ["mem", `${props.systemStats.memoryPercent}%/${props.systemStats.usedMemoryGb}G`, memoryColor],
+              ["gpu", formatGpuUtilization(props.gpuStats), usageColor(props.gpuStats?.utilizationPercent ?? null)],
+              ["vram", formatGpuMemory(props.gpuStats), gpuMemoryColor(props.gpuStats)],
+              ["temp", formatGpuTemperature(props.gpuStats), temperatureColor(props.gpuStats?.temperatureCelsius ?? null)],
+              ["power", formatGpuPower(props.gpuStats), "cyan"]
+            ]}
+          />
+        )}
         <HeaderMetricLine
           items={[
             ["tokens", shortenMiddle(formatTokens(props.telemetry), 36), "cyan"],

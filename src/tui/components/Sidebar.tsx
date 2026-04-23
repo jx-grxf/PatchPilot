@@ -2,6 +2,7 @@ import React from "react";
 import { Box, Text } from "ink";
 import type { ModelProvider, ModelTelemetry, SessionTelemetry } from "../../core/types.js";
 import { formatCost, formatOllamaHost, formatSessionTokens, formatTokens, shortenMiddle, type InkColor } from "../format.js";
+import type { OllamaHostDetails } from "../hosts.js";
 import type { AgentMode, AdvisorNote } from "../types.js";
 
 type SidebarLine = {
@@ -26,6 +27,7 @@ export function Sidebar(props: {
   height: number;
   scrollOffset: number;
   isActive: boolean;
+  activeHost: OllamaHostDetails | null;
 }): React.ReactElement {
   const rows = buildSidebarRows(props);
   const visibleRowCount = Math.max(1, props.height - 2);
@@ -63,7 +65,14 @@ function buildSidebarRows(props: {
   sessionTelemetry: SessionTelemetry;
   draftTokens: number;
   advisors: AdvisorNote[];
+  activeHost: OllamaHostDetails | null;
 }): SidebarLine[] {
+  const hostDeviceName = props.activeHost?.host.deviceName ?? (props.provider === "ollama" ? formatOllamaHost(props.ollamaUrl) : `${props.provider} oauth`);
+  const hostRoute = props.activeHost?.host.url ?? props.ollamaUrl;
+  const hostNetwork = props.activeHost?.host.kind ?? (props.provider === "ollama" ? "local" : "cloud");
+  const hostVersion = props.activeHost?.host.version ?? "-";
+  const hostModels = props.activeHost ? `${props.activeHost.models.length} available` : "-";
+  const hostLoaded = props.activeHost?.runningModels.length ? props.activeHost.runningModels.join(", ") : "idle";
   const rows: SidebarLine[] = [
     section("Session"),
     row("provider", props.provider, props.provider === "ollama" ? "green" : "cyan"),
@@ -72,9 +81,14 @@ function buildSidebarRows(props: {
     row("shell", props.allowShell ? "on" : "off", props.allowShell ? "green" : "red"),
     row("agents", props.subagents ? "on" : "off", props.subagents ? "cyan" : "gray"),
     spacer(),
-    section("Target"),
-    muted(props.provider === "ollama" ? shortenMiddle(formatOllamaHost(props.ollamaUrl), 26) : `${props.provider} oauth`),
-    muted(shortenMiddle(props.model, 26)),
+    section("Host"),
+    row("device", shortenMiddle(hostDeviceName, 19), "yellow"),
+    row("network", hostNetwork, "green"),
+    muted(shortenMiddle(hostRoute, 28)),
+    muted(`version ${hostVersion}`),
+    muted(`models  ${hostModels}`),
+    ...wrapSidebarText(`loaded  ${hostLoaded}`),
+    muted(shortenMiddle(props.model, 28)),
     spacer(),
     section("Workspace"),
     ...wrapSidebarText(shortenMiddle(props.workspace, 58)),

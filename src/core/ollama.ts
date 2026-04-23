@@ -24,6 +24,13 @@ type OllamaTagsResponse = {
   }>;
 };
 
+type OllamaPsResponse = {
+  models?: Array<{
+    name?: string;
+    model?: string;
+  }>;
+};
+
 type OllamaRuntimeOptions = {
   keepAlive: string;
   numCtx: number;
@@ -85,6 +92,21 @@ export class OllamaClient {
 
     const payload = (await response.json()) as OllamaTagsResponse;
     return payload.models?.map((model) => model.name).sort() ?? [];
+  }
+
+  async listRunningModels(): Promise<string[]> {
+    const response = await this.fetchOllama("/api/ps");
+    if (!response.ok) {
+      throw new Error(`Ollama ps failed with HTTP ${response.status}.`);
+    }
+
+    const payload = (await response.json()) as OllamaPsResponse;
+    return (
+      payload.models
+        ?.map((model) => model.name?.trim() || model.model?.trim() || "")
+        .filter((model) => model.length > 0)
+        .sort() ?? []
+    );
   }
 
   private async fetchOllama(path: string, init?: RequestInit): Promise<Response> {

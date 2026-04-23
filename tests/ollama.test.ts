@@ -116,6 +116,32 @@ describe("OllamaClient", () => {
     );
   });
 
+  it("lists running models from the Ollama ps endpoint", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          models: [
+            {
+              name: "qwen2.5-coder:7b"
+            },
+            {
+              model: "deepseek-coder:6.7b"
+            }
+          ]
+        }),
+        {
+          status: 200,
+          headers: {
+            "Content-Type": "application/json"
+          }
+        }
+      )
+    );
+
+    const client = new OllamaClient("192.168.1.50");
+    await expect(client.listRunningModels()).resolves.toEqual(["deepseek-coder:6.7b", "qwen2.5-coder:7b"]);
+  });
+
   it("includes the model name when Ollama rejects a chat request", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(

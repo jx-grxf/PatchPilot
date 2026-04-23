@@ -2,10 +2,10 @@
 
 # PatchPilot
 
-**A local-first coding agent TUI for editing, testing, and preparing patches with Ollama.**
+**A local-first coding agent TUI for safe patching, guided setup, and observable runs.**
 
 [![CI](https://github.com/jx-grxf/PatchPilot/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/jx-grxf/PatchPilot/actions/workflows/ci.yml)
-![Status](https://img.shields.io/badge/status-early%20prototype-f59e0b)
+![Status](https://img.shields.io/badge/status-public%20preview-0ea5e9)
 ![TypeScript](https://img.shields.io/badge/TypeScript-5.9-3178C6?logo=typescript&logoColor=white)
 ![Node](https://img.shields.io/badge/Node.js-22%2B-339933?logo=node.js&logoColor=white)
 ![Ink](https://img.shields.io/badge/TUI-Ink-111827)
@@ -16,7 +16,7 @@
 
 PatchPilot is a terminal coding assistant designed around local models, visible tool execution, and a clean patch-oriented workflow. It starts small on purpose: one agent, one workspace boundary, explicit write and shell permissions, and an interface that makes every step observable.
 
-The project is private while it is incubating, but the repository structure, documentation, and workflow are prepared for a public open-source release.
+This repository is now prepared as a public preview: the TUI, docs, safety defaults, and GitHub workflows are set up for open development.
 
 ---
 
@@ -49,11 +49,12 @@ The project is private while it is incubating, but the repository structure, doc
 | Feature | Description |
 |---|---|
 | Local-first agent | Talks to an Ollama server running on your machine by default |
-| Gemini API provider | Can switch to Gemini through `GEMINI_API_KEY` in `.env` |
+| Guided onboarding | Dedicated setup window for provider, auth, and model selection |
+| Gemini API provider | Can switch to Gemini through `~/.patchpilot/config.env` |
 | Codex OAuth provider | Can use your ChatGPT Plus/Pro Codex CLI login through `codex exec` |
-| TUI workflow | Ink-powered terminal UI with status, transcript, provider, model, and workspace context |
+| TUI workflow | Ink-powered terminal UI with transcript, telemetry, arrow-key palette, and setup wizard |
 | Workspace boundary | File tools refuse to read or write outside the selected project root |
-| Explicit permissions | Writes require `--apply`; shell execution requires `--allow-shell` |
+| Explicit permissions | Writes require `--apply`; shell execution requires `--allow-shell` and stays on a restricted single-command runner |
 | Runtime telemetry | Header shows CPU, memory, GPU, VRAM, temperature, power, live prompt tokens, request tokens, cache hits, estimated session cost, generation speed, and latency |
 | Remote Ollama | `/connect` scans the LAN and only lists hosts that answer Ollama's `/api/version` endpoint |
 | Compute target awareness | The TUI marks Ollama as local/remote and Gemini/Codex as cloud inference |
@@ -97,7 +98,7 @@ The first target is a practical developer workflow: open a repository, describe 
 - npm 10 or newer
 - Git
 - Ollama for local or remote model execution, a Gemini API key, or Codex CLI login
-- A pulled local model, for example `qwen2.5-coder:7b`, `GEMINI_API_KEY` in `.env`, or `codex login`
+- A pulled local model, for example `qwen2.5-coder:7b`, PatchPilot config in `~/.patchpilot/config.env`, or `codex login`
 
 ---
 
@@ -115,13 +116,13 @@ Start Ollama and pull a model:
 ollama pull qwen2.5-coder:7b
 ```
 
-Or use Gemini through `.env`:
+Or use guided setup:
 
 ```bash
-cp .env.example .env
+patchpilot
 ```
 
-Then set `GEMINI_API_KEY` in `.env`.
+Then open `/onboarding` or follow the first-run setup window. Gemini keys are stored in `~/.patchpilot/config.env`.
 
 Or use Codex OAuth through your ChatGPT plan:
 
@@ -182,17 +183,17 @@ patchpilot doctor
 
 The doctor command checks Node, Git, and the active provider. For Ollama, it checks the Ollama CLI/server and whether the selected model is pulled locally. For Gemini, it checks `GEMINI_API_KEY`, the models API, and whether the selected model is listed. For Codex, it checks the Codex CLI and your local ChatGPT OAuth login. Use `patchpilot doctor --provider codex` when testing Codex OAuth.
 
-PatchPilot caches the last model list inside the TUI session, so normal prompts do not re-query Gemini/Ollama/Codex model discovery every time. Run `/models` again when you intentionally want to refresh the visible list.
+PatchPilot caches model discovery for a short TTL inside the running TUI, so normal prompts do not re-query Gemini/Ollama/Codex model discovery every time. Run `/models` again when you intentionally want to refresh the visible list.
 
-Inside the TUI, use `/help` to see available commands. Permissions can be changed without restarting:
+Inside the TUI, use `/help` to see available commands. Slash-command discovery now behaves like a palette: type `/`, move with up/down, press Enter to run or fill the selected command. Permissions can be changed without restarting:
 
 The transcript and session sidebar have internal scroll windows. With an empty prompt, use left/right to choose the sidebar or transcript, then Page Up/Page Down to scroll and Home/End to jump.
 
 | Slash command | Description |
 |---|---|
 | `/help` | Show available commands |
-| `/` | Show command suggestions while typing |
-| `/onboarding` | Choose provider, save a Gemini API key, connect Codex OAuth, and select a model |
+| `/` | Open the interactive command palette while typing |
+| `/onboarding` | Open the guided setup window for provider, auth, and model selection |
 | `/permissions` | Show current write and shell permissions |
 | `/agents on\|off` | Enable or disable planner/reviewer advisor subagents |
 | `/provider ollama\|gemini\|codex` | Switch between Ollama, Gemini API, and Codex OAuth inference |
@@ -273,15 +274,17 @@ The scan verifies `GET /api/version`, so it does not list random local interface
 PatchPilot is designed to make local execution boring in the best way:
 
 - File access is constrained to a single workspace root.
+- Secret-like files such as `.env`, `.npmrc`, SSH keys, and `.netrc` are blocked from normal file tools.
 - Write tools are disabled unless `--apply` is set.
 - Shell tools are disabled unless `--allow-shell` is set.
-- Shell commands run with timeouts.
-- Tool output is fed back into the agent instead of hidden from the user.
+- Shell commands are restricted to simple single commands with blocked metacharacters, interpreters, absolute paths, and `..` traversal.
+- Provider config is stored in `~/.patchpilot/config.env`, not in the current repository by default.
+- Tool output is fed back into the agent in clipped form instead of hidden from the user.
 - The TUI surfaces CPU, memory, GPU utilization, VRAM, temperature, power draw, live prompt tokens, token counts, Codex cache hits, estimated session cost, token throughput, and request latency.
 
 Codex OAuth runs `codex exec --json` and reads the CLI's `turn.completed.usage` event, including cached input tokens. Session cost is an estimate based on public API token pricing where available; actual ChatGPT-plan quota behavior is controlled by Codex/ChatGPT plan limits.
 
-This does not make local agents harmless. Review diffs before committing, especially when using small local models.
+This does not make local or cloud-backed agents harmless. Review diffs before committing, and do not point remote providers at repositories containing secrets you would not intentionally send off-box.
 
 ## Development
 
@@ -302,6 +305,8 @@ Run tests:
 ```bash
 npm test
 ```
+
+If Vitest fails locally because a native optional dependency was installed incorrectly, run `npm ci` again before debugging PatchPilot itself.
 
 Build:
 

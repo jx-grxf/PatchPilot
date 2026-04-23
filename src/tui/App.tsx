@@ -18,7 +18,7 @@ import { Sidebar } from "./components/Sidebar.js";
 import { Transcript } from "./components/Transcript.js";
 import { filterSlashCommands, formatCommandDetail } from "./commands.js";
 import { formatCost, formatOllamaHost, formatSessionTokens, formatTokens, normalizeModelAlias, readToggle } from "./format.js";
-import { checkOllamaHost, discoverOllamaHosts, normalizeOllamaUrl, type OllamaHost } from "./hosts.js";
+import { checkOllamaHost, discoverOllamaHosts, normalizeOllamaUrl, readOllamaHostDetails, type OllamaHost, type OllamaHostDetails } from "./hosts.js";
 import { readGpuStats, readSystemStats, type GpuStats, type SystemStats } from "./systemStats.js";
 import { maxTranscriptLines, type AdvisorNote, type AgentMode, type LogLine } from "./types.js";
 
@@ -43,6 +43,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   const [sessionTelemetry, setSessionTelemetry] = useState<SessionTelemetry>(() => emptySessionTelemetry());
   const [systemStats, setSystemStats] = useState<SystemStats>(() => readSystemStats().stats);
   const [gpuStats, setGpuStats] = useState<GpuStats | null>(null);
+  const [activeHost, setActiveHost] = useState<OllamaHostDetails | null>(null);
   const [agentMode, setAgentMode] = useState<AgentMode>(props.allowWrite || props.allowShell ? "build" : "plan");
   const [hostOptions, setHostOptions] = useState<OllamaHost[]>([]);
   const [modelOptions, setModelOptions] = useState<string[]>([]);
@@ -674,6 +675,41 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
     };
   }, []);
 
+  useEffect(() => {
+    let isMounted = true;
+
+    async function updateActiveHost(): Promise<void> {
+      if (settings.provider !== "ollama") {
+        if (isMounted) {
+          setActiveHost(null);
+        }
+        return;
+      }
+
+      const host = await checkOllamaHost(settings.ollamaUrl, {
+        label: "current",
+        source: "current",
+        timeoutMs: 500
+      });
+      if (!host) {
+        if (isMounted) {
+          setActiveHost(null);
+        }
+        return;
+      }
+
+      const details = await readOllamaHostDetails(host).catch(() => null);
+      if (isMounted) {
+        setActiveHost(details);
+      }
+    }
+
+    void updateActiveHost();
+    return () => {
+      isMounted = false;
+    };
+  }, [settings.ollamaUrl, settings.provider]);
+
   return (
     <Box flexDirection="column" paddingX={1}>
       <Header
@@ -691,6 +727,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         draftTokens={draftTokens}
         systemStats={systemStats}
         gpuStats={gpuStats}
+        activeHost={activeHost}
       />
 
       {onboarding ? (
@@ -733,6 +770,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
             scrollOffset={sessionScrollOffset}
             advisors={advisorNotes}
             isActive={activeScrollPane === "session"}
+            activeHost={activeHost}
           />
           <Box flexDirection="column" flexGrow={1}>
             <Transcript

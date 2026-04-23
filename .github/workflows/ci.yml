@@ -6,9 +6,20 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   verify:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [22, 24]
 
     steps:
       - name: Checkout
@@ -17,7 +28,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v5
         with:
-          node-version: 24
+          node-version: ${{ matrix.node-version }}
           cache: npm
 
       - name: Install dependencies
@@ -31,3 +42,11 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      - name: Audit production dependencies
+        if: matrix.node-version == 24
+        run: npm audit --audit-level=high
+
+      - name: Verify package contents
+        if: matrix.node-version == 24
+        run: npm pack --dry-run

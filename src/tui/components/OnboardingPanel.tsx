@@ -103,7 +103,7 @@ export function OnboardingPanel(props: {
       {modelState ? (
         <SelectionList
           title={`Choose a ${modelState.provider} model`}
-          subtitle="Use up/down and Enter. Left arrow goes back."
+          subtitle="Use up/down and Enter. Escape goes back."
           rows={modelState.models.map((model) => ({
             label: model,
             description: model === modelState.models[props.selectedIndex] ? "selected" : "available"

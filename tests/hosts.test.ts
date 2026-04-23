@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { getOllamaHostCandidates, normalizeOllamaUrl } from "../src/tui/hosts.js";
+import { classifyOllamaHost, getOllamaHostCandidates, normalizeOllamaUrl } from "../src/tui/hosts.js";
 
 describe("normalizeOllamaUrl", () => {
   it("normalizes local aliases", () => {
@@ -21,5 +21,11 @@ describe("normalizeOllamaUrl", () => {
 
   it("keeps candidate suggestions to explicit hosts", () => {
     expect(getOllamaHostCandidates("http://192.168.1.50:11434").every((host) => !host.label.startsWith("lan-"))).toBe(true);
+  });
+
+  it("classifies Tailscale hosts separately from LAN hosts", () => {
+    expect(classifyOllamaHost("http://100.88.10.2:11434")).toBe("tailscale");
+    expect(classifyOllamaHost("http://builder.example.ts.net:11434")).toBe("tailscale");
+    expect(classifyOllamaHost("http://192.168.1.50:11434")).toBe("lan");
   });
 });

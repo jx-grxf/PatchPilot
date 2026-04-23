@@ -1,56 +1,106 @@
+import { execFile } from "node:child_process";
 import { networkInterfaces } from "node:os";
-import { defaultOllamaPort, defaultOllamaUrl, normalizeOllamaBaseUrl } from "../core/ollama.js";
+import { promisify } from "node:util";
+import { OllamaClient, defaultOllamaPort, defaultOllamaUrl, normalizeOllamaBaseUrl } from "../core/ollama.js";
+
+const execFileAsync = promisify(execFile);
+const hostDiscoveryCacheTtlMs = 20_000;
+const hostDetailsCacheTtlMs = 15_000;
+
+type TailscalePeer = {
+  DNSName?: unknown;
+  HostName?: unknown;
+  TailscaleIPs?: unknown;
+  OS?: unknown;
+  Online?: unknown;
+};
+
+type TailscaleStatusResponse = {
+  Peer?: Record<string, TailscalePeer>;
+};
+
+export type OllamaHostKind = "local" | "lan" | "tailscale" | "manual";
+export type OllamaHostSource = "default" | "env" | "current" | "discovered" | "tailscale" | "manual";
 
 export type OllamaHost = {
   label: string;
+  deviceName: string;
+  hostname: string;
   url: string;
-  source: "default" | "env" | "current" | "discovered";
+  source: OllamaHostSource;
+  kind: OllamaHostKind;
   version?: string;
+  os?: string;
+  tailscaleName?: string;
+  address?: string;
 };
+
+export type OllamaHostDetails = {
+  host: OllamaHost;
+  models: string[];
+  runningModels: string[];
+  fetchedAt: number;
+};
+
+let lastDiscoveryCache: {
+  currentUrl: string;
+  expiresAt: number;
+  hosts: OllamaHost[];
+} | null = null;
+
+const hostDetailsCache = new Map<string, { expiresAt: number; details: OllamaHostDetails }>();
 
 export function getOllamaHostCandidates(currentUrl: string): OllamaHost[] {
   const hosts: OllamaHost[] = [];
 
-  hosts.push({
-    label: "local",
-    url: defaultOllamaUrl,
-    source: "default"
-  });
+  hosts.push(buildHostCandidate(defaultOllamaUrl, { label: "local", source: "default" }));
 
   const envHost = process.env.PATCHPILOT_OLLAMA_URL || process.env.OLLAMA_HOST;
   if (envHost) {
-    hosts.push({
-      label: "env",
-      url: normalizeOllamaUrl(envHost),
-      source: "env"
-    });
+    hosts.push(buildHostCandidate(envHost, { label: "env", source: "env" }));
   }
 
   if (currentUrl && normalizeOllamaUrl(currentUrl) !== defaultOllamaUrl) {
-    hosts.push({
-      label: "current",
-      url: normalizeOllamaUrl(currentUrl),
-      source: "current"
-    });
+    hosts.push(buildHostCandidate(currentUrl, { label: "current", source: "current" }));
   }
 
   return dedupeHosts(hosts);
 }
 
-export async function discoverOllamaHosts(currentUrl: string): Promise<OllamaHost[]> {
-  const candidates = getOllamaHostCandidates(currentUrl);
-  const verifiedCandidates = await runPool(candidates, 8, async (candidate) =>
-    checkOllamaHost(candidate.url, {
-      label: candidate.label,
-      source: candidate.source,
-      timeoutMs: 350
-    })
-  );
-  const discoveredHosts = await scanLanOllamaHosts();
-  return dedupeHosts([
-    ...verifiedCandidates.filter((host): host is OllamaHost => host !== null),
-    ...discoveredHosts
+export async function discoverOllamaHosts(
+  currentUrl: string,
+  options: {
+    refresh?: boolean;
+  } = {}
+): Promise<OllamaHost[]> {
+  const normalizedCurrentUrl = normalizeOllamaUrl(currentUrl || defaultOllamaUrl);
+  if (!options.refresh && lastDiscoveryCache && lastDiscoveryCache.currentUrl === normalizedCurrentUrl && lastDiscoveryCache.expiresAt > Date.now()) {
+    return lastDiscoveryCache.hosts;
+  }
+
+  const candidates = getOllamaHostCandidates(normalizedCurrentUrl);
+  const [verifiedCandidates, discoveredLanHosts, discoveredTailscaleHosts] = await Promise.all([
+    runPool(candidates, 8, (candidate) =>
+      checkOllamaHost(candidate.url, {
+        ...candidate,
+        timeoutMs: 350
+      })
+    ),
+    scanLanOllamaHosts(),
+    discoverTailscaleOllamaHosts()
   ]);
+
+  const hosts = dedupeHosts([
+    ...verifiedCandidates.filter((host): host is OllamaHost => host !== null),
+    ...discoveredTailscaleHosts,
+    ...discoveredLanHosts
+  ]);
+  lastDiscoveryCache = {
+    currentUrl: normalizedCurrentUrl,
+    expiresAt: Date.now() + hostDiscoveryCacheTtlMs,
+    hosts
+  };
+  return hosts;
 }
 
 export function normalizeOllamaUrl(value: string): string {
@@ -59,9 +109,7 @@ export function normalizeOllamaUrl(value: string): string {
 
 export async function checkOllamaHost(
   value: string,
-  options: {
-    label?: string;
-    source?: OllamaHost["source"];
+  options: Partial<OllamaHost> & {
     timeoutMs?: number;
   } = {}
 ): Promise<OllamaHost | null> {
@@ -86,11 +134,23 @@ export async function checkOllamaHost(
       return null;
     }
 
+    const parsedUrl = new URL(url);
+    const kind = options.kind ?? classifyOllamaHost(url);
+    const hostname = parsedUrl.hostname;
+    const deviceName = options.deviceName ?? formatDeviceName(hostname, options.tailscaleName);
+    const label = options.label ?? deviceName;
+
     return {
-      label: options.label ?? `ollama-${new URL(url).hostname}`,
+      label,
+      deviceName,
+      hostname,
       url,
-      source: options.source ?? "discovered",
-      version: body.version
+      source: options.source ?? (kind === "tailscale" ? "tailscale" : "discovered"),
+      kind,
+      version: body.version,
+      os: options.os,
+      tailscaleName: options.tailscaleName,
+      address: options.address ?? (isIpAddress(hostname) ? hostname : undefined)
     };
   } catch {
     return null;
@@ -99,12 +159,83 @@ export async function checkOllamaHost(
   }
 }
 
+export async function readOllamaHostDetails(host: OllamaHost, refresh = false): Promise<OllamaHostDetails> {
+  const cacheKey = host.url;
+  const cachedEntry = hostDetailsCache.get(cacheKey);
+  if (!refresh && cachedEntry && cachedEntry.expiresAt > Date.now()) {
+    return cachedEntry.details;
+  }
+
+  const client = new OllamaClient(host.url);
+  const [models, runningModels] = await Promise.all([
+    client.listModels(),
+    client.listRunningModels().catch(() => [])
+  ]);
+
+  const details: OllamaHostDetails = {
+    host,
+    models,
+    runningModels,
+    fetchedAt: Date.now()
+  };
+  hostDetailsCache.set(cacheKey, {
+    expiresAt: Date.now() + hostDetailsCacheTtlMs,
+    details
+  });
+  return details;
+}
+
+export function classifyOllamaHost(value: string): OllamaHostKind {
+  const normalizedUrl = normalizeOllamaUrl(value);
+  const hostname = new URL(normalizedUrl).hostname.toLowerCase();
+  if (hostname === "127.0.0.1" || hostname === "localhost" || hostname === "::1" || hostname === "[::1]") {
+    return "local";
+  }
+
+  if (isTailscaleHostname(hostname) || isTailscaleIpAddress(hostname)) {
+    return "tailscale";
+  }
+
+  if (isPrivateIpAddress(hostname)) {
+    return "lan";
+  }
+
+  return "manual";
+}
+
+function buildHostCandidate(
+  value: string,
+  options: {
+    label: string;
+    source: OllamaHostSource;
+    deviceName?: string;
+    os?: string;
+    tailscaleName?: string;
+    address?: string;
+  }
+): OllamaHost {
+  const url = normalizeOllamaUrl(value);
+  const parsedUrl = new URL(url);
+  const kind = classifyOllamaHost(url);
+  return {
+    label: options.label,
+    deviceName: options.deviceName ?? formatDeviceName(parsedUrl.hostname, options.tailscaleName),
+    hostname: parsedUrl.hostname,
+    url,
+    source: options.source,
+    kind,
+    os: options.os,
+    tailscaleName: options.tailscaleName,
+    address: options.address ?? (isIpAddress(parsedUrl.hostname) ? parsedUrl.hostname : undefined)
+  };
+}
+
 function getPrivateNetworkAddresses(): string[] {
   return Object.values(networkInterfaces())
     .flatMap((interfaces) => interfaces ?? [])
     .filter((networkInterface) => networkInterface.family === "IPv4" && !networkInterface.internal)
     .map((networkInterface) => networkInterface.address)
-    .filter(isPrivateIpAddress);
+    .filter((address) => isPrivateIpAddress(address) && !isTailscaleIpAddress(address));
 }
 
 function getPrivateNetworkPrefixes(): string[] {
@@ -123,8 +254,9 @@ async function scanLanOllamaHosts(): Promise<OllamaHost[]> {
     const urls = Array.from({ length: 254 }, (_, index) => `http://${prefix}.${index + 1}:${defaultOllamaPort}`);
     const results = await runPool(urls, 96, (url) =>
       checkOllamaHost(url, {
-        label: `ollama-${new URL(url).hostname}`,
+        label: `lan-${new URL(url).hostname}`,
         source: "discovered",
+        kind: "lan",
         timeoutMs: 180
       })
     );
@@ -134,6 +266,76 @@ async function scanLanOllamaHosts(): Promise<OllamaHost[]> {
   }
 
   return discoveredHosts;
+}
+
+async function discoverTailscaleOllamaHosts(): Promise<OllamaHost[]> {
+  const peerCandidates = await getTailscalePeerCandidates();
+  if (peerCandidates.length === 0) {
+    return [];
+  }
+
+  const results = await runPool(peerCandidates, 16, (candidate) =>
+    checkOllamaHost(candidate.url, {
+      ...candidate,
+      timeoutMs: 350
+    })
+  );
+  return dedupeHosts(results.filter((host): host is OllamaHost => host !== null));
+}
+
+async function getTailscalePeerCandidates(): Promise<OllamaHost[]> {
+  try {
+    const { stdout } = await execFileAsync("tailscale", ["status", "--json"], {
+      timeout: 1200,
+      maxBuffer: 1_000_000,
+      windowsHide: true
+    });
+    const payload = JSON.parse(stdout) as TailscaleStatusResponse;
+    const peers = Object.values(payload.Peer ?? {});
+    return dedupeHosts(
+      peers.flatMap((peer) => {
+        if (peer.Online === false) {
+          return [];
+        }
+
+        const tailscaleName = trimTailscaleName(asString(peer.DNSName));
+        const deviceName = formatDeviceName(asString(peer.HostName), tailscaleName);
+        const os = asString(peer.OS) ?? undefined;
+        const tailscaleIps = asStringArray(peer.TailscaleIPs).filter(isTailscaleIpAddress);
+        const candidates: OllamaHost[] = [];
+
+        if (tailscaleName) {
+          candidates.push(
+            buildHostCandidate(`http://${tailscaleName}:${defaultOllamaPort}`, {
+              label: deviceName,
+              source: "tailscale",
+              deviceName,
+              os,
+              tailscaleName,
+              address: tailscaleIps[0]
+            })
+          );
+        }
+
+        for (const address of tailscaleIps) {
+          candidates.push(
+            buildHostCandidate(`http://${address}:${defaultOllamaPort}`, {
+              label: deviceName,
+              source: "tailscale",
+              deviceName,
+              os,
+              tailscaleName,
+              address
+            })
+          );
+        }
+
+        return candidates;
+      })
+    );
+  } catch {
+    return [];
+  }
 }
 
 function shouldScanPrefix(prefix: string): boolean {
@@ -178,6 +380,53 @@ async function runPool<Input, Output>(
 
 function isPrivateIpAddress(address: string): boolean {
   return /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[0-1])\.)/.test(address);
+}
+
+function isTailscaleIpAddress(address: string): boolean {
+  const parts = address.split(".").map((part) => Number.parseInt(part, 10));
+  return parts.length === 4 && parts.every((part) => Number.isInteger(part) && part >= 0 && part <= 255) && parts[0] === 100 && parts[1] >= 64 && parts[1] <= 127;
+}
+
+function isTailscaleHostname(hostname: string): boolean {
+  return hostname.endsWith(".ts.net");
+}
+
+function isIpAddress(hostname: string): boolean {
+  return /^\d{1,3}(\.\d{1,3}){3}$/.test(hostname);
+}
+
+function formatDeviceName(hostname: string | null | undefined, tailscaleName?: string): string {
+  const candidate = (hostname || tailscaleName || "").trim();
+  if (!candidate) {
+    return "host";
+  }
+
+  const normalizedCandidate = trimTailscaleName(candidate) ?? candidate;
+  if (normalizedCandidate === "127.0.0.1" || normalizedCandidate === "localhost") {
+    return "local";
+  }
+
+  if (isIpAddress(normalizedCandidate)) {
+    return normalizedCandidate;
+  }
+
+  return normalizedCandidate.split(".")[0] || normalizedCandidate;
+}
+
+function trimTailscaleName(value: string | null): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+
+  return value.replace(/\.$/, "");
+}
+
+function asString(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function asStringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.map(asString).filter((entry): entry is string => entry !== null) : [];
 }
 
 function dedupeHosts(hosts: OllamaHost[]): OllamaHost[] {
