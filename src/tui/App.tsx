@@ -7,7 +7,6 @@ import { runDoctor } from "../core/doctor.js";
 import type { AgentEvent, ModelTelemetry } from "../core/types.js";
 import { filterSlashCommands, formatCommandDetail } from "./commands.js";
 import { checkOllamaHost, discoverOllamaHosts, normalizeOllamaUrl, type OllamaHost } from "./hosts.js";
-import { routeLocalConversation } from "./inputRouting.js";
 import { readGpuStats, readSystemStats, type GpuStats, type SystemStats } from "./systemStats.js";
 
 export type PatchPilotAppProps = AgentRunnerOptions & {
@@ -353,10 +352,6 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         return;
       }
 
-      if (handleLocalConversation(nextValue, appendLine)) {
-        return;
-      }
-
       await runTask(nextValue);
     },
     [appendLine, handleSlashCommand, isRunning, runTask]
@@ -368,11 +363,6 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
     }
 
     didRunInitialTask.current = true;
-    if (handleLocalConversation(props.initialTask, appendLine)) {
-      setInput("");
-      return;
-    }
-
     void runTask(props.initialTask);
   }, [appendLine, props.initialTask, runTask]);
 
@@ -887,23 +877,4 @@ function shortenMiddle(value: string, maxLength: number): string {
   const left = Math.ceil(keep / 2);
   const right = Math.floor(keep / 2);
   return `${value.slice(0, left)}...${value.slice(value.length - right)}`;
-}
-
-function handleLocalConversation(task: string, appendLine: (line: Omit<LogLine, "id">) => void): boolean {
-  const route = routeLocalConversation(task);
-  if (route.handled) {
-    appendLine({
-      tone: "normal",
-      label: "you",
-      text: task
-    });
-    appendLine({
-      tone: route.tone,
-      label: "pilot",
-      text: route.message
-    });
-    return true;
-  }
-
-  return false;
 }
