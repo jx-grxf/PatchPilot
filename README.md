@@ -186,6 +186,8 @@ PatchPilot caches the last model list inside the TUI session, so normal prompts 
 
 Inside the TUI, use `/help` to see available commands. Permissions can be changed without restarting:
 
+The transcript and session sidebar have internal scroll windows. With an empty prompt, use left/right to choose the sidebar or transcript, then Page Up/Page Down to scroll and Home/End to jump.
+
 | Slash command | Description |
 |---|---|
 | `/help` | Show available commands |

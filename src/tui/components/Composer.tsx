@@ -25,10 +25,12 @@ export function Composer(props: {
   );
 }
 
-export function FooterHints(): React.ReactElement {
+export function FooterHints(props: { activePane: "transcript" | "session" }): React.ReactElement {
   return (
     <Box marginTop={1}>
-      <Text color="gray">tab mode  |  /models model  |  /connect compute  |  /agents advisors  |  /help commands</Text>
+      <Text color="gray">
+        tab mode  |  pane {props.activePane}  |  left/right pane  |  pgup/pgdn scroll  |  /help commands
+      </Text>
     </Box>
   );
 }

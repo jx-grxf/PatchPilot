@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { Box, useApp, useInput } from "ink";
+import { Box, useApp, useInput, useStdout } from "ink";
 import { AgentRunner, type AgentRunnerOptions } from "../core/agent.js";
 import { defaultCodexModel, hasCodexCliOAuth } from "../core/codex.js";
 import { describeComputeTarget } from "../core/compute.js";
@@ -28,6 +28,7 @@ export type PatchPilotAppProps = AgentRunnerOptions & {
 
 export function App(props: PatchPilotAppProps): React.ReactElement {
   const { exit } = useApp();
+  const { stdout } = useStdout();
   const [input, setInput] = useState(props.initialTask ?? "");
   const didRunInitialTask = useRef(false);
   const [lines, setLines] = useState<LogLine[]>([]);
@@ -42,6 +43,9 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   const [hostOptions, setHostOptions] = useState<OllamaHost[]>([]);
   const [modelOptions, setModelOptions] = useState<string[]>([]);
   const [onboarding, setOnboarding] = useState<OnboardingState | null>(null);
+  const [activeScrollPane, setActiveScrollPane] = useState<"transcript" | "session">("transcript");
+  const [transcriptScrollOffset, setTranscriptScrollOffset] = useState(0);
+  const [sessionScrollOffset, setSessionScrollOffset] = useState(0);
   const [settings, setSettings] = useState<AgentRunnerOptions>({
     provider: props.provider,
     model: props.model,
@@ -53,6 +57,11 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
     subagents: props.subagents
   });
   const draftTokens = estimateTokens(input);
+  const terminalRows = stdout.rows ?? 40;
+  const terminalColumns = stdout.columns ?? 120;
+  const panelHeight = Math.max(12, terminalRows - 11);
+  const transcriptWidth = Math.max(42, terminalColumns - 38);
+  const scrollStep = Math.max(4, Math.floor(panelHeight * 0.8));
 
   const appendLine = useCallback((line: Omit<LogLine, "id">) => {
     setLines((currentLines) => [
@@ -95,6 +104,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       }
 
       setInput("");
+      setTranscriptScrollOffset(0);
       setIsRunning(true);
       appendLine({
         tone: "normal",
@@ -408,6 +418,8 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           setAdvisorNotes([]);
           setTelemetry(null);
           setSessionTelemetry(emptySessionTelemetry());
+          setTranscriptScrollOffset(0);
+          setSessionScrollOffset(0);
           return;
         case "exit":
         case "quit":
@@ -458,6 +470,31 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   }, [props.initialTask, runTask]);
 
   useInput((inputValue, key) => {
+    const canUsePanelKeys = input.length === 0 || isRunning;
+    if (canUsePanelKeys && key.leftArrow) {
+      setActiveScrollPane("session");
+      return;
+    }
+
+    if (canUsePanelKeys && key.rightArrow) {
+      setActiveScrollPane("transcript");
+      return;
+    }
+
+    if (canUsePanelKeys && (key.pageUp || key.pageDown || key.home || key.end)) {
+      const setOffset = activeScrollPane === "session" ? setSessionScrollOffset : setTranscriptScrollOffset;
+      if (key.pageUp) {
+        setOffset((currentOffset) => currentOffset + scrollStep);
+      } else if (key.pageDown) {
+        setOffset((currentOffset) => Math.max(0, currentOffset - scrollStep));
+      } else if (key.home) {
+        setOffset(1_000_000);
+      } else {
+        setOffset(0);
+      }
+      return;
+    }
+
     if (!isRunning && key.tab) {
       toggleMode();
       return;
@@ -534,10 +571,18 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           telemetry={telemetry}
           sessionTelemetry={sessionTelemetry}
           draftTokens={draftTokens}
+          height={panelHeight}
+          scrollOffset={sessionScrollOffset}
           advisors={advisorNotes}
         />
         <Box flexDirection="column" flexGrow={1}>
-          <Transcript lines={lines} isRunning={isRunning} />
+          <Transcript
+            lines={lines}
+            isRunning={isRunning}
+            height={panelHeight}
+            width={transcriptWidth}
+            scrollOffset={transcriptScrollOffset}
+          />
           <Composer
             input={input}
             isRunning={isRunning}
@@ -550,7 +595,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           {!isRunning && input.startsWith("/") ? (
             <CommandSuggestions input={input} hostOptions={hostOptions} modelOptions={modelOptions} currentModel={settings.model} />
           ) : null}
-          <FooterHints />
+          <FooterHints activePane={activeScrollPane} />
         </Box>
       </Box>
     </Box>

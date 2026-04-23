@@ -19,4 +19,4 @@ export type AdvisorNote = {
   message: string;
 };
 
-export const maxTranscriptLines = 22;
+export const maxTranscriptLines = 300;
