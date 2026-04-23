@@ -13,4 +13,8 @@ describe("filterSlashCommands", () => {
   it("includes build mode shortcut", () => {
     expect(filterSlashCommands("/b").map((command) => command.name)).toContain("build");
   });
+
+  it("includes subagent controls", () => {
+    expect(filterSlashCommands("/a").map((command) => command.name)).toEqual(["agents"]);
+  });
 });

@@ -16,6 +16,11 @@ export const slashCommands: SlashCommand[] = [
     description: "Show write and shell permissions."
   },
   {
+    name: "agents",
+    usage: "/agents on|off",
+    description: "Enable or disable planner/reviewer subagents."
+  },
+  {
     name: "write",
     usage: "/write on|off",
     description: "Enable or disable workspace writes."

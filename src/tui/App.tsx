@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Box, Text, useApp, useInput } from "ink";
 import TextInput from "ink-text-input";
 import { AgentRunner, type AgentRunnerOptions } from "../core/agent.js";
+import { describeComputeTarget } from "../core/compute.js";
 import { runDoctor } from "../core/doctor.js";
 import type { AgentEvent, ModelTelemetry } from "../core/types.js";
 import { filterSlashCommands, formatCommandDetail } from "./commands.js";
@@ -41,7 +42,8 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
     workspace: props.workspace,
     allowWrite: props.allowWrite,
     allowShell: props.allowShell,
-    maxSteps: props.maxSteps
+    maxSteps: props.maxSteps,
+    subagents: props.subagents
   });
   const runner = useMemo(() => new AgentRunner(settings), [settings]);
 
@@ -74,6 +76,10 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           if (event.type === "metrics") {
             setTelemetry(event.metrics);
             continue;
+          }
+
+          if (event.type === "subagent") {
+            setTelemetry(event.metrics);
           }
 
           setStatus(eventToStatus(event));
@@ -139,9 +145,23 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           appendLine({
             tone: "accent",
             label: "permissions",
-            text: `write ${settings.allowWrite ? "on" : "off"} | shell ${settings.allowShell ? "on" : "off"}`
+            text: `write ${settings.allowWrite ? "on" : "off"} | shell ${settings.allowShell ? "on" : "off"} | subagents ${settings.subagents ? "on" : "off"}`
           });
           return;
+        case "agents":
+        case "subagents": {
+          const subagentsEnabled = readToggle(args[0], !settings.subagents);
+          setSettings((currentSettings) => ({
+            ...currentSettings,
+            subagents: readToggle(args[0], !currentSettings.subagents)
+          }));
+          appendLine({
+            tone: "success",
+            label: "agents",
+            text: `planner/reviewer subagents ${subagentsEnabled ? "enabled" : "disabled"}`
+          });
+          return;
+        }
         case "write":
         case "apply":
           if (readToggle(args[0], !settings.allowWrite)) {
@@ -197,7 +217,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           appendLine({
             tone: "accent",
             label: "status",
-            text: `model ${settings.model} | host ${settings.ollamaUrl} | write ${settings.allowWrite ? "on" : "off"} | shell ${settings.allowShell ? "on" : "off"} | ${formatTokens(telemetry)}`
+            text: `model ${settings.model} | host ${settings.ollamaUrl} | compute ${describeComputeTarget(settings.ollamaUrl).kind} | agents ${settings.subagents ? "on" : "off"} | write ${settings.allowWrite ? "on" : "off"} | shell ${settings.allowShell ? "on" : "off"} | ${formatTokens(telemetry)}`
           });
           return;
         case "connect":
@@ -405,6 +425,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         allowWrite={settings.allowWrite}
         allowShell={settings.allowShell}
         agentMode={agentMode}
+        subagents={settings.subagents}
         ollamaUrl={settings.ollamaUrl}
         telemetry={telemetry}
         systemStats={systemStats}
@@ -431,7 +452,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       {!isRunning && input.startsWith("/") ? <CommandSuggestions input={input} hostOptions={hostOptions} /> : null}
 
       <Box marginTop={1}>
-        <Text color="gray">type / for commands  |  /connect scans or switches Ollama hosts  |  /write on enables edits  |  /exit quits</Text>
+        <Text color="gray">type / for commands  |  /connect switches compute  |  /agents toggles subagents  |  /exit quits</Text>
       </Box>
     </Box>
   );
@@ -444,11 +465,14 @@ function Header(props: {
   allowWrite: boolean;
   allowShell: boolean;
   agentMode: AgentMode;
+  subagents: boolean;
   ollamaUrl: string;
   telemetry: ModelTelemetry | null;
   systemStats: SystemStats;
   gpuStats: GpuStats | null;
 }): React.ReactElement {
+  const computeTarget = describeComputeTarget(props.ollamaUrl);
+
   return (
     <Box borderStyle="round" borderColor="cyan" flexDirection="column" marginBottom={1} paddingX={1}>
       <Box justifyContent="space-between">
@@ -467,7 +491,9 @@ function Header(props: {
           items={[
             ["model", shortenMiddle(props.model, 26), "green"],
             ["host", shortenMiddle(formatOllamaHost(props.ollamaUrl), 24), "cyan"],
+            ["compute", computeTarget.kind, computeTarget.kind === "remote" ? "yellow" : "green"],
             ["mode", props.agentMode, props.agentMode === "build" ? "yellow" : "green"],
+            ["agents", props.subagents ? "on" : "off", props.subagents ? "cyan" : "gray"],
             ["write", props.allowWrite ? "on" : "off", props.allowWrite ? "green" : "red"],
             ["shell", props.allowShell ? "on" : "off", props.allowShell ? "green" : "red"]
           ]}
@@ -614,6 +640,12 @@ function eventToLine(event: AgentEvent): Omit<LogLine, "id"> {
         label: "pilot",
         text: event.message
       };
+    case "subagent":
+      return {
+        tone: "accent",
+        label: event.role,
+        text: event.message
+      };
     case "tool":
       return {
         tone: event.ok ? "success" : "warning",
@@ -648,6 +680,10 @@ function eventToStatus(event: AgentEvent): string {
 
   if (event.type === "tool") {
     return `${event.name}: ${event.summary}`;
+  }
+
+  if (event.type === "subagent") {
+    return `${event.role} subagent`;
   }
 
   return event.type;

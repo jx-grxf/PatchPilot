@@ -54,6 +54,8 @@ The project is private while it is incubating, but the repository structure, doc
 | Explicit permissions | Writes require `--apply`; shell execution requires `--allow-shell` |
 | Runtime telemetry | Header shows CPU, memory, GPU, VRAM, temperature, power, request tokens, generation speed, and latency |
 | Remote Ollama | `/connect` scans the LAN and only lists hosts that answer Ollama's `/api/version` endpoint |
+| Compute target awareness | The TUI marks Ollama as local or remote so it is clear which machine runs inference |
+| Advisor subagents | Planner and reviewer subagents give the primary agent a short tactical brief before it starts |
 | Tool-visible loop | The model can list files, read files, search text, write files, and run commands |
 | JSON agent protocol | Model responses are parsed through a typed command envelope |
 | CI-ready repo | TypeScript build, tests, and GitHub Actions are included from day one |
@@ -149,6 +151,7 @@ patchpilot [task] [options]
 | `--steps <count>` | Maximum agent steps before stopping |
 | `--apply` | Allows file writes inside the workspace |
 | `--allow-shell` | Allows shell commands inside the workspace |
+| `--no-subagents` | Disables planner/reviewer advisor calls for faster local runs |
 
 Run diagnostics:
 
@@ -165,6 +168,7 @@ Inside the TUI, use `/help` to see available commands. Permissions can be change
 | `/help` | Show available commands |
 | `/` | Show command suggestions while typing |
 | `/permissions` | Show current write and shell permissions |
+| `/agents on\|off` | Enable or disable planner/reviewer advisor subagents |
 | `/mode plan` | Read-only planning mode |
 | `/mode build` | Implementation mode; writes and shell can be enabled |
 | `/plan` | Shortcut for `/mode plan` |
@@ -195,6 +199,8 @@ patchpilot
 ```
 
 PatchPilot keeps file reads, file writes, shell commands, Git, and tests on the machine where the TUI runs. Only model requests go to the selected Ollama server.
+
+When connected to a remote Ollama server, `patchpilot doctor` treats the local Ollama CLI as optional because the selected compute target is another machine. Node.js and Git are still checked locally because workspace tools still run on the client.
 
 For Apple Silicon Macs with less memory, tune the request budget before starting PatchPilot:
 
@@ -278,10 +284,10 @@ npm run build
 |---|---|
 | Patch review | Rich diff preview before writes |
 | Permissions | Interactive approve/deny prompts per risky tool call |
-| Agents | Planner, editor, reviewer, and test-runner roles |
+| Agents | Dedicated editor and test-runner roles with hard tool boundaries |
 | Memory | Repository summaries and local task state |
 | Model support | Native Ollama tool-calling when model support is reliable |
-| Distribution | Signed releases for Windows, macOS, and Linux |
+| Distribution | Tauri shell with PatchPilot CLI sidecar for signed macOS and Windows releases |
 
 ## License
 

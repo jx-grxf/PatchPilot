@@ -1,5 +1,6 @@
 import { formatParseError, parseAgentResponse } from "./json.js";
 import { OllamaClient } from "./ollama.js";
+import { formatSubagentContext, runSubagentAdvisors } from "./subagents.js";
 import type { AgentEvent, ChatMessage } from "./types.js";
 import { WorkspaceTools } from "./workspace.js";
 
@@ -10,6 +11,7 @@ export type AgentRunnerOptions = {
   allowWrite: boolean;
   allowShell: boolean;
   maxSteps: number;
+  subagents: boolean;
 };
 
 export class AgentRunner {
@@ -28,10 +30,35 @@ export class AgentRunner {
   }
 
   async *run(task: string): AsyncGenerator<AgentEvent> {
+    let subagentContext = "";
+    if (this.options.subagents) {
+      yield {
+        type: "status",
+        message: "consulting planner and reviewer subagents"
+      };
+
+      const advice = await runSubagentAdvisors({
+        client: this.client,
+        model: this.options.model,
+        task,
+        workspaceRoot: this.tools.root
+      });
+      subagentContext = formatSubagentContext(advice);
+
+      for (const item of advice) {
+        yield {
+          type: "subagent",
+          role: item.role,
+          message: item.message,
+          metrics: item.telemetry
+        };
+      }
+    }
+
     const messages: ChatMessage[] = [
       {
         role: "system",
-        content: buildSystemPrompt(this.tools.root)
+        content: buildSystemPrompt(this.tools.root, subagentContext)
       },
       {
         role: "user",
@@ -124,7 +151,7 @@ export class AgentRunner {
   }
 }
 
-function buildSystemPrompt(workspaceRoot: string): string {
+function buildSystemPrompt(workspaceRoot: string, subagentContext: string): string {
   return [
     "You are PatchPilot, a local coding agent running inside a terminal TUI.",
     "You help inspect, edit, test, and explain code inside one workspace.",
@@ -134,6 +161,15 @@ function buildSystemPrompt(workspaceRoot: string): string {
     "Never pass placeholder examples like relative/path, path/to/file, or <path> as tool arguments.",
     "For repository summaries, inspect README.md, package.json, and top-level source files before answering.",
     `Workspace root: ${workspaceRoot}`,
+    subagentContext
+      ? [
+          "",
+          "Advisory subagent context:",
+          subagentContext,
+          "",
+          "Use this guidance as a starting point, but verify with tools before changing code."
+        ].join("\n")
+      : "",
     "",
     "Return only JSON. Do not use Markdown outside JSON.",
     "Return exactly one JSON object. Never return a JSON array.",

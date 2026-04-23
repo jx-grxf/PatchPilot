@@ -28,6 +28,8 @@ export type AgentResponse =
       message: string;
     };
 
+export type SubagentRole = "planner" | "reviewer";
+
 export type AgentEvent =
   | {
       type: "status";
@@ -40,6 +42,12 @@ export type AgentEvent =
   | {
       type: "assistant";
       message: string;
+    }
+  | {
+      type: "subagent";
+      role: SubagentRole;
+      message: string;
+      metrics: ModelTelemetry;
     }
   | {
       type: "tool";

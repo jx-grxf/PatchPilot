@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { describeComputeTarget } from "./compute.js";
 import { OllamaClient } from "./ollama.js";
 
 export type DoctorResult = {
@@ -12,14 +13,24 @@ export async function runDoctor(ollamaUrl: string, model?: string): Promise<Doct
 
   results.push(await checkCommand("node", ["--version"]));
   results.push(await checkCommand("git", ["--version"]));
-  results.push(
-    await checkCommand(
-      "ollama",
-      ["--version"],
-      "ollama-cli",
-      "Install Ollama and ensure the ollama CLI is available on PATH."
-    )
-  );
+
+  const computeTarget = describeComputeTarget(ollamaUrl);
+  if (computeTarget.kind === "local") {
+    results.push(
+      await checkCommand(
+        "ollama",
+        ["--version"],
+        "ollama-cli",
+        "Install Ollama and ensure the ollama CLI is available on PATH."
+      )
+    );
+  } else {
+    results.push({
+      name: "ollama-cli",
+      ok: true,
+      details: `not required locally while using ${computeTarget.label}`
+    });
+  }
 
   const ollama = new OllamaClient(ollamaUrl);
   try {
