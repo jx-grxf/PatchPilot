@@ -111,6 +111,35 @@ describe("OllamaClient", () => {
       })
     );
   });
+
+  it("includes the model name when Ollama rejects a chat request", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          error: "model not found"
+        }),
+        {
+          status: 404,
+          headers: {
+            "Content-Type": "application/json"
+          }
+        }
+      )
+    );
+
+    const client = new OllamaClient();
+    await expect(
+      client.chat({
+        model: "missing:model",
+        messages: [
+          {
+            role: "user",
+            content: "hello"
+          }
+        ]
+      })
+    ).rejects.toThrow('Ollama chat failed for model "missing:model"');
+  });
 });
 
 describe("Ollama URL config", () => {

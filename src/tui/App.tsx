@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Box, Text, useApp, useInput } from "ink";
 import TextInput from "ink-text-input";
 import { AgentRunner, type AgentRunnerOptions } from "../core/agent.js";
@@ -46,7 +46,6 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
     maxSteps: props.maxSteps,
     subagents: props.subagents
   });
-  const runner = useMemo(() => new AgentRunner(settings), [settings]);
 
   const appendLine = useCallback((line: Omit<LogLine, "id">) => {
     setLines((currentLines) => [
@@ -73,7 +72,13 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       });
 
       try {
-        for await (const event of runner.run(task)) {
+        const runnableSettings = await resolveRunnableSettings(settings, appendLine, setModelOptions);
+        if (!runnableSettings) {
+          return;
+        }
+
+        const taskRunner = new AgentRunner(runnableSettings);
+        for await (const event of taskRunner.run(task)) {
           if (event.type === "metrics") {
             setTelemetry(event.metrics);
             continue;
@@ -97,7 +102,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         setIsRunning(false);
       }
     },
-    [appendLine, isRunning, runner, settings.ollamaUrl]
+    [appendLine, isRunning, settings]
   );
 
   const handleSlashCommand = useCallback(
@@ -204,6 +209,32 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
             return;
           }
 
+          const installedModels = await loadInstalledModels(settings.ollamaUrl, setModelOptions).catch((error: unknown) => {
+            appendLine({
+              tone: "danger",
+              label: "models",
+              text: error instanceof Error ? error.message : String(error)
+            });
+            return null;
+          });
+          if (!installedModels) {
+            return;
+          }
+
+          if (!installedModels.includes(nextModel)) {
+            appendLine({
+              tone: "warning",
+              label: "model",
+              text: `${nextModel} is not installed on ${formatOllamaHost(settings.ollamaUrl)}.`,
+              detail:
+                installedModels.length > 0
+                  ? `Use /models and pick one of:\n${formatModelOptions(installedModels, settings.model)}`
+                  : "Pull a model first, for example: ollama pull qwen2.5-coder:7b"
+            });
+            return;
+          }
+
+          setTelemetry(null);
           setSettings((currentSettings) => ({
             ...currentSettings,
             model: nextModel
@@ -219,7 +250,29 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           const requestedModel = args.join(" ").trim();
           if (requestedModel) {
             const modelIndex = Number.parseInt(requestedModel, 10);
-            const selectedModel = Number.isInteger(modelIndex) ? modelOptions[modelIndex - 1] : undefined;
+            let installedModels: string[];
+            try {
+              installedModels =
+                modelOptions.length > 0 ? modelOptions : await loadInstalledModels(settings.ollamaUrl, setModelOptions);
+            } catch (error) {
+              appendLine({
+                tone: "danger",
+                label: "models",
+                text: error instanceof Error ? error.message : String(error)
+              });
+              return;
+            }
+            const selectedModel = Number.isInteger(modelIndex) ? installedModels[modelIndex - 1] : undefined;
+            if (Number.isInteger(modelIndex) && !selectedModel) {
+              appendLine({
+                tone: "warning",
+                label: "models",
+                text: `No installed model at index ${modelIndex}.`,
+                detail: installedModels.length > 0 ? formatModelOptions(installedModels, settings.model) : "No models installed."
+              });
+              return;
+            }
+
             const nextModel = selectedModel ?? normalizeModelAlias(requestedModel);
 
             if (!nextModel) {
@@ -227,6 +280,16 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
                 tone: "warning",
                 label: "models",
                 text: "No model selected. Use /models to list installed models, then /models 1."
+              });
+              return;
+            }
+
+            if (!installedModels.includes(nextModel)) {
+              appendLine({
+                tone: "warning",
+                label: "models",
+                text: `${nextModel} is not installed on ${formatOllamaHost(settings.ollamaUrl)}.`,
+                detail: installedModels.length > 0 ? formatModelOptions(installedModels, settings.model) : "No models installed."
               });
               return;
             }
@@ -251,8 +314,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           });
 
           try {
-            const models = await new OllamaClient(settings.ollamaUrl).listModels();
-            setModelOptions(models);
+            const models = await loadInstalledModels(settings.ollamaUrl, setModelOptions);
             if (models.length === 0) {
               appendLine({
                 tone: "warning",
@@ -508,10 +570,52 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       {!isRunning && input.startsWith("/") ? <CommandSuggestions input={input} hostOptions={hostOptions} modelOptions={modelOptions} currentModel={settings.model} /> : null}
 
       <Box marginTop={1}>
-        <Text color="gray">type / for commands  |  /connect switches compute  |  /agents toggles subagents  |  /exit quits</Text>
+        <Text color="gray">/models pick model  |  /connect switch compute  |  /agents toggle advisors  |  /help commands</Text>
       </Box>
     </Box>
   );
+}
+
+async function loadInstalledModels(
+  ollamaUrl: string,
+  setModelOptions: React.Dispatch<React.SetStateAction<string[]>>
+): Promise<string[]> {
+  const models = await new OllamaClient(ollamaUrl).listModels();
+  setModelOptions(models);
+  return models;
+}
+
+async function resolveRunnableSettings(
+  settings: AgentRunnerOptions,
+  appendLine: (line: Omit<LogLine, "id">) => void,
+  setModelOptions: React.Dispatch<React.SetStateAction<string[]>>
+): Promise<AgentRunnerOptions | null> {
+  let installedModels: string[];
+  try {
+    installedModels = await loadInstalledModels(settings.ollamaUrl, setModelOptions);
+  } catch (error) {
+    appendLine({
+      tone: "danger",
+      label: "ollama",
+      text: error instanceof Error ? error.message : String(error)
+    });
+    return null;
+  }
+
+  if (installedModels.includes(settings.model)) {
+    return settings;
+  }
+
+  appendLine({
+    tone: "warning",
+    label: "model",
+    text: `${settings.model} is not installed on ${formatOllamaHost(settings.ollamaUrl)}.`,
+    detail:
+      installedModels.length > 0
+        ? `Pick an installed model first:\n${formatModelOptions(installedModels, settings.model)}`
+        : "No models installed. Pull one first, for example: ollama pull qwen2.5-coder:7b"
+  });
+  return null;
 }
 
 function Header(props: {
@@ -528,28 +632,33 @@ function Header(props: {
   gpuStats: GpuStats | null;
 }): React.ReactElement {
   const computeTarget = describeComputeTarget(props.ollamaUrl);
+  const memoryColor = usageColor(props.systemStats.memoryPercent);
+  const modelHint = getModelHint(props.model);
 
   return (
-    <Box borderStyle="round" borderColor="cyan" flexDirection="column" marginBottom={1} paddingX={1}>
+    <Box borderStyle="round" borderColor={props.status === "idle" ? "cyan" : "yellow"} flexDirection="column" marginBottom={1} paddingX={1}>
       <Box justifyContent="space-between">
-        <Box>
+        <Box flexDirection="column">
           <Text color="cyan" bold>
             PatchPilot
+            <Text color="gray">  local-first coding agent</Text>
           </Text>
-          <Text color="gray"> local coding agent</Text>
+          <Text color={modelHint.color} wrap="truncate">
+            {modelHint.text}
+          </Text>
         </Box>
         <Text color={props.status === "idle" ? "gray" : "yellow"} wrap="truncate">
-          {shortenMiddle(props.status, 32)}
+          {shortenMiddle(props.status, 40)}
         </Text>
       </Box>
-      <Box flexDirection="column" marginTop={1}>
+      <Box flexDirection="column">
         <HeaderMetricLine
           items={[
-            ["model", shortenMiddle(props.model, 26), "green"],
-            ["host", shortenMiddle(formatOllamaHost(props.ollamaUrl), 24), "cyan"],
+            ["model", shortenMiddle(props.model, 30), modelHint.color],
+            ["host", shortenMiddle(formatOllamaHost(props.ollamaUrl), 22), "cyan"],
             ["compute", computeTarget.kind, computeTarget.kind === "remote" ? "yellow" : "green"],
             ["mode", props.agentMode, props.agentMode === "build" ? "yellow" : "green"],
-            ["agents", props.subagents ? "on" : "off", props.subagents ? "cyan" : "gray"],
+            ["advisors", props.subagents ? "on" : "off", props.subagents ? "cyan" : "gray"],
             ["write", props.allowWrite ? "on" : "off", props.allowWrite ? "green" : "red"],
             ["shell", props.allowShell ? "on" : "off", props.allowShell ? "green" : "red"]
           ]}
@@ -557,7 +666,7 @@ function Header(props: {
         <HeaderMetricLine
           items={[
             ["cpu", formatPercent(props.systemStats.cpuPercent), usageColor(props.systemStats.cpuPercent)],
-            ["mem", `${props.systemStats.memoryPercent}%/${props.systemStats.usedMemoryGb}G`, usageColor(props.systemStats.memoryPercent)],
+            ["mem", `${props.systemStats.memoryPercent}%/${props.systemStats.usedMemoryGb}G`, memoryColor],
             ["gpu", formatGpuUtilization(props.gpuStats), usageColor(props.gpuStats?.utilizationPercent ?? null)],
             ["vram", formatGpuMemory(props.gpuStats), gpuMemoryColor(props.gpuStats)],
             ["temp", formatGpuTemperature(props.gpuStats), temperatureColor(props.gpuStats?.temperatureCelsius ?? null)],
@@ -573,10 +682,24 @@ function Header(props: {
         />
       </Box>
       <Text color="gray" wrap="truncate">
-        cwd {props.workspace}
+        cwd {shortenMiddle(props.workspace, 96)}
       </Text>
     </Box>
   );
+}
+
+function getModelHint(model: string): { text: string; color: "green" | "yellow" } {
+  if (/\bcoder\b|qwen.*coder|deepseek-coder|codestral|starcoder/i.test(model)) {
+    return {
+      text: "coding model ready",
+      color: "green"
+    };
+  }
+
+  return {
+    text: "general model selected; coding reliability may be weak",
+    color: "yellow"
+  };
 }
 
 function HeaderMetricLine(props: {

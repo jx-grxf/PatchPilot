@@ -31,7 +31,7 @@ export class AgentRunner {
 
   async *run(task: string): AsyncGenerator<AgentEvent> {
     let subagentContext = "";
-    if (this.options.subagents) {
+    if (this.options.subagents && shouldUseSubagents(task)) {
       yield {
         type: "status",
         message: "consulting planner and reviewer subagents"
@@ -89,8 +89,8 @@ export class AgentRunner {
         parsedResponse = parseAgentResponse(rawResponse);
       } catch (error) {
         yield {
-          type: "error",
-          message: `model response did not match protocol: ${formatParseError(error)}`
+          type: "status",
+          message: `repairing model protocol: ${formatParseError(error)}`
         };
         messages.push({
           role: "user",
@@ -149,6 +149,17 @@ export class AgentRunner {
       message: "Stopped after the configured max step count. Increase --steps if the task needs more context."
     };
   }
+}
+
+function shouldUseSubagents(task: string): boolean {
+  const normalizedTask = task.toLowerCase();
+  if (normalizedTask.trim().split(/\s+/).filter(Boolean).length < 2) {
+    return false;
+  }
+
+  return /\b(repo|repository|code|file|test|build|fix|debug|implement|refactor|review|analyze|analyse|analysiere|erklär|erklaer|such|find|install|commit|diff|patch|src|readme|typescript|swift|c)\b/.test(
+    normalizedTask
+  );
 }
 
 function buildSystemPrompt(workspaceRoot: string, subagentContext: string): string {

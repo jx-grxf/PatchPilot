@@ -72,11 +72,12 @@ export class OllamaClient {
       signal: options.signal
     });
 
+    const payload = (await readJsonSafely(response)) as OllamaChatResponse;
     if (!response.ok) {
-      throw new Error(`Ollama chat failed with HTTP ${response.status}.`);
+      const reason = payload.error ? ` ${payload.error}` : "";
+      throw new Error(`Ollama chat failed for model "${options.model}" at ${this.baseUrl}: HTTP ${response.status}.${reason}`);
     }
 
-    const payload = (await response.json()) as OllamaChatResponse;
     if (payload.error) {
       throw new Error(payload.error);
     }
@@ -103,6 +104,14 @@ export class OllamaClient {
     } catch (error) {
       throw new Error(formatOllamaConnectionError(this.baseUrl, error));
     }
+  }
+}
+
+async function readJsonSafely(response: Response): Promise<unknown> {
+  try {
+    return await response.json();
+  } catch {
+    return {};
   }
 }
 
