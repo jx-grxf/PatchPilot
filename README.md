@@ -127,7 +127,7 @@ Or use Codex OAuth through your ChatGPT plan:
 
 ```bash
 codex login
-patchpilot --provider codex --model gpt-5.3-codex
+patchpilot --provider codex --model gpt-5.4
 ```
 
 Run PatchPilot in a repository:
@@ -167,7 +167,7 @@ patchpilot [task] [options]
 |---|---|
 | `--workspace <path>` | Project root the agent may inspect |
 | `--provider <name>` | Model provider: `ollama`, `gemini`, or `codex` |
-| `--model <name>` | Model name, defaults to `qwen2.5-coder:7b`, `gemini-2.5-flash`, or `gpt-5.3-codex` |
+| `--model <name>` | Model name, defaults to `qwen2.5-coder:7b`, `gemini-2.5-flash`, or `gpt-5.4` |
 | `--ollama-url <url>` | Ollama base URL, defaults to `http://127.0.0.1:11434` |
 | `--steps <count>` | Maximum agent steps before stopping |
 | `--apply` | Allows file writes inside the workspace |

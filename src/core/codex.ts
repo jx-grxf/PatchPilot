@@ -5,17 +5,16 @@ import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import type { ModelChatOptions, ModelChatResult, ModelTelemetry } from "./types.js";
 
-export const defaultCodexModel = "gpt-5.3-codex";
+export const defaultCodexModel = "gpt-5.4";
 
 export const codexOAuthModels = [
-  "gpt-5.3-codex",
   "gpt-5.4",
   "gpt-5.2-codex",
-  "gpt-5.1-codex",
   "gpt-5.1-codex-max",
+  "gpt-5.4-mini",
+  "gpt-5.3-codex",
   "gpt-5.2",
-  "gpt-5.1-codex-mini",
-  "gpt-5.4-mini"
+  "gpt-5.1-codex-mini"
 ];
 
 export class CodexCliClient {
