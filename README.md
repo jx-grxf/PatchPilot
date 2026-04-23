@@ -211,7 +211,7 @@ Useful slash commands inside the TUI:
 |---|---|
 | `/help` | Show available commands. |
 | `/help <command>` | Explain one command, for example `/help think` or `/help model`. |
-| `/onboarding` | Open guided provider/auth/model setup. |
+| `/onboarding` | Open guided local/remote provider, auth, and model setup. |
 | `/mode plan` | Read-only planning mode. |
 | `/mode build` | Implementation mode; writes, scripts, tests, and shell require per-tool approval. |
 | `/think fixed\|adaptive` | Switch between fixed and adaptive step budgets. |
@@ -324,6 +324,8 @@ OpenRouter `:free` models are rate-limited by OpenRouter. PatchPilot warns when 
 
 PatchPilot can run the TUI and workspace tools on one machine while sending model requests to Ollama on another machine. This is useful when your desktop has the GPU and your laptop is where you edit code.
 
+The guided setup can choose between `This Device` and `Remote Host`. Remote host setup checks LAN and Tailscale candidates first, then fetches the selected host's models before prompting for a model.
+
 Inside PatchPilot:
 
 ```text
@@ -332,6 +334,8 @@ Inside PatchPilot:
 /connect http://192.168.1.50:11434
 /connect local
 ```
+
+If both machines are on the same Tailscale tailnet, PatchPilot also checks Tailscale peers and MagicDNS names during `/connect` and the startup host flow. A host can be selected by Tailscale IP, MagicDNS name, or full URL.
 
 From the shell:
 
@@ -346,7 +350,7 @@ On a Windows desktop or remote host, expose Ollama on your private network:
 3. Start Ollama again.
 4. Allow inbound TCP traffic on port `11434` only on trusted private networks.
 
-PatchPilot verifies candidates with Ollama's `/api/version` endpoint before listing them. It does not move file reads, writes, Git, or test commands to the remote host; only model requests are routed there.
+PatchPilot verifies candidates with Ollama's `/api/version` endpoint before listing them. When connected, the header/sidebar switch to the selected host's device name, route, version, and model inventory instead of showing the client machine as the compute target. It does not move file reads, writes, Git, or test commands to the remote host; only model requests are routed there.
 
 For smaller local machines, reduce the request budget before starting PatchPilot:
 
