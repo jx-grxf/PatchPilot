@@ -4,6 +4,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import type { ModelChatOptions, ModelChatResult, ModelTelemetry } from "./types.js";
+import { attachTokenCost, estimateTokens } from "./tokenAccounting.js";
 
 export const defaultCodexModel = "gpt-5.4";
 
@@ -33,7 +34,7 @@ export class CodexCliClient {
 
     try {
       const prompt = buildCodexPrompt(options);
-      await runCodexExec({
+      const usage = await runCodexExec({
         model: options.model,
         workspace: this.workspace,
         prompt,
@@ -48,7 +49,9 @@ export class CodexCliClient {
       const durationMs = Date.now() - startedAt;
       return {
         content,
-        telemetry: estimateTelemetry(prompt, content, durationMs)
+        telemetry: usage
+          ? toTelemetryFromUsage(usage, durationMs, options.model)
+          : estimateTelemetry(prompt, content, durationMs, options.model)
       };
     } finally {
       await rm(tempRoot, {
@@ -90,12 +93,13 @@ function runCodexExec(options: {
   prompt: string;
   outputPath: string;
   timeoutMs: number;
-}): Promise<void> {
+}): Promise<CodexUsage | null> {
   return new Promise((resolve, reject) => {
     const child = spawn(
       "codex",
       [
         "exec",
+        "--json",
         "--model",
         options.model,
         "--sandbox",
@@ -113,17 +117,18 @@ function runCodexExec(options: {
       }
     );
 
-    let output = "";
+    let stdout = "";
+    let stderr = "";
     const timeout = setTimeout(() => {
       child.kill();
       reject(new Error(`Codex CLI timed out after ${options.timeoutMs}ms.`));
     }, options.timeoutMs);
 
     child.stdout.on("data", (chunk: Buffer) => {
-      output += chunk.toString("utf8");
+      stdout += chunk.toString("utf8");
     });
     child.stderr.on("data", (chunk: Buffer) => {
-      output += chunk.toString("utf8");
+      stderr += chunk.toString("utf8");
     });
     child.on("error", (error) => {
       clearTimeout(timeout);
@@ -132,10 +137,11 @@ function runCodexExec(options: {
     child.on("close", (exitCode) => {
       clearTimeout(timeout);
       if (exitCode === 0) {
-        resolve();
+        resolve(parseCodexUsageFromJsonl(stdout));
         return;
       }
 
+      const output = `${stdout}\n${stderr}`.trim();
       reject(new Error(`Codex CLI exited ${exitCode}. ${clip(output.trim(), 1200)}`));
     });
 
@@ -143,23 +149,78 @@ function runCodexExec(options: {
   });
 }
 
-function estimateTelemetry(prompt: string, content: string, durationMs: number): ModelTelemetry {
+type CodexUsage = {
+  input_tokens: number;
+  cached_input_tokens?: number;
+  output_tokens: number;
+};
+
+export function parseCodexUsageFromJsonl(value: string): CodexUsage | null {
+  let usage: CodexUsage | null = null;
+  for (const line of value.split(/\r?\n/)) {
+    const trimmedLine = line.trim();
+    if (!trimmedLine.startsWith("{")) {
+      continue;
+    }
+
+    const parsed = parseJsonObject(trimmedLine);
+    if (!parsed || parsed.type !== "turn.completed" || !isRecord(parsed.usage)) {
+      continue;
+    }
+
+    const inputTokens = readNonNegativeNumber(parsed.usage.input_tokens);
+    const outputTokens = readNonNegativeNumber(parsed.usage.output_tokens);
+    if (inputTokens === null || outputTokens === null) {
+      continue;
+    }
+
+    usage = {
+      input_tokens: inputTokens,
+      cached_input_tokens: readNonNegativeNumber(parsed.usage.cached_input_tokens) ?? 0,
+      output_tokens: outputTokens
+    };
+  }
+
+  return usage;
+}
+
+function toTelemetryFromUsage(usage: CodexUsage, durationMs: number, model: string): ModelTelemetry {
+  return attachTokenCost(
+    {
+      promptTokens: usage.input_tokens,
+      cachedPromptTokens: usage.cached_input_tokens ?? 0,
+      responseTokens: usage.output_tokens,
+      totalTokens: usage.input_tokens + usage.output_tokens,
+      evalTokensPerSecond: usage.output_tokens > 0 && durationMs > 0 ? usage.output_tokens / (durationMs / 1000) : null,
+      promptDurationMs: 0,
+      responseDurationMs: durationMs,
+      totalDurationMs: durationMs,
+      tokenSource: "provider"
+    },
+    "codex",
+    model
+  );
+}
+
+function estimateTelemetry(prompt: string, content: string, durationMs: number, model: string): ModelTelemetry {
   const promptTokens = estimateTokens(prompt);
   const responseTokens = estimateTokens(content);
 
-  return {
-    promptTokens,
-    responseTokens,
-    totalTokens: promptTokens + responseTokens,
-    evalTokensPerSecond: responseTokens > 0 && durationMs > 0 ? responseTokens / (durationMs / 1000) : null,
-    promptDurationMs: 0,
-    responseDurationMs: durationMs,
-    totalDurationMs: durationMs
-  };
-}
-
-function estimateTokens(value: string): number {
-  return Math.ceil(value.length / 4);
+  return attachTokenCost(
+    {
+      promptTokens,
+      cachedPromptTokens: 0,
+      responseTokens,
+      totalTokens: promptTokens + responseTokens,
+      evalTokensPerSecond: responseTokens > 0 && durationMs > 0 ? responseTokens / (durationMs / 1000) : null,
+      promptDurationMs: 0,
+      responseDurationMs: durationMs,
+      totalDurationMs: durationMs,
+      tokenSource: "estimated"
+    },
+    "codex",
+    model
+  );
 }
 
 function readCodexAuth(codexAuthPath: string): Record<string, unknown> | null {
@@ -181,6 +242,19 @@ function defaultCodexAuthPath(): string {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+function parseJsonObject(value: string): Record<string, unknown> | null {
+  try {
+    const parsed = JSON.parse(value);
+    return isRecord(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function readNonNegativeNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
 }
 
 function clip(value: string, maxLength: number): string {

@@ -1,7 +1,7 @@
 import React from "react";
 import { Box, Text } from "ink";
-import type { ModelProvider, ModelTelemetry } from "../../core/types.js";
-import { formatOllamaHost, formatTokens, shortenMiddle } from "../format.js";
+import type { ModelProvider, ModelTelemetry, SessionTelemetry } from "../../core/types.js";
+import { formatCost, formatOllamaHost, formatSessionTokens, formatTokens, shortenMiddle } from "../format.js";
 import type { AgentMode, AdvisorNote } from "../types.js";
 
 export function Sidebar(props: {
@@ -14,6 +14,8 @@ export function Sidebar(props: {
   allowShell: boolean;
   subagents: boolean;
   telemetry: ModelTelemetry | null;
+  sessionTelemetry: SessionTelemetry;
+  draftTokens: number;
   advisors: AdvisorNote[];
 }): React.ReactElement {
   return (
@@ -53,7 +55,16 @@ export function Sidebar(props: {
           Telemetry
         </Text>
         <Text color="gray" wrap="wrap">
+          draft {props.draftTokens} tok
+        </Text>
+        <Text color="gray" wrap="wrap">
           {formatTokens(props.telemetry)}
+        </Text>
+        <Text color="gray" wrap="wrap">
+          {formatSessionTokens(props.sessionTelemetry)}
+        </Text>
+        <Text color="gray" wrap="wrap">
+          {formatCost(props.sessionTelemetry.estimatedCostUsd)}
         </Text>
       </Box>
 

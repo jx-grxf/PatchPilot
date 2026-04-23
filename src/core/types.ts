@@ -91,10 +91,23 @@ export type ToolResult = {
 
 export type ModelTelemetry = {
   promptTokens: number;
+  cachedPromptTokens: number;
   responseTokens: number;
   totalTokens: number;
   evalTokensPerSecond: number | null;
   promptDurationMs: number;
   responseDurationMs: number;
   totalDurationMs: number;
+  estimatedCostUsd: number | null;
+  tokenSource: "provider" | "estimated";
+  costSource: "api-pricing" | "local" | "unknown";
+};
+
+export type SessionTelemetry = {
+  requests: number;
+  promptTokens: number;
+  cachedPromptTokens: number;
+  responseTokens: number;
+  totalTokens: number;
+  estimatedCostUsd: number | null;
 };

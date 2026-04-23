@@ -54,7 +54,7 @@ The project is private while it is incubating, but the repository structure, doc
 | TUI workflow | Ink-powered terminal UI with status, transcript, provider, model, and workspace context |
 | Workspace boundary | File tools refuse to read or write outside the selected project root |
 | Explicit permissions | Writes require `--apply`; shell execution requires `--allow-shell` |
-| Runtime telemetry | Header shows CPU, memory, GPU, VRAM, temperature, power, request tokens, generation speed, and latency |
+| Runtime telemetry | Header shows CPU, memory, GPU, VRAM, temperature, power, live prompt tokens, request tokens, cache hits, estimated session cost, generation speed, and latency |
 | Remote Ollama | `/connect` scans the LAN and only lists hosts that answer Ollama's `/api/version` endpoint |
 | Compute target awareness | The TUI marks Ollama as local/remote and Gemini/Codex as cloud inference |
 | Advisor subagents | Planner and reviewer subagents give the primary agent a short tactical brief before it starts |
@@ -87,7 +87,7 @@ The first target is a practical developer workflow: open a repository, describe 
 | Runtime | Node.js 22 or newer |
 | TUI | Ink, React, ink-text-input |
 | Agent protocol | JSON command envelope validated with Zod |
-| Model providers | Ollama chat API, Gemini generateContent API, Codex CLI OAuth backend |
+| Model providers | Ollama chat API, Gemini generateContent API, Codex CLI OAuth backend with JSON usage telemetry |
 | Tests | Vitest |
 | CI | GitHub Actions |
 
@@ -182,6 +182,8 @@ patchpilot doctor
 
 The doctor command checks Node, Git, and the active provider. For Ollama, it checks the Ollama CLI/server and whether the selected model is pulled locally. For Gemini, it checks `GEMINI_API_KEY`, the models API, and whether the selected model is listed. For Codex, it checks the Codex CLI and your local ChatGPT OAuth login. Use `patchpilot doctor --provider codex` when testing Codex OAuth.
 
+PatchPilot caches the last model list inside the TUI session, so normal prompts do not re-query Gemini/Ollama/Codex model discovery every time. Run `/models` again when you intentionally want to refresh the visible list.
+
 Inside the TUI, use `/help` to see available commands. Permissions can be changed without restarting:
 
 | Slash command | Description |
@@ -273,7 +275,9 @@ PatchPilot is designed to make local execution boring in the best way:
 - Shell tools are disabled unless `--allow-shell` is set.
 - Shell commands run with timeouts.
 - Tool output is fed back into the agent instead of hidden from the user.
-- The TUI surfaces CPU, memory, GPU utilization, VRAM, temperature, power draw, token counts, token throughput, and request latency.
+- The TUI surfaces CPU, memory, GPU utilization, VRAM, temperature, power draw, live prompt tokens, token counts, Codex cache hits, estimated session cost, token throughput, and request latency.
+
+Codex OAuth runs `codex exec --json` and reads the CLI's `turn.completed.usage` event, including cached input tokens. Session cost is an estimate based on public API token pricing where available; actual ChatGPT-plan quota behavior is controlled by Codex/ChatGPT plan limits.
 
 This does not make local agents harmless. Review diffs before committing, especially when using small local models.
 

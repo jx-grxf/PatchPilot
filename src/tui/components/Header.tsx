@@ -1,7 +1,7 @@
 import React from "react";
 import { Box, Text } from "ink";
 import { describeComputeTarget } from "../../core/compute.js";
-import type { ModelTelemetry } from "../../core/types.js";
+import type { ModelTelemetry, SessionTelemetry } from "../../core/types.js";
 import type { ModelProvider } from "../../core/types.js";
 import {
   formatGpuMemory,
@@ -9,7 +9,9 @@ import {
   formatGpuTemperature,
   formatGpuUtilization,
   formatLatency,
+  formatCost,
   formatOllamaHost,
+  formatSessionTokens,
   formatPercent,
   formatSpeed,
   formatTokens,
@@ -34,6 +36,8 @@ export function Header(props: {
   subagents: boolean;
   ollamaUrl: string;
   telemetry: ModelTelemetry | null;
+  sessionTelemetry: SessionTelemetry;
+  draftTokens: number;
   systemStats: SystemStats;
   gpuStats: GpuStats | null;
 }): React.ReactElement {
@@ -84,6 +88,9 @@ export function Header(props: {
         <HeaderMetricLine
           items={[
             ["tokens", shortenMiddle(formatTokens(props.telemetry), 36), "cyan"],
+            ["draft", `${props.draftTokens} tok`, props.draftTokens > 0 ? "yellow" : "gray"],
+            ["session", shortenMiddle(formatSessionTokens(props.sessionTelemetry), 34), "cyan"],
+            ["cost", formatCost(props.sessionTelemetry.estimatedCostUsd), props.sessionTelemetry.estimatedCostUsd ? "yellow" : "green"],
             ["speed", formatSpeed(props.telemetry), "cyan"],
             ["latency", formatLatency(props.telemetry), "cyan"]
           ]}

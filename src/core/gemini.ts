@@ -1,4 +1,5 @@
 import type { ChatMessage, ModelChatOptions, ModelChatResult, ModelTelemetry } from "./types.js";
+import { attachTokenCost } from "./tokenAccounting.js";
 
 export const defaultGeminiModel = "gemini-2.5-flash";
 export const defaultGeminiBaseUrl = "https://generativelanguage.googleapis.com/v1beta";
@@ -95,7 +96,7 @@ export class GeminiClient {
 
     return {
       content,
-      telemetry: toTelemetry(payload, durationMs)
+      telemetry: toTelemetry(payload, durationMs, options.model)
     };
   }
 
@@ -192,20 +193,26 @@ function stripModelPrefix(model: string): string {
   return model.startsWith("models/") ? model.slice("models/".length) : model;
 }
 
-function toTelemetry(payload: GeminiGenerateContentResponse, durationMs: number): ModelTelemetry {
+function toTelemetry(payload: GeminiGenerateContentResponse, durationMs: number, model: string): ModelTelemetry {
   const promptTokens = payload.usageMetadata?.promptTokenCount ?? 0;
   const responseTokens = payload.usageMetadata?.candidatesTokenCount ?? 0;
   const totalTokens = payload.usageMetadata?.totalTokenCount ?? promptTokens + responseTokens;
 
-  return {
-    promptTokens,
-    responseTokens,
-    totalTokens,
-    evalTokensPerSecond: responseTokens > 0 && durationMs > 0 ? responseTokens / (durationMs / 1000) : null,
-    promptDurationMs: 0,
-    responseDurationMs: durationMs,
-    totalDurationMs: durationMs
-  };
+  return attachTokenCost(
+    {
+      promptTokens,
+      cachedPromptTokens: 0,
+      responseTokens,
+      totalTokens,
+      evalTokensPerSecond: responseTokens > 0 && durationMs > 0 ? responseTokens / (durationMs / 1000) : null,
+      promptDurationMs: 0,
+      responseDurationMs: durationMs,
+      totalDurationMs: durationMs,
+      tokenSource: "provider"
+    },
+    "gemini",
+    model
+  );
 }
 
 async function readJsonSafely(response: Response): Promise<unknown> {

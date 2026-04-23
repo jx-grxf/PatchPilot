@@ -1,4 +1,4 @@
-import type { ModelTelemetry } from "../core/types.js";
+import type { ModelTelemetry, SessionTelemetry } from "../core/types.js";
 import type { GpuStats } from "./systemStats.js";
 import type { LogTone } from "./types.js";
 
@@ -41,7 +41,34 @@ export function formatTokens(telemetry: ModelTelemetry | null): string {
     return "-";
   }
 
-  return `${telemetry.promptTokens} in/${telemetry.responseTokens} out/${telemetry.totalTokens} total`;
+  const cacheSuffix = telemetry.cachedPromptTokens > 0 ? `/${telemetry.cachedPromptTokens} cached` : "";
+  const sourceSuffix = telemetry.tokenSource === "estimated" ? " est" : "";
+  return `${telemetry.promptTokens} in${cacheSuffix}/${telemetry.responseTokens} out/${telemetry.totalTokens} total${sourceSuffix}`;
+}
+
+export function formatSessionTokens(session: SessionTelemetry): string {
+  if (session.requests === 0) {
+    return "-";
+  }
+
+  const cacheSuffix = session.cachedPromptTokens > 0 ? `/${session.cachedPromptTokens} cached` : "";
+  return `${session.requests} req ${session.promptTokens} in${cacheSuffix}/${session.responseTokens} out`;
+}
+
+export function formatCost(value: number | null): string {
+  if (value === null) {
+    return "-";
+  }
+
+  if (value === 0) {
+    return "$0 local";
+  }
+
+  if (value > 0 && value < 0.0001) {
+    return "<$0.0001 est";
+  }
+
+  return `$${value.toFixed(4)} est`;
 }
 
 export function formatSpeed(telemetry: ModelTelemetry | null): string {

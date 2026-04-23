@@ -83,4 +83,8 @@ The workspace root is resolved once at startup. Every file path is resolved agai
 
 ## Telemetry
 
-PatchPilot reads Ollama's non-streaming chat metadata for prompt tokens, response tokens, total duration, and generation speed. The TUI combines those model metrics with local CPU and memory samples so users can see how much pressure a local model is putting on the machine.
+PatchPilot reads Ollama's non-streaming chat metadata for prompt tokens, response tokens, total duration, and generation speed. Gemini reads API `usageMetadata`. Codex OAuth runs `codex exec --json` and parses the `turn.completed.usage` event, including `cached_input_tokens`, so the TUI can show real Codex CLI usage instead of only character-based estimates.
+
+Model discovery is cached in the current TUI session. Prompt execution reuses the known model list when the selected model is already present, avoiding repeated Gemini model-list calls and keeping Codex/Ollama discovery off the hot path.
+
+The TUI also keeps session-level accounting: request count, prompt tokens, cached prompt tokens, output tokens, total tokens, and estimated cost where public API token pricing is known. Local Ollama cost is reported as zero; Codex OAuth cost is shown as an API-price estimate because actual ChatGPT-plan quota handling is external to PatchPilot.

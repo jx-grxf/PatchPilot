@@ -79,12 +79,16 @@ describe("GeminiClient", () => {
     expect(result.content).toBe("{\"action\":\"final\",\"message\":\"ok\"}");
     expect(result.telemetry).toEqual({
       promptTokens: 10,
+      cachedPromptTokens: 0,
       responseTokens: 5,
       totalTokens: 15,
       evalTokensPerSecond: 10,
       promptDurationMs: 0,
       responseDurationMs: 500,
-      totalDurationMs: 500
+      totalDurationMs: 500,
+      estimatedCostUsd: null,
+      tokenSource: "provider",
+      costSource: "unknown"
     });
   });
 

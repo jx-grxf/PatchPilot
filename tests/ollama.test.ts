@@ -61,12 +61,16 @@ describe("OllamaClient", () => {
     expect(result.content).toBe("{\"action\":\"final\",\"message\":\"ok\"}");
     expect(result.telemetry).toEqual({
       promptTokens: 12,
+      cachedPromptTokens: 0,
       responseTokens: 8,
       totalTokens: 20,
       evalTokensPerSecond: 20,
       promptDurationMs: 200,
       responseDurationMs: 400,
-      totalDurationMs: 700
+      totalDurationMs: 700,
+      estimatedCostUsd: 0,
+      tokenSource: "provider",
+      costSource: "local"
     });
   });
 

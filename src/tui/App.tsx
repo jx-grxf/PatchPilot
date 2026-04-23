@@ -8,7 +8,8 @@ import { defaultGeminiModel } from "../core/gemini.js";
 import { saveDotEnvValues } from "../core/env.js";
 import { createModelClient } from "../core/modelClient.js";
 import { defaultOllamaModel } from "../core/ollama.js";
-import type { AgentEvent, ModelProvider, ModelTelemetry } from "../core/types.js";
+import { addTelemetryToSession, emptySessionTelemetry, estimateTokens } from "../core/tokenAccounting.js";
+import type { AgentEvent, ModelProvider, ModelTelemetry, SessionTelemetry } from "../core/types.js";
 import { CommandSuggestions } from "./components/CommandSuggestions.js";
 import { Composer, FooterHints } from "./components/Composer.js";
 import { Header } from "./components/Header.js";
@@ -16,7 +17,7 @@ import { OnboardingPanel, type OnboardingState } from "./components/OnboardingPa
 import { Sidebar } from "./components/Sidebar.js";
 import { Transcript } from "./components/Transcript.js";
 import { filterSlashCommands, formatCommandDetail } from "./commands.js";
-import { formatOllamaHost, formatTokens, normalizeModelAlias, readToggle } from "./format.js";
+import { formatCost, formatOllamaHost, formatSessionTokens, formatTokens, normalizeModelAlias, readToggle } from "./format.js";
 import { checkOllamaHost, discoverOllamaHosts, normalizeOllamaUrl, type OllamaHost } from "./hosts.js";
 import { readGpuStats, readSystemStats, type GpuStats, type SystemStats } from "./systemStats.js";
 import { maxTranscriptLines, type AdvisorNote, type AgentMode, type LogLine } from "./types.js";
@@ -34,6 +35,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   const [isRunning, setIsRunning] = useState(false);
   const [status, setStatus] = useState("idle");
   const [telemetry, setTelemetry] = useState<ModelTelemetry | null>(null);
+  const [sessionTelemetry, setSessionTelemetry] = useState<SessionTelemetry>(() => emptySessionTelemetry());
   const [systemStats, setSystemStats] = useState<SystemStats>(() => readSystemStats().stats);
   const [gpuStats, setGpuStats] = useState<GpuStats | null>(null);
   const [agentMode, setAgentMode] = useState<AgentMode>(props.allowWrite || props.allowShell ? "build" : "plan");
@@ -50,6 +52,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
     maxSteps: props.maxSteps,
     subagents: props.subagents
   });
+  const draftTokens = estimateTokens(input);
 
   const appendLine = useCallback((line: Omit<LogLine, "id">) => {
     setLines((currentLines) => [
@@ -100,7 +103,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       });
 
       try {
-        const runnableSettings = await resolveRunnableSettings(settings, appendLine, setModelOptions);
+        const runnableSettings = await resolveRunnableSettings(settings, modelOptions, appendLine, setModelOptions);
         if (!runnableSettings) {
           return;
         }
@@ -109,11 +112,13 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         for await (const event of taskRunner.run(task)) {
           if (event.type === "metrics") {
             setTelemetry(event.metrics);
+            setSessionTelemetry((currentSession) => addTelemetryToSession(currentSession, event.metrics));
             continue;
           }
 
           if (event.type === "subagent") {
             setTelemetry(event.metrics);
+            setSessionTelemetry((currentSession) => addTelemetryToSession(currentSession, event.metrics));
             setAdvisorNotes((currentNotes) =>
               upsertAdvisorNote(currentNotes, {
                 role: event.role,
@@ -136,7 +141,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         setIsRunning(false);
       }
     },
-    [appendLine, isRunning, settings]
+    [appendLine, isRunning, modelOptions, settings]
   );
 
   const handleSlashCommand = useCallback(
@@ -358,7 +363,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           appendLine({
             tone: "accent",
             label: "status",
-            text: `provider ${settings.provider} | model ${settings.model} | host ${settings.provider === "ollama" ? settings.ollamaUrl : `${settings.provider} oauth`} | compute ${settings.provider === "ollama" ? describeComputeTarget(settings.ollamaUrl).kind : "cloud"} | agents ${settings.subagents ? "on" : "off"} | write ${settings.allowWrite ? "on" : "off"} | shell ${settings.allowShell ? "on" : "off"} | ${formatTokens(telemetry)}`
+            text: `provider ${settings.provider} | model ${settings.model} | host ${settings.provider === "ollama" ? settings.ollamaUrl : `${settings.provider} oauth`} | compute ${settings.provider === "ollama" ? describeComputeTarget(settings.ollamaUrl).kind : "cloud"} | agents ${settings.subagents ? "on" : "off"} | write ${settings.allowWrite ? "on" : "off"} | shell ${settings.allowShell ? "on" : "off"} | draft ${draftTokens} tok | last ${formatTokens(telemetry)} | session ${formatSessionTokens(sessionTelemetry)} | cost ${formatCost(sessionTelemetry.estimatedCostUsd)}`
           });
           return;
         case "connect":
@@ -402,6 +407,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           setLines([]);
           setAdvisorNotes([]);
           setTelemetry(null);
+          setSessionTelemetry(emptySessionTelemetry());
           return;
         case "exit":
         case "quit":
@@ -416,7 +422,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           });
       }
     },
-    [agentMode, appendLine, applyMode, exit, hostOptions, modelOptions, settings, telemetry]
+    [agentMode, appendLine, applyMode, draftTokens, exit, hostOptions, modelOptions, sessionTelemetry, settings, telemetry]
   );
 
   const handleSubmit = useCallback(
@@ -509,6 +515,8 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         subagents={settings.subagents}
         ollamaUrl={settings.ollamaUrl}
         telemetry={telemetry}
+        sessionTelemetry={sessionTelemetry}
+        draftTokens={draftTokens}
         systemStats={systemStats}
         gpuStats={gpuStats}
       />
@@ -524,6 +532,8 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           allowShell={settings.allowShell}
           subagents={settings.subagents}
           telemetry={telemetry}
+          sessionTelemetry={sessionTelemetry}
+          draftTokens={draftTokens}
           advisors={advisorNotes}
         />
         <Box flexDirection="column" flexGrow={1}>
@@ -531,6 +541,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           <Composer
             input={input}
             isRunning={isRunning}
+            draftTokens={draftTokens}
             mask={onboarding?.step === "gemini-key" ? "*" : undefined}
             onChange={setInput}
             onSubmit={(value) => void handleSubmit(value)}
@@ -913,12 +924,15 @@ async function loadHosts(
 
 async function resolveRunnableSettings(
   settings: AgentRunnerOptions,
+  modelOptions: string[],
   appendLine: (line: Omit<LogLine, "id">) => void,
   setModelOptions: React.Dispatch<React.SetStateAction<string[]>>
 ): Promise<AgentRunnerOptions | null> {
   let installedModels: string[];
   try {
-    installedModels = await loadAvailableModels(settings.provider, settings.ollamaUrl, setModelOptions);
+    installedModels = modelOptions.includes(settings.model)
+      ? modelOptions
+      : await loadAvailableModels(settings.provider, settings.ollamaUrl, setModelOptions);
   } catch (error) {
     appendLine({
       tone: "danger",

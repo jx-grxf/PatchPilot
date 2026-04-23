@@ -1,0 +1,122 @@
+import type { ModelProvider, ModelTelemetry, SessionTelemetry } from "./types.js";
+
+type TokenCostRate = {
+  inputPerMillion: number;
+  cachedInputPerMillion: number;
+  outputPerMillion: number;
+};
+
+const codexApiTokenRates: Record<string, TokenCostRate> = {
+  "gpt-5.4": {
+    inputPerMillion: 2.5,
+    cachedInputPerMillion: 0.25,
+    outputPerMillion: 15
+  },
+  "gpt-5.4-mini": {
+    inputPerMillion: 0.75,
+    cachedInputPerMillion: 0.075,
+    outputPerMillion: 4.5
+  },
+  "gpt-5.2": {
+    inputPerMillion: 1.75,
+    cachedInputPerMillion: 0.175,
+    outputPerMillion: 14
+  },
+  "gpt-5.2-codex": {
+    inputPerMillion: 1.75,
+    cachedInputPerMillion: 0.175,
+    outputPerMillion: 14
+  },
+  "gpt-5.3-codex": {
+    inputPerMillion: 1.75,
+    cachedInputPerMillion: 0.175,
+    outputPerMillion: 14
+  },
+  "gpt-5.1-codex-max": {
+    inputPerMillion: 1.25,
+    cachedInputPerMillion: 0.125,
+    outputPerMillion: 10
+  },
+  "gpt-5.1-codex-mini": {
+    inputPerMillion: 0.25,
+    cachedInputPerMillion: 0.025,
+    outputPerMillion: 2
+  },
+  "codex-mini-latest": {
+    inputPerMillion: 1.5,
+    cachedInputPerMillion: 0.375,
+    outputPerMillion: 6
+  }
+};
+
+export function estimateTokens(value: string): number {
+  const normalizedValue = value.trim();
+  return normalizedValue ? Math.ceil(normalizedValue.length / 4) : 0;
+}
+
+export function attachTokenCost(
+  telemetry: Omit<ModelTelemetry, "estimatedCostUsd" | "costSource">,
+  provider: ModelProvider,
+  model: string
+): ModelTelemetry {
+  if (provider === "ollama") {
+    return {
+      ...telemetry,
+      estimatedCostUsd: 0,
+      costSource: "local"
+    };
+  }
+
+  const rates = provider === "codex" ? codexApiTokenRates[model] : undefined;
+  if (!rates) {
+    return {
+      ...telemetry,
+      estimatedCostUsd: null,
+      costSource: "unknown"
+    };
+  }
+
+  const cachedPromptTokens = Math.min(telemetry.cachedPromptTokens, telemetry.promptTokens);
+  const uncachedPromptTokens = Math.max(0, telemetry.promptTokens - cachedPromptTokens);
+  const estimatedCostUsd =
+    (uncachedPromptTokens * rates.inputPerMillion +
+      cachedPromptTokens * rates.cachedInputPerMillion +
+      telemetry.responseTokens * rates.outputPerMillion) /
+    1_000_000;
+
+  return {
+    ...telemetry,
+    cachedPromptTokens,
+    estimatedCostUsd,
+    costSource: "api-pricing"
+  };
+}
+
+export function emptySessionTelemetry(): SessionTelemetry {
+  return {
+    requests: 0,
+    promptTokens: 0,
+    cachedPromptTokens: 0,
+    responseTokens: 0,
+    totalTokens: 0,
+    estimatedCostUsd: null
+  };
+}
+
+export function addTelemetryToSession(session: SessionTelemetry, telemetry: ModelTelemetry): SessionTelemetry {
+  const estimatedCostUsd =
+    session.requests === 0
+      ? telemetry.estimatedCostUsd
+      : session.estimatedCostUsd === null || telemetry.estimatedCostUsd === null
+      ? null
+      : session.estimatedCostUsd + telemetry.estimatedCostUsd;
+
+  return {
+    requests: session.requests + 1,
+    promptTokens: session.promptTokens + telemetry.promptTokens,
+    cachedPromptTokens: session.cachedPromptTokens + telemetry.cachedPromptTokens,
+    responseTokens: session.responseTokens + telemetry.responseTokens,
+    totalTokens: session.totalTokens + telemetry.totalTokens,
+    estimatedCostUsd
+  };
+}

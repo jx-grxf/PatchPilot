@@ -1,4 +1,5 @@
 import type { ModelChatOptions, ModelChatResult, ModelTelemetry } from "./types.js";
+import { attachTokenCost } from "./tokenAccounting.js";
 
 export const defaultOllamaModel = "qwen2.5-coder:7b";
 export const defaultOllamaUrl = "http://127.0.0.1:11434";
@@ -72,7 +73,7 @@ export class OllamaClient {
 
     return {
       content: payload.message?.content?.trim() ?? "",
-      telemetry: toTelemetry(payload)
+      telemetry: toTelemetry(payload, options.model)
     };
   }
 
@@ -156,21 +157,27 @@ function formatOllamaConnectionError(baseUrl: string, error: unknown): string {
   return `Cannot reach Ollama at ${baseUrl}. Start Ollama, or run "ollama serve", then try /doctor.${suffix}`;
 }
 
-function toTelemetry(payload: OllamaChatResponse): ModelTelemetry {
+function toTelemetry(payload: OllamaChatResponse, model: string): ModelTelemetry {
   const promptTokens = payload.prompt_eval_count ?? 0;
   const responseTokens = payload.eval_count ?? 0;
   const responseDurationMs = nanosToMillis(payload.eval_duration ?? 0);
 
-  return {
-    promptTokens,
-    responseTokens,
-    totalTokens: promptTokens + responseTokens,
-    evalTokensPerSecond:
-      responseTokens > 0 && responseDurationMs > 0 ? responseTokens / (responseDurationMs / 1000) : null,
-    promptDurationMs: nanosToMillis(payload.prompt_eval_duration ?? 0),
-    responseDurationMs,
-    totalDurationMs: nanosToMillis(payload.total_duration ?? 0)
-  };
+  return attachTokenCost(
+    {
+      promptTokens,
+      cachedPromptTokens: 0,
+      responseTokens,
+      totalTokens: promptTokens + responseTokens,
+      evalTokensPerSecond:
+        responseTokens > 0 && responseDurationMs > 0 ? responseTokens / (responseDurationMs / 1000) : null,
+      promptDurationMs: nanosToMillis(payload.prompt_eval_duration ?? 0),
+      responseDurationMs,
+      totalDurationMs: nanosToMillis(payload.total_duration ?? 0),
+      tokenSource: "provider"
+    },
+    "ollama",
+    model
+  );
 }
 
 function nanosToMillis(value: number): number {
