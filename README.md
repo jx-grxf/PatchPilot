@@ -193,7 +193,7 @@ The transcript and session sidebar have internal scroll windows. With an empty p
 |---|---|
 | `/help` | Show available commands |
 | `/` | Open the interactive command palette while typing |
-| `/onboarding` | Open the guided setup window for provider, auth, and model selection |
+| `/onboarding` | Open the guided setup window for local-vs-host choice, auth, and model selection |
 | `/permissions` | Show current write and shell permissions |
 | `/agents on\|off` | Enable or disable planner/reviewer advisor subagents |
 | `/provider ollama\|gemini\|codex` | Switch between Ollama, Gemini API, and Codex OAuth inference |
@@ -204,11 +204,11 @@ The transcript and session sidebar have internal scroll windows. With an empty p
 | `/write on\|off` | Enable or disable workspace writes |
 | `/shell on\|off` | Enable or disable shell commands |
 | `/model <name>` | Switch the model for the current provider |
-| `/models` | List models for the current provider |
+| `/models` | Refresh models for the current provider and open them in the palette |
 | `/models <number>` | Select a model from the last `/models` list |
 | `/model uncensored` | Switch to `huihui_ai/qwen2.5-coder-abliterate:7b` |
 | `/model default` | Switch back to `qwen2.5-coder:7b` |
-| `/connect` | Auto-scan the LAN for reachable Ollama servers |
+| `/connect` | Auto-scan the LAN and Tailscale peers for reachable Ollama servers |
 | `/connect <url>` | Connect to another Ollama host for the current session |
 | `/connect <number>` | Connect to a numbered host from the `/connect` list |
 | `/connect local` | Switch back to local Ollama at `127.0.0.1:11434` on non-macOS clients |
@@ -220,6 +220,8 @@ The transcript and session sidebar have internal scroll windows. With an empty p
 ## Remote Ollama
 
 PatchPilot can run the agent on one machine while using an Ollama server on another machine. This is useful when your Windows desktop has the GPU and your MacBook is where you are editing code.
+
+At startup, the guided setup now asks whether inference should run on `This Device` or a `Remote Host`. Host mode walks through LAN/Tailscale discovery first, then fetches the host's models before letting you choose one.
 
 By default, PatchPilot talks to Ollama at `http://127.0.0.1:11434` on macOS, Windows, and Linux. On macOS, install and start Ollama.app, pull a model, then run PatchPilot directly:
 
@@ -245,6 +247,8 @@ To use a stronger remote GPU host from the MacBook, switch inside the TUI:
 /connect 1
 ```
 
+If both machines are on the same Tailscale tailnet, PatchPilot also checks Tailscale peers and MagicDNS names during `/connect` and the startup host flow. A host can be selected by Tailscale IP, MagicDNS name, or full URL.
+
 On a Windows desktop or another remote machine, expose Ollama on the LAN:
 
 1. Quit Ollama from the taskbar.
@@ -267,7 +271,7 @@ Or switch inside the TUI from any supported platform:
 /connect local
 ```
 
-The scan verifies `GET /api/version`, so it does not list random local interfaces or machines that merely have port `11434` open.
+The scan verifies `GET /api/version`, so it does not list random local interfaces or machines that merely have port `11434` open. When connected, the header/sidebar switch to the selected host's device name, route, version, and model inventory instead of showing the client machine as the compute target.
 
 ## Safety Model
 

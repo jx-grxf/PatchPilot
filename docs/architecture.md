@@ -6,7 +6,7 @@ PatchPilot is split into a small agent core and an Ink terminal interface.
 
 | Component | Responsibility |
 |---|---|
-| `OllamaClient` | Sends chat requests to the local Ollama HTTP API |
+| `OllamaClient` | Sends chat requests to the selected Ollama HTTP API and reads host model state |
 | `compute` | Classifies the selected Ollama endpoint as local or remote compute |
 | `subagents` | Runs small planner/reviewer advisor calls before the primary agent loop |
 | `AgentRunner` | Maintains the model loop and executes typed tool calls |
@@ -21,6 +21,7 @@ PatchPilot separates the client machine from the compute machine:
 - The client machine runs the TUI, reads and writes workspace files, runs Git, and executes tests.
 - The compute machine runs Ollama inference.
 - `/connect` changes only the Ollama compute endpoint. It does not move workspace tools to the remote host.
+- Host discovery checks both the local LAN and reachable Tailscale peers, then verifies each candidate against Ollama's `GET /api/version`.
 - A localhost endpoint is classified as local compute. A LAN endpoint such as `http://192.168.1.50:11434` is classified as remote compute.
 
 This keeps the Windows-desktop-GPU plus MacBook-editing workflow simple: expose Ollama on the Windows machine, connect from the Mac, and keep all file operations local to the Mac workspace.
