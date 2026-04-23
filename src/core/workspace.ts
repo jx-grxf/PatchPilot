@@ -73,6 +73,8 @@ export class WorkspaceTools {
         return this.writeFile(readString(call.arguments.path, ""), readString(call.arguments.content, ""));
       case "run_shell":
         return this.runShell(readString(call.arguments.command, ""));
+      default:
+        return denied(`unknown tool: ${String((call as { name?: unknown }).name ?? "unknown")}`);
     }
   }
 

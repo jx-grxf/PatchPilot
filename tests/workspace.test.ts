@@ -85,4 +85,20 @@ describe("WorkspaceTools", () => {
     expect(result.ok).toBe(false);
     expect(result.summary).toContain("placeholder");
   });
+
+  it("rejects unknown tool calls with an explicit error", async () => {
+    const tools = new WorkspaceTools({
+      root: tempRoot,
+      allowWrite: false,
+      allowShell: false
+    });
+
+    const result = await tools.execute({
+      name: "unknown_tool",
+      arguments: {}
+    } as never);
+
+    expect(result.ok).toBe(false);
+    expect(result.summary).toContain("unknown tool");
+  });
 });

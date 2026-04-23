@@ -1,0 +1,211 @@
+import type { ModelTelemetry } from "../core/types.js";
+import type { GpuStats } from "./systemStats.js";
+import type { LogTone } from "./types.js";
+
+export type InkColor = "gray" | "white" | "green" | "yellow" | "red" | "cyan";
+export type StatusColor = "gray" | "green" | "yellow" | "red" | "cyan";
+
+export function getModelHint(model: string): { text: string; color: "green" | "yellow" } {
+  if (/\bcoder\b|qwen.*coder|deepseek-coder|codestral|starcoder/i.test(model)) {
+    return {
+      text: "coding model ready",
+      color: "green"
+    };
+  }
+
+  return {
+    text: "general model selected; coding reliability may be weak",
+    color: "yellow"
+  };
+}
+
+export function formatOllamaHost(value: string): string {
+  if (!value) {
+    return "not connected";
+  }
+
+  try {
+    const url = new URL(value);
+    if (url.hostname === "127.0.0.1" || url.hostname === "localhost") {
+      return "local";
+    }
+
+    return url.host;
+  } catch {
+    return value;
+  }
+}
+
+export function formatTokens(telemetry: ModelTelemetry | null): string {
+  if (!telemetry) {
+    return "-";
+  }
+
+  return `${telemetry.promptTokens} in/${telemetry.responseTokens} out/${telemetry.totalTokens} total`;
+}
+
+export function formatSpeed(telemetry: ModelTelemetry | null): string {
+  if (!telemetry?.evalTokensPerSecond) {
+    return "-";
+  }
+
+  return `${telemetry.evalTokensPerSecond.toFixed(1)} tok/s`;
+}
+
+export function formatLatency(telemetry: ModelTelemetry | null): string {
+  if (!telemetry) {
+    return "-";
+  }
+
+  return formatDuration(telemetry.totalDurationMs);
+}
+
+export function formatDuration(durationMs: number): string {
+  if (durationMs >= 1000) {
+    return `${(durationMs / 1000).toFixed(1)}s`;
+  }
+
+  return `${durationMs}ms`;
+}
+
+export function formatPercent(value: number | null): string {
+  return value === null ? "-" : `${value}%`;
+}
+
+export function usageColor(value: number | null): "gray" | "green" | "yellow" | "red" {
+  if (value === null) {
+    return "gray";
+  }
+
+  if (value >= 85) {
+    return "red";
+  }
+
+  if (value >= 65) {
+    return "yellow";
+  }
+
+  return "green";
+}
+
+export function gpuMemoryColor(stats: GpuStats | null): "gray" | "green" | "yellow" | "red" {
+  if (!stats || stats.totalMemoryGb <= 0) {
+    return "gray";
+  }
+
+  return usageColor(Math.round((stats.usedMemoryGb / stats.totalMemoryGb) * 100));
+}
+
+export function temperatureColor(value: number | null): "gray" | "green" | "yellow" | "red" {
+  if (value === null) {
+    return "gray";
+  }
+
+  if (value >= 85) {
+    return "red";
+  }
+
+  if (value >= 75) {
+    return "yellow";
+  }
+
+  return "green";
+}
+
+export function formatGpuUtilization(stats: GpuStats | null): string {
+  return stats ? `${stats.utilizationPercent}%` : "-";
+}
+
+export function formatGpuMemory(stats: GpuStats | null): string {
+  return stats ? `${stats.usedMemoryGb}/${stats.totalMemoryGb}G` : "-";
+}
+
+export function formatGpuTemperature(stats: GpuStats | null): string {
+  return stats?.temperatureCelsius !== null && stats?.temperatureCelsius !== undefined ? `${stats.temperatureCelsius}C` : "-";
+}
+
+export function formatGpuPower(stats: GpuStats | null): string {
+  if (!stats?.powerDrawWatts) {
+    return "-";
+  }
+
+  return stats.powerLimitWatts ? `${Math.round(stats.powerDrawWatts)}/${Math.round(stats.powerLimitWatts)}W` : `${Math.round(stats.powerDrawWatts)}W`;
+}
+
+export function readToggle(value: string | undefined, fallback: boolean): boolean {
+  if (!value) {
+    return fallback;
+  }
+
+  const normalizedValue = value.toLowerCase();
+  if (["on", "true", "yes", "1", "enable", "enabled"].includes(normalizedValue)) {
+    return true;
+  }
+
+  if (["off", "false", "no", "0", "disable", "disabled"].includes(normalizedValue)) {
+    return false;
+  }
+
+  return fallback;
+}
+
+export function normalizeModelAlias(value: string): string {
+  if (value === "uncensored" || value === "abliterate" || value === "abliterated") {
+    return "huihui_ai/qwen2.5-coder-abliterate:7b";
+  }
+
+  if (value === "default" || value === "official") {
+    return "qwen2.5-coder:7b";
+  }
+
+  return value;
+}
+
+export function shortenMiddle(value: string, maxLength: number): string {
+  if (value.length <= maxLength) {
+    return value;
+  }
+
+  if (maxLength <= 3) {
+    return value.slice(0, maxLength);
+  }
+
+  const keep = maxLength - 3;
+  const left = Math.ceil(keep / 2);
+  const right = Math.floor(keep / 2);
+  return `${value.slice(0, left)}...${value.slice(value.length - right)}`;
+}
+
+export function toneToColor(tone: LogTone): InkColor {
+  switch (tone) {
+    case "muted":
+      return "gray";
+    case "success":
+      return "green";
+    case "warning":
+      return "yellow";
+    case "danger":
+      return "red";
+    case "accent":
+      return "cyan";
+    case "normal":
+      return "white";
+  }
+}
+
+export function toneToMarker(tone: LogTone): string {
+  switch (tone) {
+    case "muted":
+      return "-";
+    case "success":
+      return "+";
+    case "warning":
+      return "!";
+    case "danger":
+      return "x";
+    case "accent":
+      return ">";
+    case "normal":
+      return ":";
+  }
+}

@@ -2,83 +2,107 @@ export type SlashCommand = {
   name: string;
   usage: string;
   description: string;
+  category: "session" | "permissions" | "model" | "compute" | "utility";
+  shortcut?: string;
 };
 
 export const slashCommands: SlashCommand[] = [
   {
     name: "help",
     usage: "/help",
-    description: "Show available PatchPilot commands."
+    description: "Show available PatchPilot commands.",
+    category: "utility"
   },
   {
     name: "permissions",
     usage: "/permissions",
-    description: "Show write and shell permissions."
+    description: "Show write and shell permissions.",
+    category: "permissions"
   },
   {
     name: "agents",
     usage: "/agents on|off",
-    description: "Enable or disable planner/reviewer subagents."
+    description: "Enable or disable planner/reviewer subagents.",
+    category: "session"
   },
   {
     name: "write",
     usage: "/write on|off",
-    description: "Enable or disable workspace writes."
+    description: "Enable or disable workspace writes.",
+    category: "permissions"
   },
   {
     name: "shell",
     usage: "/shell on|off",
-    description: "Enable or disable shell commands."
+    description: "Enable or disable shell commands.",
+    category: "permissions"
   },
   {
     name: "model",
     usage: "/model <name|uncensored|default>",
-    description: "Switch the Ollama model for this session."
+    description: "Switch the Ollama model for this session.",
+    category: "model"
   },
   {
     name: "models",
     usage: "/models [number|name]",
-    description: "List installed Ollama models or select one."
+    description: "List installed Ollama models or select one.",
+    category: "model"
   },
   {
     name: "mode",
     usage: "/mode plan|build",
-    description: "Switch between read-only planning and implementation mode."
+    description: "Switch between read-only planning and implementation mode.",
+    category: "session",
+    shortcut: "tab"
   },
   {
     name: "plan",
     usage: "/plan",
-    description: "Shortcut for /mode plan."
+    description: "Shortcut for /mode plan.",
+    category: "session"
   },
   {
     name: "build",
     usage: "/build",
-    description: "Shortcut for /mode build."
+    description: "Shortcut for /mode build.",
+    category: "session"
   },
   {
     name: "connect",
     usage: "/connect <host|local>",
-    description: "Connect to a remote Ollama host."
+    description: "Connect to a remote Ollama host.",
+    category: "compute"
   },
   {
     name: "hosts",
     usage: "/hosts",
-    description: "List remembered and suggested Ollama hosts."
+    description: "List remembered and suggested Ollama hosts.",
+    category: "compute"
+  },
+  {
+    name: "status",
+    usage: "/status",
+    description: "Show active model, host, permissions, and token telemetry.",
+    category: "session"
   },
   {
     name: "doctor",
     usage: "/doctor",
-    description: "Check Node, Git, and the selected Ollama host."
+    description: "Check Node, Git, and the selected Ollama host.",
+    category: "utility"
   },
   {
     name: "clear",
     usage: "/clear",
-    description: "Clear the current transcript."
+    description: "Clear the current transcript.",
+    category: "utility"
   },
   {
     name: "exit",
     usage: "/exit",
-    description: "Quit PatchPilot."
+    description: "Quit PatchPilot.",
+    category: "utility"
   }
 ];
 
@@ -100,5 +124,10 @@ export function formatCommandList(): string {
 }
 
 export function formatCommandDetail(): string {
-  return slashCommands.map((command) => `${command.usage} - ${command.description}`).join("\n");
+  return slashCommands
+    .map((command) => {
+      const shortcut = command.shortcut ? ` [${command.shortcut}]` : "";
+      return `${command.category.padEnd(11)} ${command.usage}${shortcut} - ${command.description}`;
+    })
+    .join("\n");
 }

@@ -21,4 +21,13 @@ describe("filterSlashCommands", () => {
   it("includes subagent controls", () => {
     expect(filterSlashCommands("/a").map((command) => command.name)).toEqual(["agents"]);
   });
+
+  it("exposes visible categories for command palette grouping", () => {
+    expect(filterSlashCommands("/status")).toEqual([
+      expect.objectContaining({
+        name: "status",
+        category: "session"
+      })
+    ]);
+  });
 });
