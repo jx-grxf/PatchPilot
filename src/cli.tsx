@@ -3,6 +3,7 @@ import path from "node:path";
 import React from "react";
 import { render } from "ink";
 import { Command } from "commander";
+import { defaultCodexModel } from "./core/codex.js";
 import { loadDotEnv } from "./core/env.js";
 import { defaultGeminiModel } from "./core/gemini.js";
 import { readModelProvider } from "./core/modelClient.js";
@@ -14,7 +15,9 @@ loadDotEnv();
 
 const defaultOllamaUrl = resolveOllamaBaseUrl();
 const defaultProvider = readModelProvider();
-const defaultModel = process.env.PATCHPILOT_MODEL ?? (defaultProvider === "gemini" ? defaultGeminiModel : defaultOllamaModel);
+const defaultModel =
+  process.env.PATCHPILOT_MODEL ??
+  (defaultProvider === "gemini" ? defaultGeminiModel : defaultProvider === "codex" ? defaultCodexModel : defaultOllamaModel);
 
 const program = new Command();
 
@@ -26,7 +29,7 @@ program
 program
   .command("doctor")
   .description("Check local PatchPilot requirements.")
-  .option("--provider <name>", "Model provider: ollama or gemini.", defaultProvider)
+  .option("--provider <name>", "Model provider: ollama, gemini, or codex.", defaultProvider)
   .option("--check-url <url>", "Ollama base URL to verify", defaultOllamaUrl)
   .option("--ollama-url <url>", "Alias for --check-url.")
   .option("--check-model <name>", "Model name to verify", defaultModel)
@@ -44,7 +47,7 @@ program
 program
   .argument("[task...]", "Task for the local coding agent.")
   .option("--workspace <path>", "Workspace root", process.cwd())
-  .option("--provider <name>", "Model provider: ollama or gemini.", defaultProvider)
+  .option("--provider <name>", "Model provider: ollama, gemini, or codex.", defaultProvider)
   .option("--model <name>", "Model name", defaultModel)
   .option("--ollama-url <url>", "Ollama base URL", defaultOllamaUrl)
   .option("--steps <count>", "Maximum agent steps", "8")

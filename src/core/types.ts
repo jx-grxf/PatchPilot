@@ -5,7 +5,7 @@ export type ChatMessage = {
   content: string;
 };
 
-export type ModelProvider = "ollama" | "gemini";
+export type ModelProvider = "ollama" | "gemini" | "codex";
 
 export type ModelChatOptions = {
   model: string;

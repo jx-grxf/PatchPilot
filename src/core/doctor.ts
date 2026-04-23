@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { describeComputeTarget } from "./compute.js";
+import { codexOAuthModels, hasCodexCliOAuth } from "./codex.js";
 import { GeminiClient, readGeminiApiKey } from "./gemini.js";
 import { OllamaClient } from "./ollama.js";
 import type { ModelProvider } from "./types.js";
@@ -18,6 +19,11 @@ export async function runDoctor(provider: ModelProvider, ollamaUrl: string, mode
 
   if (provider === "gemini") {
     results.push(...(await checkGemini(model)));
+    return results;
+  }
+
+  if (provider === "codex") {
+    results.push(...(await checkCodex(model)));
     return results;
   }
 
@@ -59,6 +65,38 @@ export async function runDoctor(provider: ModelProvider, ollamaUrl: string, mode
       name: "ollama",
       ok: false,
       details: error instanceof Error ? error.message : String(error)
+    });
+  }
+
+  return results;
+}
+
+async function checkCodex(model?: string): Promise<DoctorResult[]> {
+  const cli = await checkCommand("codex", ["--version"], "codex-cli", "Install Codex CLI, then run codex login.");
+  const hasOAuth = hasCodexCliOAuth();
+  const results: DoctorResult[] = [
+    cli,
+    {
+      name: "codex-auth",
+      ok: hasOAuth,
+      details: hasOAuth ? "Codex CLI OAuth tokens are present" : "missing. Run: codex login"
+    }
+  ];
+
+  if (!cli.ok || !hasOAuth) {
+    return results;
+  }
+
+  results.push({
+    name: "codex",
+    ok: true,
+    details: `OAuth backend ready. Models: ${codexOAuthModels.join(", ")}`
+  });
+  if (model) {
+    results.push({
+      name: "codex-model",
+      ok: codexOAuthModels.includes(model),
+      details: codexOAuthModels.includes(model) ? `${model} is available` : `${model} is not in the Codex OAuth model list`
     });
   }
 

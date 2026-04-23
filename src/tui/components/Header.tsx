@@ -37,7 +37,8 @@ export function Header(props: {
   systemStats: SystemStats;
   gpuStats: GpuStats | null;
 }): React.ReactElement {
-  const computeTarget = props.provider === "gemini" ? { kind: "cloud" } : describeComputeTarget(props.ollamaUrl);
+  const computeTarget =
+    props.provider === "gemini" || props.provider === "codex" ? { kind: "cloud" } : describeComputeTarget(props.ollamaUrl);
   const memoryColor = usageColor(props.systemStats.memoryPercent);
   const modelHint = getModelHint(props.model);
 
@@ -60,9 +61,9 @@ export function Header(props: {
       <Box flexDirection="column">
         <HeaderMetricLine
           items={[
-            ["provider", props.provider, props.provider === "gemini" ? "cyan" : "green"],
+            ["provider", props.provider, props.provider === "ollama" ? "green" : "cyan"],
             ["model", shortenMiddle(props.model, 30), modelHint.color],
-            ["host", props.provider === "gemini" ? "gemini api" : shortenMiddle(formatOllamaHost(props.ollamaUrl), 22), "cyan"],
+            ["host", props.provider === "ollama" ? shortenMiddle(formatOllamaHost(props.ollamaUrl), 22) : `${props.provider} oauth`, "cyan"],
             ["compute", computeTarget.kind, computeTarget.kind === "remote" ? "yellow" : "green"],
             ["mode", props.agentMode, props.agentMode === "build" ? "yellow" : "green"],
             ["advisors", props.subagents ? "on" : "off", props.subagents ? "cyan" : "gray"],

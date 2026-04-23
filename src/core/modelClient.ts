@@ -1,3 +1,4 @@
+import { CodexCliClient } from "./codex.js";
 import { GeminiClient } from "./gemini.js";
 import { OllamaClient } from "./ollama.js";
 import type { ModelClient, ModelProvider } from "./types.js";
@@ -5,9 +6,16 @@ import type { ModelClient, ModelProvider } from "./types.js";
 export function createModelClient(options: {
   provider: ModelProvider;
   ollamaUrl: string;
+  workspace?: string;
 }): ModelClient {
   if (options.provider === "gemini") {
     return new GeminiClient();
+  }
+
+  if (options.provider === "codex") {
+    return new CodexCliClient({
+      workspace: options.workspace ?? process.cwd()
+    });
   }
 
   return new OllamaClient(options.ollamaUrl);
@@ -21,6 +29,10 @@ export function normalizeModelProvider(value: string): ModelProvider {
   const normalizedValue = value.trim().toLowerCase();
   if (normalizedValue === "gemini" || normalizedValue === "google") {
     return "gemini";
+  }
+
+  if (normalizedValue === "codex" || normalizedValue === "openai" || normalizedValue === "openai-codex") {
+    return "codex";
   }
 
   return "ollama";

@@ -24,7 +24,8 @@ export class AgentRunner {
     this.options = options;
     this.client = createModelClient({
       provider: options.provider,
-      ollamaUrl: options.ollamaUrl
+      ollamaUrl: options.ollamaUrl,
+      workspace: options.workspace
     });
     this.tools = new WorkspaceTools({
       root: options.workspace,

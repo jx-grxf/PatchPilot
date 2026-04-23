@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Box, useApp, useInput } from "ink";
 import { AgentRunner, type AgentRunnerOptions } from "../core/agent.js";
+import { defaultCodexModel, hasCodexCliOAuth } from "../core/codex.js";
 import { describeComputeTarget } from "../core/compute.js";
 import { runDoctor } from "../core/doctor.js";
 import { defaultGeminiModel } from "../core/gemini.js";
@@ -179,11 +180,11 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           return;
         case "provider": {
           const nextProvider = args[0]?.toLowerCase();
-          if (nextProvider !== "ollama" && nextProvider !== "gemini") {
+          if (nextProvider !== "ollama" && nextProvider !== "gemini" && nextProvider !== "codex") {
             appendLine({
               tone: "accent",
               label: "provider",
-              text: `current ${settings.provider}. Use /provider ollama or /provider gemini.`
+              text: `current ${settings.provider}. Use /provider ollama, /provider gemini, or /provider codex.`
             });
             return;
           }
@@ -214,7 +215,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           appendLine({
             tone: "accent",
             label: "onboarding",
-            text: "Choose a provider: type 1 for Ollama or 2 for Gemini."
+            text: "Choose a provider: type 1 for Ollama, 2 for Gemini, or 3 for Codex OAuth."
           });
           return;
         case "agents":
@@ -328,7 +329,12 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
                 tone: "warning",
                 label: "models",
               text: `No ${settings.provider} models found.`,
-              detail: settings.provider === "ollama" ? "Pull one first, for example: ollama pull qwen2.5-coder:7b" : "Check GEMINI_API_KEY in .env."
+              detail:
+                settings.provider === "ollama"
+                  ? "Pull one first, for example: ollama pull qwen2.5-coder:7b"
+                  : settings.provider === "gemini"
+                    ? "Check GEMINI_API_KEY in .env."
+                    : "Run codex login first."
               });
               return;
             }
@@ -352,13 +358,13 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           appendLine({
             tone: "accent",
             label: "status",
-            text: `provider ${settings.provider} | model ${settings.model} | host ${settings.provider === "gemini" ? "gemini api" : settings.ollamaUrl} | compute ${settings.provider === "gemini" ? "cloud" : describeComputeTarget(settings.ollamaUrl).kind} | agents ${settings.subagents ? "on" : "off"} | write ${settings.allowWrite ? "on" : "off"} | shell ${settings.allowShell ? "on" : "off"} | ${formatTokens(telemetry)}`
+            text: `provider ${settings.provider} | model ${settings.model} | host ${settings.provider === "ollama" ? settings.ollamaUrl : `${settings.provider} oauth`} | compute ${settings.provider === "ollama" ? describeComputeTarget(settings.ollamaUrl).kind : "cloud"} | agents ${settings.subagents ? "on" : "off"} | write ${settings.allowWrite ? "on" : "off"} | shell ${settings.allowShell ? "on" : "off"} | ${formatTokens(telemetry)}`
           });
           return;
         case "connect":
         case "host":
         case "ollama":
-          if (settings.provider === "gemini") {
+          if (settings.provider !== "ollama") {
             appendLine({
               tone: "warning",
               label: "provider",
@@ -569,7 +575,7 @@ async function handleOnboardingSubmit(
       appendLine({
         tone: "warning",
         label: "onboarding",
-        text: "Type 1 or ollama, or type 2 or gemini."
+        text: "Type 1 or ollama, 2 or gemini, or 3 or codex."
       });
       return;
     }
@@ -582,6 +588,18 @@ async function handleOnboardingSubmit(
         tone: "accent",
         label: "onboarding",
         text: "Paste your Gemini API key. The input is masked and will be saved to .env."
+      });
+      return;
+    }
+
+    if (provider === "codex" && !hasCodexCliOAuth()) {
+      setOnboarding({
+        step: "codex-login"
+      });
+      appendLine({
+        tone: "accent",
+        label: "onboarding",
+        text: "Run codex login in another terminal, then press Enter here."
       });
       return;
     }
@@ -613,6 +631,20 @@ async function handleOnboardingSubmit(
       text: "Gemini API key saved to .env."
     });
     await enterModelSelection("gemini", settings.ollamaUrl, defaultGeminiModel, appendLine, setSettings, setModelOptions, setTelemetry, setOnboarding);
+    return;
+  }
+
+  if (onboarding.step === "codex-login") {
+    if (!hasCodexCliOAuth()) {
+      appendLine({
+        tone: "warning",
+        label: "onboarding",
+        text: "Codex OAuth is still missing. Run codex login, then press Enter again."
+      });
+      return;
+    }
+
+    await enterModelSelection("codex", settings.ollamaUrl, defaultCodexModel, appendLine, setSettings, setModelOptions, setTelemetry, setOnboarding);
     return;
   }
 
@@ -667,7 +699,12 @@ async function enterModelSelection(
       appendLine({
         tone: "warning",
         label: "onboarding",
-        text: provider === "ollama" ? "No Ollama models found. Pull one first." : "No Gemini models listed. Check your API key."
+        text:
+          provider === "ollama"
+            ? "No Ollama models found. Pull one first."
+            : provider === "gemini"
+              ? "No Gemini models listed. Check your API key."
+              : "No Codex OAuth models listed."
       });
       setOnboarding(null);
       return;
@@ -702,6 +739,10 @@ function readOnboardingProvider(value: string): ModelProvider | null {
 
   if (normalizedValue === "2" || normalizedValue === "gemini" || normalizedValue === "google") {
     return "gemini";
+  }
+
+  if (normalizedValue === "3" || normalizedValue === "codex" || normalizedValue === "openai-codex") {
+    return "codex";
   }
 
   return null;
@@ -769,7 +810,9 @@ async function switchModel(
           ? `Use /models and pick one of:\n${formatModelOptions(installedModels, currentModel)}`
           : provider === "ollama"
             ? "Pull a model first, for example: ollama pull qwen2.5-coder:7b"
-            : "Check GEMINI_API_KEY in .env."
+            : provider === "gemini"
+              ? "Check GEMINI_API_KEY in .env."
+              : "Run codex login first."
     });
     return;
   }
@@ -898,7 +941,9 @@ async function resolveRunnableSettings(
         ? `Pick an installed model first:\n${formatModelOptions(installedModels, settings.model)}`
         : settings.provider === "ollama"
           ? "No models installed. Pull one first, for example: ollama pull qwen2.5-coder:7b"
-          : "No Gemini models listed. Check GEMINI_API_KEY in .env."
+          : settings.provider === "gemini"
+            ? "No Gemini models listed. Check GEMINI_API_KEY in .env."
+            : "Codex OAuth is not ready. Run codex login."
   });
   return null;
 }
@@ -908,7 +953,11 @@ function defaultModelForProvider(provider: ModelProvider, currentModel: string):
     return currentModel.startsWith("gemini-") ? currentModel : defaultGeminiModel;
   }
 
-  return currentModel.startsWith("gemini-") ? defaultOllamaModel : currentModel;
+  if (provider === "codex") {
+    return currentModel.includes("codex") || currentModel === "codex-mini-latest" ? currentModel : defaultCodexModel;
+  }
+
+  return currentModel.startsWith("gemini-") || currentModel.includes("codex") ? defaultOllamaModel : currentModel;
 }
 
 function upsertAdvisorNote(notes: AdvisorNote[], nextNote: AdvisorNote): AdvisorNote[] {

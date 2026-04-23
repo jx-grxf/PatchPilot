@@ -10,6 +10,9 @@ export type OnboardingState =
       step: "gemini-key";
     }
   | {
+      step: "codex-login";
+    }
+  | {
       step: "model";
       provider: ModelProvider;
       models: string[];
@@ -30,12 +33,19 @@ export function OnboardingPanel(props: { state: OnboardingState | null }): React
           <Text color="gray">Choose provider:</Text>
           <Text color="gray">1. Ollama - local or LAN model server</Text>
           <Text color="gray">2. Gemini - Google Gemini API key from .env</Text>
+          <Text color="gray">3. Codex - ChatGPT Plus/Pro login through Codex CLI</Text>
         </>
       ) : null}
       {props.state.step === "gemini-key" ? (
         <>
           <Text color="gray">Paste your Gemini API key.</Text>
           <Text color="gray">PatchPilot saves it to .env as GEMINI_API_KEY and masks the input.</Text>
+        </>
+      ) : null}
+      {props.state.step === "codex-login" ? (
+        <>
+          <Text color="gray">Use your ChatGPT plan through Codex CLI OAuth.</Text>
+          <Text color="gray">Run `codex login` in another terminal, then press Enter here.</Text>
         </>
       ) : null}
       {props.state.step === "model" ? (

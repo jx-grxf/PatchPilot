@@ -50,12 +50,13 @@ The project is private while it is incubating, but the repository structure, doc
 |---|---|
 | Local-first agent | Talks to an Ollama server running on your machine by default |
 | Gemini API provider | Can switch to Gemini through `GEMINI_API_KEY` in `.env` |
+| Codex OAuth provider | Can use your ChatGPT Plus/Pro Codex CLI login through `codex exec` |
 | TUI workflow | Ink-powered terminal UI with status, transcript, provider, model, and workspace context |
 | Workspace boundary | File tools refuse to read or write outside the selected project root |
 | Explicit permissions | Writes require `--apply`; shell execution requires `--allow-shell` |
 | Runtime telemetry | Header shows CPU, memory, GPU, VRAM, temperature, power, request tokens, generation speed, and latency |
 | Remote Ollama | `/connect` scans the LAN and only lists hosts that answer Ollama's `/api/version` endpoint |
-| Compute target awareness | The TUI marks Ollama as local/remote or Gemini as cloud inference |
+| Compute target awareness | The TUI marks Ollama as local/remote and Gemini/Codex as cloud inference |
 | Advisor subagents | Planner and reviewer subagents give the primary agent a short tactical brief before it starts |
 | Tool-visible loop | The model can list files, read files, search text, write files, and run commands |
 | JSON agent protocol | Model responses are parsed through a typed command envelope |
@@ -86,7 +87,7 @@ The first target is a practical developer workflow: open a repository, describe 
 | Runtime | Node.js 22 or newer |
 | TUI | Ink, React, ink-text-input |
 | Agent protocol | JSON command envelope validated with Zod |
-| Model providers | Ollama chat API, Gemini generateContent API |
+| Model providers | Ollama chat API, Gemini generateContent API, Codex CLI OAuth backend |
 | Tests | Vitest |
 | CI | GitHub Actions |
 
@@ -95,8 +96,8 @@ The first target is a practical developer workflow: open a repository, describe 
 - Node.js 22 or newer
 - npm 10 or newer
 - Git
-- Ollama for local or remote model execution, or a Gemini API key
-- A pulled local model, for example `qwen2.5-coder:7b`, or `GEMINI_API_KEY` in `.env`
+- Ollama for local or remote model execution, a Gemini API key, or Codex CLI login
+- A pulled local model, for example `qwen2.5-coder:7b`, `GEMINI_API_KEY` in `.env`, or `codex login`
 
 ---
 
@@ -122,6 +123,13 @@ cp .env.example .env
 
 Then set `GEMINI_API_KEY` in `.env`.
 
+Or use Codex OAuth through your ChatGPT plan:
+
+```bash
+codex login
+patchpilot --provider codex --model gpt-5.3-codex
+```
+
 Run PatchPilot in a repository:
 
 ```bash
@@ -143,6 +151,7 @@ Use slash commands inside the TUI:
 /write on
 /shell on
 /provider gemini
+/provider codex
 /model uncensored
 /connect http://192.168.1.50:11434
 /doctor
@@ -157,8 +166,8 @@ patchpilot [task] [options]
 | Option | Description |
 |---|---|
 | `--workspace <path>` | Project root the agent may inspect |
-| `--provider <name>` | Model provider: `ollama` or `gemini` |
-| `--model <name>` | Model name, defaults to `qwen2.5-coder:7b` for Ollama or `gemini-2.5-flash` for Gemini |
+| `--provider <name>` | Model provider: `ollama`, `gemini`, or `codex` |
+| `--model <name>` | Model name, defaults to `qwen2.5-coder:7b`, `gemini-2.5-flash`, or `gpt-5.3-codex` |
 | `--ollama-url <url>` | Ollama base URL, defaults to `http://127.0.0.1:11434` |
 | `--steps <count>` | Maximum agent steps before stopping |
 | `--apply` | Allows file writes inside the workspace |
@@ -171,7 +180,7 @@ Run diagnostics:
 patchpilot doctor
 ```
 
-The doctor command checks Node, Git, and the active provider. For Ollama, it checks the Ollama CLI/server and whether the selected model is pulled locally. For Gemini, it checks `GEMINI_API_KEY`, the models API, and whether the selected model is listed. Use `patchpilot doctor --provider gemini` when testing Gemini.
+The doctor command checks Node, Git, and the active provider. For Ollama, it checks the Ollama CLI/server and whether the selected model is pulled locally. For Gemini, it checks `GEMINI_API_KEY`, the models API, and whether the selected model is listed. For Codex, it checks the Codex CLI and your local ChatGPT OAuth login. Use `patchpilot doctor --provider codex` when testing Codex OAuth.
 
 Inside the TUI, use `/help` to see available commands. Permissions can be changed without restarting:
 
@@ -179,10 +188,10 @@ Inside the TUI, use `/help` to see available commands. Permissions can be change
 |---|---|
 | `/help` | Show available commands |
 | `/` | Show command suggestions while typing |
-| `/onboarding` | Choose provider, save a Gemini API key, and select a model |
+| `/onboarding` | Choose provider, save a Gemini API key, connect Codex OAuth, and select a model |
 | `/permissions` | Show current write and shell permissions |
 | `/agents on\|off` | Enable or disable planner/reviewer advisor subagents |
-| `/provider ollama\|gemini` | Switch between local Ollama and Gemini API inference |
+| `/provider ollama\|gemini\|codex` | Switch between Ollama, Gemini API, and Codex OAuth inference |
 | `/mode plan` | Read-only planning mode |
 | `/mode build` | Implementation mode; writes and shell can be enabled |
 | `/plan` | Shortcut for `/mode plan` |

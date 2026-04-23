@@ -27,8 +27,8 @@ export const slashCommands: SlashCommand[] = [
   },
   {
     name: "provider",
-    usage: "/provider ollama|gemini",
-    description: "Switch between local Ollama and Gemini API inference.",
+    usage: "/provider ollama|gemini|codex",
+    description: "Switch between Ollama, Gemini API, and Codex OAuth inference.",
     category: "model"
   },
   {
