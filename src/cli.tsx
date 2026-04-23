@@ -4,11 +4,10 @@ import React from "react";
 import { render } from "ink";
 import { Command } from "commander";
 import { runDoctor } from "./core/doctor.js";
+import { defaultOllamaModel, resolveOllamaBaseUrl } from "./core/ollama.js";
 import { App } from "./tui/App.js";
-import { isMacOS } from "./tui/platform.js";
 
-const defaultModel = "qwen2.5-coder:7b";
-const defaultOllamaUrl = process.env.PATCHPILOT_OLLAMA_URL ?? (isMacOS() ? "" : "http://127.0.0.1:11434");
+const defaultOllamaUrl = resolveOllamaBaseUrl();
 
 const program = new Command();
 
@@ -20,9 +19,12 @@ program
 program
   .command("doctor")
   .description("Check local PatchPilot requirements.")
-  .option("--ollama-url <url>", "Ollama base URL", process.env.PATCHPILOT_OLLAMA_URL ?? defaultOllamaUrl)
-  .action(async (options: { ollamaUrl: string }) => {
-    const results = await runDoctor(options.ollamaUrl);
+  .option("--check-url <url>", "Ollama base URL to verify", defaultOllamaUrl)
+  .option("--ollama-url <url>", "Alias for --check-url.")
+  .option("--check-model <name>", "Ollama model name to verify", process.env.PATCHPILOT_MODEL ?? defaultOllamaModel)
+  .option("--model <name>", "Alias for --check-model.")
+  .action(async (options: { checkUrl: string; ollamaUrl?: string; checkModel: string; model?: string }) => {
+    const results = await runDoctor(options.ollamaUrl ?? options.checkUrl, options.model ?? options.checkModel);
     for (const result of results) {
       const marker = result.ok ? "ok" : "fail";
       console.log(`${marker.padEnd(5)} ${result.name}: ${result.details}`);
@@ -34,7 +36,7 @@ program
 program
   .argument("[task...]", "Task for the local coding agent.")
   .option("--workspace <path>", "Workspace root", process.cwd())
-  .option("--model <name>", "Ollama model name", process.env.PATCHPILOT_MODEL ?? defaultModel)
+  .option("--model <name>", "Ollama model name", process.env.PATCHPILOT_MODEL ?? defaultOllamaModel)
   .option("--ollama-url <url>", "Ollama base URL", defaultOllamaUrl)
   .option("--steps <count>", "Maximum agent steps", "8")
   .option("--apply", "Allow file writes inside the workspace.", false)

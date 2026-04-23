@@ -7,7 +7,6 @@ import type { AgentEvent, ModelTelemetry } from "../core/types.js";
 import { filterSlashCommands, formatCommandDetail } from "./commands.js";
 import { checkOllamaHost, discoverOllamaHosts, normalizeOllamaUrl, type OllamaHost } from "./hosts.js";
 import { routeLocalConversation } from "./inputRouting.js";
-import { isLocalOllamaUrl, isMacOS } from "./platform.js";
 import { readGpuStats, readSystemStats, type GpuStats, type SystemStats } from "./systemStats.js";
 
 export type PatchPilotAppProps = AgentRunnerOptions & {
@@ -36,11 +35,6 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   const [gpuStats, setGpuStats] = useState<GpuStats | null>(null);
   const [agentMode, setAgentMode] = useState<AgentMode>(props.allowWrite || props.allowShell ? "build" : "plan");
   const [hostOptions, setHostOptions] = useState<OllamaHost[]>([]);
-  const [notice, setNotice] = useState<string | null>(() =>
-    isMacOS() && (!props.ollamaUrl || isLocalOllamaUrl(props.ollamaUrl))
-      ? "macOS local models are not supported yet. Use /connect to use a remote Ollama host."
-      : null
-  );
   const [settings, setSettings] = useState<AgentRunnerOptions>({
     model: props.model,
     ollamaUrl: props.ollamaUrl,
@@ -64,15 +58,6 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   const runTask = useCallback(
     async (task: string) => {
       if (!task.trim() || isRunning) {
-        return;
-      }
-
-      if (isMacOS() && (!settings.ollamaUrl || isLocalOllamaUrl(settings.ollamaUrl))) {
-        appendLine({
-          tone: "warning",
-          label: "ollama",
-          text: "macOS local models are not supported yet. Connect to your PC with /connect <windows-pc-ip>:11434."
-        });
         return;
       }
 
@@ -233,7 +218,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
                 label: "hosts",
                 text: "No reachable Ollama hosts found.",
                 detail:
-                  "On the Windows PC, expose Ollama with OLLAMA_HOST=0.0.0.0:11434, restart Ollama, then run /connect again. Manual: /connect 192.168.x.x:11434"
+                  "Start Ollama locally, or expose a remote server with OLLAMA_HOST=0.0.0.0:11434 and check the firewall. Manual: /connect 192.168.x.x:11434"
               });
               return;
             }
@@ -251,16 +236,6 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           const selectedHost = Number.isInteger(hostIndex) ? hostOptions[hostIndex - 1] : undefined;
           const nextUrl = selectedHost ? selectedHost.url : normalizeOllamaUrl(requestedHost);
 
-          if (isMacOS() && isLocalOllamaUrl(nextUrl)) {
-            appendLine({
-              tone: "warning",
-              label: "ollama",
-              text: "macOS local models are not supported yet.",
-              detail: "Use /connect without arguments to scan for your Windows PC, then select it with /connect 1."
-            });
-            return;
-          }
-
           appendLine({
             tone: "muted",
             label: "ollama",
@@ -276,13 +251,12 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
               tone: "warning",
               label: "ollama",
               text: `No Ollama server answered at ${nextUrl}.`,
-              detail: "Check the IP, firewall, and OLLAMA_HOST on the server PC, then try /connect again."
+              detail: "Start Ollama.app or run ollama serve locally. For remote hosts, check the IP, firewall, and OLLAMA_HOST."
             });
             return;
           }
 
           setTelemetry(null);
-          setNotice(null);
           setSettings((currentSettings) => ({
             ...currentSettings,
             ollamaUrl: nextUrl
@@ -317,7 +291,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
             label: "doctor",
             text: "checking local requirements..."
           });
-          const doctorResults = await runDoctor(settings.ollamaUrl);
+          const doctorResults = await runDoctor(settings.ollamaUrl, settings.model);
           for (const result of doctorResults) {
             appendLine({
               tone: result.ok ? "success" : "danger",
@@ -437,12 +411,6 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         gpuStats={gpuStats}
       />
 
-      {notice ? (
-        <Box marginBottom={1}>
-          <Text color="yellow">{notice}</Text>
-        </Box>
-      ) : null}
-
       <Box borderStyle="round" borderColor={isRunning ? "cyan" : "gray"} flexDirection="column" paddingX={1} minHeight={18}>
         {lines.length === 0 ? (
           <EmptyState />
@@ -463,7 +431,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       {!isRunning && input.startsWith("/") ? <CommandSuggestions input={input} hostOptions={hostOptions} /> : null}
 
       <Box marginTop={1}>
-        <Text color="gray">type / for commands  |  /connect scans Ollama hosts  |  /write on enables edits  |  /exit quits</Text>
+        <Text color="gray">type / for commands  |  /connect scans or switches Ollama hosts  |  /write on enables edits  |  /exit quits</Text>
       </Box>
     </Box>
   );

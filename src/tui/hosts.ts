@@ -1,4 +1,5 @@
 import { networkInterfaces } from "node:os";
+import { defaultOllamaPort, defaultOllamaUrl, normalizeOllamaBaseUrl } from "../core/ollama.js";
 
 export type OllamaHost = {
   label: string;
@@ -7,15 +8,12 @@ export type OllamaHost = {
   version?: string;
 };
 
-const localOllamaUrl = "http://127.0.0.1:11434";
-const defaultOllamaPort = 11434;
-
 export function getOllamaHostCandidates(currentUrl: string): OllamaHost[] {
   const hosts: OllamaHost[] = [];
 
   hosts.push({
     label: "local",
-    url: localOllamaUrl,
+    url: defaultOllamaUrl,
     source: "default"
   });
 
@@ -28,7 +26,7 @@ export function getOllamaHostCandidates(currentUrl: string): OllamaHost[] {
     });
   }
 
-  if (currentUrl && currentUrl !== localOllamaUrl) {
+  if (currentUrl && normalizeOllamaUrl(currentUrl) !== defaultOllamaUrl) {
     hosts.push({
       label: "current",
       url: normalizeOllamaUrl(currentUrl),
@@ -56,15 +54,7 @@ export async function discoverOllamaHosts(currentUrl: string): Promise<OllamaHos
 }
 
 export function normalizeOllamaUrl(value: string): string {
-  if (!value || value === "local" || value === "localhost") {
-    return localOllamaUrl;
-  }
-
-  if (/^https?:\/\//i.test(value)) {
-    return value.replace(/\/$/, "");
-  }
-
-  return `http://${value}`.replace(/\/$/, "");
+  return normalizeOllamaBaseUrl(value);
 }
 
 export async function checkOllamaHost(

@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { OllamaClient } from "../src/core/ollama.js";
+import {
+  OllamaClient,
+  normalizeOllamaBaseUrl,
+  readOllamaRuntimeOptions,
+  resolveOllamaBaseUrl
+} from "../src/core/ollama.js";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -45,6 +50,14 @@ describe("OllamaClient", () => {
         method: "POST"
       })
     );
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toMatchObject({
+      keep_alive: "15m",
+      options: {
+        num_ctx: 8192,
+        num_predict: 1024,
+        temperature: 0.1
+      }
+    });
     expect(result.content).toBe("{\"action\":\"final\",\"message\":\"ok\"}");
     expect(result.telemetry).toEqual({
       promptTokens: 12,
@@ -54,6 +67,81 @@ describe("OllamaClient", () => {
       promptDurationMs: 200,
       responseDurationMs: 400,
       totalDurationMs: 700
+    });
+  });
+
+  it("uses explicit runtime options for memory-constrained Macs", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          message: {
+            content: "ok"
+          }
+        }),
+        {
+          status: 200,
+          headers: {
+            "Content-Type": "application/json"
+          }
+        }
+      )
+    );
+
+    const client = new OllamaClient("local", {
+      keepAlive: "5m",
+      numCtx: 4096,
+      numPredict: 512,
+      temperature: 0.2
+    });
+
+    await client.chat({
+      model: "qwen2.5-coder:7b",
+      messages: [
+        {
+          role: "user",
+          content: "hello"
+        }
+      ]
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://127.0.0.1:11434/api/chat",
+      expect.objectContaining({
+        body: expect.stringContaining("\"num_ctx\":4096")
+      })
+    );
+  });
+});
+
+describe("Ollama URL config", () => {
+  it("defaults to local Ollama for macOS and other local clients", () => {
+    expect(resolveOllamaBaseUrl({})).toBe("http://127.0.0.1:11434");
+  });
+
+  it("accepts Ollama host environment variables", () => {
+    expect(resolveOllamaBaseUrl({ OLLAMA_HOST: "192.168.1.50:11434" })).toBe("http://192.168.1.50:11434");
+    expect(resolveOllamaBaseUrl({ PATCHPILOT_OLLAMA_URL: "http://10.0.0.2:11434" })).toBe("http://10.0.0.2:11434");
+  });
+
+  it("normalizes bind addresses and accidental api suffixes for client use", () => {
+    expect(normalizeOllamaBaseUrl("0.0.0.0:11434")).toBe("http://127.0.0.1:11434");
+    expect(normalizeOllamaBaseUrl("http://localhost:11434/api")).toBe("http://localhost:11434");
+    expect(normalizeOllamaBaseUrl("192.168.1.50")).toBe("http://192.168.1.50:11434");
+  });
+
+  it("reads local runtime tuning from environment", () => {
+    expect(
+      readOllamaRuntimeOptions({
+        PATCHPILOT_KEEP_ALIVE: "30m",
+        PATCHPILOT_NUM_CTX: "4096",
+        PATCHPILOT_NUM_PREDICT: "768",
+        PATCHPILOT_TEMPERATURE: "0"
+      })
+    ).toEqual({
+      keepAlive: "30m",
+      numCtx: 4096,
+      numPredict: 768,
+      temperature: 0
     });
   });
 });

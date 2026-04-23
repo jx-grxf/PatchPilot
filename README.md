@@ -92,7 +92,7 @@ The first target is a practical developer workflow: open a repository, describe 
 - Node.js 22 or newer
 - npm 10 or newer
 - Git
-- Ollama for local model execution
+- Ollama for local or remote model execution
 - A pulled local model, for example `qwen2.5-coder:7b`
 
 ---
@@ -156,6 +156,8 @@ Run diagnostics:
 patchpilot doctor
 ```
 
+The doctor command checks Node, Git, the Ollama CLI, the Ollama server, and whether the selected model is pulled locally. Use `patchpilot doctor --check-model <name>` or `patchpilot doctor --model <name>` when testing a non-default model, and `patchpilot doctor --check-url <url>` or `patchpilot doctor --ollama-url <url>` when testing a remote Ollama host.
+
 Inside the TUI, use `/help` to see available commands. Permissions can be changed without restarting:
 
 | Slash command | Description |
@@ -185,22 +187,29 @@ Inside the TUI, use `/help` to see available commands. Permissions can be change
 
 PatchPilot can run the agent on one machine while using an Ollama server on another machine. This is useful when your Windows desktop has the GPU and your MacBook is where you are editing code.
 
-For now, macOS is treated as a remote-client platform. If PatchPilot starts on macOS without a remote Ollama URL, it shows a warning and waits for `/connect`. Local macOS model execution will be added later, so the intended Mac flow is:
+By default, PatchPilot talks to Ollama at `http://127.0.0.1:11434` on macOS, Windows, and Linux. On macOS, install and start Ollama.app, pull a model, then run PatchPilot directly:
 
 ```bash
+ollama pull qwen2.5-coder:7b
 patchpilot
 ```
 
-Then in the TUI:
+PatchPilot keeps file reads, file writes, shell commands, Git, and tests on the machine where the TUI runs. Only model requests go to the selected Ollama server.
+
+For Apple Silicon Macs with less memory, tune the request budget before starting PatchPilot:
+
+```bash
+PATCHPILOT_NUM_CTX=4096 PATCHPILOT_NUM_PREDICT=768 patchpilot
+```
+
+To use a stronger remote GPU host from the MacBook, switch inside the TUI:
 
 ```text
 /connect
 /connect 1
 ```
 
-PatchPilot keeps file reads, file writes, shell commands, Git, and tests on the Mac. Only the model request is sent to the selected remote Ollama server.
-
-On the Windows desktop, expose Ollama on the LAN:
+On a Windows desktop or another remote machine, expose Ollama on the LAN:
 
 1. Quit Ollama from the taskbar.
 2. Add a user environment variable named `OLLAMA_HOST` with value `0.0.0.0:11434`.
@@ -219,6 +228,7 @@ Or switch inside the TUI from any supported platform:
 /connect
 /connect 1
 /connect http://<windows-pc-ip>:11434
+/connect local
 ```
 
 The scan verifies `GET /api/version`, so it does not list random local interfaces or machines that merely have port `11434` open.
