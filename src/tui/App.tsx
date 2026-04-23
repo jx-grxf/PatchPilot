@@ -4,8 +4,8 @@ import { AgentRunner, type AgentRunnerOptions } from "../core/agent.js";
 import { defaultCodexModel, hasCodexCliOAuth } from "../core/codex.js";
 import { describeComputeTarget } from "../core/compute.js";
 import { runDoctor } from "../core/doctor.js";
-import { defaultGeminiModel } from "../core/gemini.js";
 import { savePatchPilotEnvValues } from "../core/env.js";
+import { defaultGeminiModel } from "../core/gemini.js";
 import { createModelClient } from "../core/modelClient.js";
 import { defaultOllamaModel } from "../core/ollama.js";
 import { addTelemetryToSession, emptySessionTelemetry, estimateTokens } from "../core/tokenAccounting.js";
@@ -17,13 +17,18 @@ import { OnboardingPanel, type OnboardingState } from "./components/OnboardingPa
 import { Sidebar } from "./components/Sidebar.js";
 import { Transcript } from "./components/Transcript.js";
 import { filterSlashCommands, formatCommandDetail } from "./commands.js";
-import { formatCost, formatOllamaHost, formatSessionTokens, formatTokens, normalizeModelAlias, readToggle } from "./format.js";
+import { formatCost, formatSessionTokens, formatTokens, normalizeModelAlias, readToggle } from "./format.js";
 import { checkOllamaHost, discoverOllamaHosts, normalizeOllamaUrl, readOllamaHostDetails, type OllamaHost, type OllamaHostDetails } from "./hosts.js";
 import { readGpuStats, readSystemStats, type GpuStats, type SystemStats } from "./systemStats.js";
 import { maxTranscriptLines, type AdvisorNote, type AgentMode, type LogLine } from "./types.js";
 
 export type PatchPilotAppProps = AgentRunnerOptions & {
   initialTask?: string;
+};
+
+type PaletteSuggestion = CommandSuggestionItem & {
+  command: string;
+  execute: boolean;
 };
 
 const modelCacheTtlMs = 5 * 60_000;
@@ -43,10 +48,12 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   const [sessionTelemetry, setSessionTelemetry] = useState<SessionTelemetry>(() => emptySessionTelemetry());
   const [systemStats, setSystemStats] = useState<SystemStats>(() => readSystemStats().stats);
   const [gpuStats, setGpuStats] = useState<GpuStats | null>(null);
-  const [activeHost, setActiveHost] = useState<OllamaHostDetails | null>(null);
   const [agentMode, setAgentMode] = useState<AgentMode>(props.allowWrite || props.allowShell ? "build" : "plan");
   const [hostOptions, setHostOptions] = useState<OllamaHost[]>([]);
+  const [activeHost, setActiveHost] = useState<OllamaHostDetails | null>(null);
+  const [isLoadingHosts, setIsLoadingHosts] = useState(false);
   const [modelOptions, setModelOptions] = useState<string[]>([]);
+  const [isLoadingModels, setIsLoadingModels] = useState(false);
   const [onboarding, setOnboarding] = useState<OnboardingState | null>(null);
   const [onboardingIndex, setOnboardingIndex] = useState(0);
   const [onboardingInput, setOnboardingInput] = useState("");
@@ -71,7 +78,18 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   const panelHeight = Math.max(12, terminalRows - 11);
   const transcriptWidth = Math.max(42, terminalColumns - 38);
   const scrollStep = Math.max(4, Math.floor(panelHeight * 0.8));
-  const paletteItems = !isRunning && !onboarding ? buildCommandSuggestionItems(input, hostOptions, modelOptions, settings.model) : [];
+  const paletteItems =
+    !isRunning && !onboarding
+      ? buildCommandSuggestionItems({
+          input,
+          provider: settings.provider,
+          hostOptions,
+          modelOptions,
+          currentModel: settings.model,
+          isLoadingHosts,
+          isLoadingModels
+        })
+      : [];
 
   const appendLine = useCallback((line: Omit<LogLine, "id">) => {
     setLines((currentLines) => [
@@ -106,6 +124,453 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   const toggleMode = useCallback(() => {
     applyMode(agentMode === "plan" ? "build" : "plan");
   }, [agentMode, applyMode]);
+
+  const loadHostSuggestions = useCallback(
+    async (refresh = false, announce = false): Promise<OllamaHost[]> => {
+      if (isLoadingHosts) {
+        return hostOptions;
+      }
+
+      setIsLoadingHosts(true);
+      try {
+        const hosts = await discoverOllamaHosts(settings.ollamaUrl, {
+          refresh
+        });
+        setHostOptions(hosts);
+        if (announce) {
+          appendLine({
+            tone: hosts.length > 0 ? "accent" : "warning",
+            label: "hosts",
+            text:
+              hosts.length > 0
+                ? `Found ${hosts.length} Ollama host${hosts.length === 1 ? "" : "s"}. Pick one with /connect or the command palette.`
+                : "No reachable Ollama hosts found.",
+            detail:
+              hosts.length > 0
+                ? formatHostOptions(hosts)
+                : "PatchPilot scanned the local LAN and Tailscale peers. Try /connect <host> for a manual URL or MagicDNS name."
+          });
+        }
+        return hosts;
+      } finally {
+        setIsLoadingHosts(false);
+      }
+    },
+    [appendLine, hostOptions, isLoadingHosts, settings.ollamaUrl]
+  );
+
+  const loadProviderModels = useCallback(
+    async (refresh = false): Promise<string[]> => {
+      if (isLoadingModels) {
+        return modelOptions;
+      }
+
+      setIsLoadingModels(true);
+      try {
+        return await loadAvailableModels(settings.provider, settings.ollamaUrl, setModelOptions, refresh);
+      } finally {
+        setIsLoadingModels(false);
+      }
+    },
+    [isLoadingModels, modelOptions, settings.ollamaUrl, settings.provider]
+  );
+
+  const connectToHost = useCallback(
+    async (
+      value: string | OllamaHost,
+      options: {
+        announce?: boolean;
+      } = {}
+    ): Promise<OllamaHostDetails | null> => {
+      const candidate = typeof value === "string" ? null : value;
+      const nextUrl = typeof value === "string" ? normalizeOllamaUrl(value) : value.url;
+      const verifiedHost = await checkOllamaHost(nextUrl, {
+        ...candidate,
+        timeoutMs: 1200
+      });
+
+      if (!verifiedHost) {
+        if (options.announce !== false) {
+          appendLine({
+            tone: "warning",
+            label: "ollama",
+            text: `No Ollama server answered at ${nextUrl}.`,
+            detail: "Check the IP, MagicDNS name, firewall rules, and whether Ollama is listening on the remote machine."
+          });
+        }
+        return null;
+      }
+
+      const details = await readOllamaHostDetails(verifiedHost, true).catch(() => ({
+        host: verifiedHost,
+        models: [] as string[],
+        runningModels: [] as string[],
+        fetchedAt: Date.now()
+      }));
+
+      setTelemetry(null);
+      setActiveHost(details);
+      setHostOptions((currentHosts) => [verifiedHost, ...currentHosts.filter((host) => host.url !== verifiedHost.url)]);
+      setModelOptions(details.models);
+      modelCache.set(`ollama:${verifiedHost.url}`, {
+        models: details.models,
+        expiresAt: Date.now() + modelCacheTtlMs
+      });
+      setSettings((currentSettings) => ({
+        ...currentSettings,
+        provider: "ollama",
+        ollamaUrl: verifiedHost.url
+      }));
+      savePatchPilotEnvValues({
+        PATCHPILOT_PROVIDER: "ollama",
+        PATCHPILOT_OLLAMA_URL: verifiedHost.url
+      });
+
+      if (options.announce !== false) {
+        appendLine({
+          tone: "success",
+          label: "ollama",
+          text: `connected to ${verifiedHost.deviceName}`,
+          detail: `Ollama ${verifiedHost.version ?? "unknown version"} at ${verifiedHost.url}. Only inference runs on this host; file reads, writes, shell, Git, and tests stay on this device.`
+        });
+
+        if (details.models.length > 0 && !details.models.includes(settings.model)) {
+          appendLine({
+            tone: "warning",
+            label: "model",
+            text: `${settings.model} is not available on ${verifiedHost.deviceName}.`,
+            detail: `Pick a host model with /models. Available:\n${formatModelOptions(details.models, settings.model)}`
+          });
+        }
+      }
+
+      return details;
+    },
+    [appendLine, settings.model]
+  );
+
+  const openModelSelection = useCallback(
+    async (
+      provider: ModelProvider,
+      options: {
+        deviceName?: string;
+        currentModel?: string;
+      } = {}
+    ): Promise<void> => {
+      setTelemetry(null);
+      setOnboardingBusyMessage(`Loading ${provider} models...`);
+      const nextModel = defaultModelForProvider(provider, options.currentModel ?? settings.model);
+      setSettings((currentSettings) => ({
+        ...currentSettings,
+        provider,
+        model: nextModel
+      }));
+
+      try {
+        const models = await loadAvailableModels(provider, settings.ollamaUrl, setModelOptions, true);
+        if (models.length === 0) {
+          appendLine({
+            tone: "warning",
+            label: "onboarding",
+            text:
+              provider === "ollama"
+                ? "No Ollama models found on that host."
+                : provider === "gemini"
+                  ? "No Gemini models listed. Check the API key."
+                  : "No Codex OAuth models listed."
+          });
+          return;
+        }
+
+        setOnboarding({
+          step: "model",
+          provider,
+          models,
+          deviceName: options.deviceName
+        });
+        setOnboardingIndex(0);
+      } catch (error) {
+        appendLine({
+          tone: "danger",
+          label: "onboarding",
+          text: error instanceof Error ? error.message : String(error)
+        });
+      } finally {
+        setOnboardingBusyMessage(null);
+      }
+    },
+    [appendLine, settings.model, settings.ollamaUrl]
+  );
+
+  const closeOnboarding = useCallback(() => {
+    setOnboarding(null);
+    setOnboardingIndex(0);
+    setOnboardingInput("");
+    setOnboardingBusyMessage(null);
+  }, []);
+
+  const goBackOnboarding = useCallback(() => {
+    if (!onboarding) {
+      return;
+    }
+
+    setOnboardingBusyMessage(null);
+    setOnboardingInput("");
+    setOnboardingIndex(0);
+
+    switch (onboarding.step) {
+      case "entry":
+        setOnboarding(null);
+        return;
+      case "host":
+      case "gemini-key":
+      case "codex-login":
+        setOnboarding({
+          step: "entry"
+        });
+        return;
+      case "host-input":
+        setOnboarding({
+          step: "host",
+          hosts: hostOptions
+        });
+        return;
+      case "model":
+        if (onboarding.provider === "ollama" && activeHost?.host.kind !== "local") {
+          setOnboarding({
+            step: "host",
+            hosts: hostOptions
+          });
+          return;
+        }
+
+        if (onboarding.provider === "gemini") {
+          setOnboarding({
+            step: "gemini-key"
+          });
+          return;
+        }
+
+        if (onboarding.provider === "codex" && !hasCodexCliOAuth()) {
+          setOnboarding({
+            step: "codex-login"
+          });
+          return;
+        }
+
+        setOnboarding({
+          step: "entry"
+        });
+    }
+  }, [activeHost?.host.kind, hostOptions, onboarding]);
+
+  const handleOnboardingSubmit = useCallback(
+    async (value: string): Promise<void> => {
+      if (!onboarding) {
+        return;
+      }
+
+      if (onboarding.step === "entry") {
+        const selection = readEntrySelection(value, onboardingIndex);
+        if (!selection) {
+          return;
+        }
+
+        if (selection === "local") {
+          setOnboardingBusyMessage("Checking local Ollama...");
+          const details = await connectToHost("local", {
+            announce: false
+          });
+          if (!details) {
+            setOnboardingBusyMessage(null);
+            appendLine({
+              tone: "warning",
+              label: "onboarding",
+              text: "Local Ollama is not reachable.",
+              detail: "Start Ollama.app or run `ollama serve`, then try again."
+            });
+            return;
+          }
+
+          await openModelSelection("ollama", {
+            deviceName: details.host.deviceName
+          });
+          return;
+        }
+
+        if (selection === "host") {
+          setOnboardingBusyMessage("Scanning LAN and Tailscale for Ollama hosts...");
+          try {
+            const hosts = await loadHostSuggestions(true, false);
+            setOnboarding({
+              step: "host",
+              hosts
+            });
+            setOnboardingIndex(0);
+          } finally {
+            setOnboardingBusyMessage(null);
+          }
+          return;
+        }
+
+        if (selection === "gemini") {
+          setOnboarding({
+            step: "gemini-key"
+          });
+          setOnboardingInput("");
+          return;
+        }
+
+        if (!hasCodexCliOAuth()) {
+          setOnboarding({
+            step: "codex-login"
+          });
+          return;
+        }
+
+        await openModelSelection("codex");
+        return;
+      }
+
+      if (onboarding.step === "host") {
+        const selectionIndex = readIndexedSelection(value, onboardingIndex);
+        if (selectionIndex === null) {
+          return;
+        }
+
+        if (selectionIndex === 0) {
+          setOnboarding({
+            step: "host-input"
+          });
+          setOnboardingInput("");
+          return;
+        }
+
+        const selectedHost = onboarding.hosts[selectionIndex - 1];
+        if (!selectedHost) {
+          appendLine({
+            tone: "warning",
+            label: "onboarding",
+            text: "Unknown host selection."
+          });
+          return;
+        }
+
+        setOnboardingBusyMessage(`Connecting to ${selectedHost.deviceName}...`);
+        const details = await connectToHost(selectedHost, {
+          announce: false
+        });
+        if (!details) {
+          setOnboardingBusyMessage(null);
+          return;
+        }
+
+        await openModelSelection("ollama", {
+          deviceName: details.host.deviceName
+        });
+        return;
+      }
+
+      if (onboarding.step === "host-input") {
+        const hostValue = value.trim();
+        if (!hostValue) {
+          appendLine({
+            tone: "warning",
+            label: "onboarding",
+            text: "Host cannot be empty."
+          });
+          return;
+        }
+
+        setOnboardingBusyMessage(`Connecting to ${hostValue}...`);
+        const details = await connectToHost(hostValue, {
+          announce: false
+        });
+        if (!details) {
+          setOnboardingBusyMessage(null);
+          return;
+        }
+
+        await openModelSelection("ollama", {
+          deviceName: details.host.deviceName
+        });
+        return;
+      }
+
+      if (onboarding.step === "gemini-key") {
+        const apiKey = value.trim();
+        if (!apiKey) {
+          appendLine({
+            tone: "warning",
+            label: "onboarding",
+            text: "Gemini API key cannot be empty."
+          });
+          return;
+        }
+
+        process.env.GEMINI_API_KEY = apiKey;
+        savePatchPilotEnvValues({
+          PATCHPILOT_PROVIDER: "gemini",
+          PATCHPILOT_MODEL: defaultGeminiModel,
+          GEMINI_API_KEY: apiKey
+        });
+        appendLine({
+          tone: "success",
+          label: "onboarding",
+          text: "Gemini API key saved to PatchPilot config."
+        });
+        await openModelSelection("gemini", {
+          currentModel: defaultGeminiModel
+        });
+        return;
+      }
+
+      if (onboarding.step === "codex-login") {
+        if (!hasCodexCliOAuth()) {
+          appendLine({
+            tone: "warning",
+            label: "onboarding",
+            text: "Codex OAuth is still missing. Run `codex login`, then press Enter again."
+          });
+          return;
+        }
+
+        await openModelSelection("codex", {
+          currentModel: defaultCodexModel
+        });
+        return;
+      }
+
+      const selectedModel = selectModelFromInput(value, onboarding.models, onboardingIndex);
+      if (!selectedModel) {
+        appendLine({
+          tone: "warning",
+          label: "onboarding",
+          text: "Unknown model selection. Pick a listed model."
+        });
+        return;
+      }
+
+      setTelemetry(null);
+      setSettings((currentSettings) => ({
+        ...currentSettings,
+        provider: onboarding.provider,
+        model: selectedModel
+      }));
+      savePatchPilotEnvValues({
+        PATCHPILOT_PROVIDER: onboarding.provider,
+        PATCHPILOT_MODEL: selectedModel,
+        ...(onboarding.provider === "ollama" ? { PATCHPILOT_OLLAMA_URL: settings.ollamaUrl } : {})
+      });
+      appendLine({
+        tone: "success",
+        label: "onboarding",
+        text: `ready: ${onboarding.provider} using ${selectedModel}`
+      });
+      closeOnboarding();
+    },
+    [appendLine, closeOnboarding, connectToHost, loadHostSuggestions, onboarding, onboardingIndex, openModelSelection, settings.ollamaUrl]
+  );
 
   const runTask = useCallback(
     async (task: string) => {
@@ -235,7 +700,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         }
         case "onboarding":
           setOnboarding({
-            step: "provider"
+            step: "entry"
           });
           setOnboardingIndex(0);
           setOnboardingInput("");
@@ -291,18 +756,23 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           return;
         }
         case "model": {
-          const nextModel = normalizeModelAlias(args.join(" ").trim());
-          if (!nextModel) {
+          const requestedModel = normalizeModelAlias(args.join(" ").trim());
+          if (!requestedModel) {
+            const models = await loadKnownOrAvailableModels(settings.provider, settings.ollamaUrl, modelOptions, setModelOptions, appendLine);
+            if (!models) {
+              return;
+            }
+
             appendLine({
               tone: "accent",
               label: "model",
               text: settings.model,
-              detail: modelOptions.length > 0 ? formatModelOptions(modelOptions, settings.model) : "Use /models to list installed models."
+              detail: models.length > 0 ? formatModelOptions(models, settings.model) : "Use /models to load available models."
             });
             return;
           }
 
-          await switchModel(settings.provider, nextModel, settings.ollamaUrl, settings.model, appendLine, setModelOptions, setSettings, setTelemetry);
+          await switchModel(settings.provider, requestedModel, settings.ollamaUrl, settings.model, appendLine, setModelOptions, setSettings, setTelemetry);
           return;
         }
         case "models": {
@@ -313,24 +783,12 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
               return;
             }
 
-            const modelIndex = Number.parseInt(requestedModel, 10);
-            const selectedModel = Number.isInteger(modelIndex) ? installedModels[modelIndex - 1] : undefined;
-            if (Number.isInteger(modelIndex) && !selectedModel) {
-              appendLine({
-                tone: "warning",
-                label: "models",
-                text: `No installed model at index ${modelIndex}.`,
-                detail: installedModels.length > 0 ? formatModelOptions(installedModels, settings.model) : "No models installed."
-              });
-              return;
-            }
-
-            const nextModel = selectedModel ?? normalizeModelAlias(requestedModel);
+            const nextModel = selectModelFromInput(requestedModel, installedModels);
             if (!nextModel) {
               appendLine({
                 tone: "warning",
                 label: "models",
-                text: "No model selected. Use /models to list installed models, then /models 1."
+                text: "No model selected. Use /models to fetch available models, then choose one from the palette."
               });
               return;
             }
@@ -346,18 +804,18 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           });
 
           try {
-            const models = await loadAvailableModels(settings.provider, settings.ollamaUrl, setModelOptions, true);
+            const models = await loadProviderModels(true);
             if (models.length === 0) {
               appendLine({
                 tone: "warning",
                 label: "models",
-              text: `No ${settings.provider} models found.`,
-              detail:
-                settings.provider === "ollama"
-                  ? "Pull one first, for example: ollama pull qwen2.5-coder:7b"
-                  : settings.provider === "gemini"
-                    ? "Check GEMINI_API_KEY in .env."
-                    : "Run codex login first."
+                text: `No ${settings.provider} models found.`,
+                detail:
+                  settings.provider === "ollama"
+                    ? "Pull a model on the selected host first."
+                    : settings.provider === "gemini"
+                      ? "Check GEMINI_API_KEY in PatchPilot config."
+                      : "Run codex login first."
               });
               return;
             }
@@ -365,7 +823,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
             appendLine({
               tone: "accent",
               label: "models",
-              text: `Found ${models.length} installed model${models.length === 1 ? "" : "s"}. Select with /models 1 or /model <name>.`,
+              text: `Loaded ${models.length} model${models.length === 1 ? "" : "s"} from ${settings.provider}.`,
               detail: formatModelOptions(models, settings.model)
             });
           } catch (error) {
@@ -381,7 +839,10 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           appendLine({
             tone: "accent",
             label: "status",
-            text: `provider ${settings.provider} | model ${settings.model} | host ${settings.provider === "ollama" ? settings.ollamaUrl : `${settings.provider} oauth`} | compute ${settings.provider === "ollama" ? describeComputeTarget(settings.ollamaUrl).kind : "cloud"} | agents ${settings.subagents ? "on" : "off"} | write ${settings.allowWrite ? "on" : "off"} | shell ${settings.allowShell ? "on" : "off"} | draft ${draftTokens} tok | last ${formatTokens(telemetry)} | session ${formatSessionTokens(sessionTelemetry)} | cost ${formatCost(sessionTelemetry.estimatedCostUsd)}`
+            text:
+              settings.provider === "ollama"
+                ? `provider ollama | model ${settings.model} | host ${activeHost?.host.deviceName ?? settings.ollamaUrl} | route ${activeHost?.host.url ?? settings.ollamaUrl} | compute ${describeComputeTarget(settings.ollamaUrl).kind} | tools local | agents ${settings.subagents ? "on" : "off"} | write ${settings.allowWrite ? "on" : "off"} | shell ${settings.allowShell ? "on" : "off"} | draft ${draftTokens} tok | last ${formatTokens(telemetry)} | session ${formatSessionTokens(sessionTelemetry)} | cost ${formatCost(sessionTelemetry.estimatedCostUsd)}`
+                : `provider ${settings.provider} | model ${settings.model} | host ${settings.provider} oauth | compute cloud | agents ${settings.subagents ? "on" : "off"} | write ${settings.allowWrite ? "on" : "off"} | shell ${settings.allowShell ? "on" : "off"} | draft ${draftTokens} tok | last ${formatTokens(telemetry)} | session ${formatSessionTokens(sessionTelemetry)} | cost ${formatCost(sessionTelemetry.estimatedCostUsd)}`
           });
           return;
         case "connect":
@@ -395,15 +856,40 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
             });
             return;
           }
-          await handleConnectCommand(args, settings.ollamaUrl, appendLine, hostOptions, setHostOptions, setSettings, setTelemetry);
+
+          if (args.length === 0) {
+            appendLine({
+              tone: "muted",
+              label: "hosts",
+              text: "Scanning LAN and Tailscale for Ollama hosts..."
+            });
+            await loadHostSuggestions(true, true);
+            return;
+          }
+
+          if (args.join(" ").trim().toLowerCase() === "local") {
+            await connectToHost("local");
+            return;
+          }
+
+          {
+            const requestedHost = args.join(" ").trim();
+            const hostIndex = Number.parseInt(requestedHost, 10);
+            const selectedHost = Number.isInteger(hostIndex) ? hostOptions[hostIndex - 1] : undefined;
+            if (selectedHost) {
+              await connectToHost(selectedHost);
+            } else {
+              await connectToHost(requestedHost);
+            }
+          }
           return;
         case "hosts":
           appendLine({
             tone: "muted",
             label: "hosts",
-            text: "Scanning LAN for real Ollama hosts..."
+            text: "Scanning LAN and Tailscale for Ollama hosts..."
           });
-          await loadHosts(settings.ollamaUrl, appendLine, setHostOptions);
+          await loadHostSuggestions(true, true);
           return;
         case "doctor": {
           appendLine({
@@ -442,7 +928,23 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           });
       }
     },
-    [agentMode, appendLine, applyMode, draftTokens, exit, hostOptions, modelOptions, sessionTelemetry, settings, telemetry]
+    [
+      activeHost?.host.deviceName,
+      activeHost?.host.url,
+      agentMode,
+      appendLine,
+      applyMode,
+      connectToHost,
+      draftTokens,
+      exit,
+      hostOptions,
+      loadHostSuggestions,
+      loadProviderModels,
+      modelOptions,
+      sessionTelemetry,
+      settings,
+      telemetry
+    ]
   );
 
   const handleSubmit = useCallback(
@@ -452,128 +954,148 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         return;
       }
 
-      setInput("");
-      if (nextValue.startsWith("/")) {
-        await handleSlashCommand(nextValue);
+      if (onboarding) {
+        await handleOnboardingSubmit(nextValue);
         return;
       }
 
-      if (onboarding) {
-        await handleOnboardingSubmit(nextValue, onboarding, settings, appendLine, setSettings, setModelOptions, setTelemetry, setOnboarding, setOnboardingBusyMessage);
+      if (nextValue.startsWith("/")) {
+        const selectedItem = paletteItems[paletteIndex];
+        const shouldApplySuggestion =
+          selectedItem &&
+          (selectedItem.execute || selectedItem.command === nextValue || nextValue === "/" || nextValue.endsWith(" "));
+        const commandToRun = shouldApplySuggestion ? selectedItem.command : nextValue;
+
+        if (selectedItem && !selectedItem.execute && commandToRun !== nextValue) {
+          setInput(commandToRun);
+          return;
+        }
+
+        setInput("");
+        await handleSlashCommand(commandToRun);
         return;
       }
 
       await runTask(nextValue);
     },
-    [appendLine, handleSlashCommand, isRunning, onboarding, runTask, settings]
+    [handleOnboardingSubmit, handleSlashCommand, isRunning, onboarding, paletteIndex, paletteItems, runTask]
   );
 
   useEffect(() => {
-    if (!props.initialTask || didRunInitialTask.current) {
+    if (!props.initialTask || didRunInitialTask.current || onboarding) {
       return;
     }
 
     didRunInitialTask.current = true;
     void runTask(props.initialTask);
-  }, [props.initialTask, runTask]);
+  }, [onboarding, props.initialTask, runTask]);
 
   useEffect(() => {
     setPaletteIndex(0);
-  }, [input, hostOptions, modelOptions, onboarding, settings.model]);
+  }, [hostOptions, input, modelOptions, onboarding, settings.model, settings.provider]);
 
   useEffect(() => {
-    if (didOpenDefaultOnboarding.current || props.initialTask || process.env.PATCHPILOT_PROVIDER || onboarding) {
+    if (didOpenDefaultOnboarding.current || props.initialTask || onboarding) {
       return;
     }
 
     didOpenDefaultOnboarding.current = true;
     setOnboarding({
-      step: "provider"
+      step: "entry"
     });
     setOnboardingIndex(0);
     setOnboardingInput("");
+    setOnboardingBusyMessage(null);
   }, [onboarding, props.initialTask]);
 
-  useInput((inputValue, key) => {
-    if (onboarding) {
-      if (key.escape) {
-        if (onboarding.step === "provider") {
-          setOnboarding(null);
-          setOnboardingBusyMessage(null);
-        } else if (onboarding.step === "model") {
-          setOnboardingBusyMessage(null);
-          setOnboardingInput("");
-          setOnboardingIndex(0);
-          setOnboarding(
-            onboarding.provider === "gemini"
-              ? {
-                  step: "gemini-key"
-                }
-              : onboarding.provider === "codex" && !hasCodexCliOAuth()
-                ? {
-                    step: "codex-login"
-                  }
-                : {
-                    step: "provider"
-                  }
-          );
-        } else {
-          setOnboarding({
-            step: "provider"
-          });
-          setOnboardingBusyMessage(null);
-          setOnboardingInput("");
-          setOnboardingIndex(0);
+  useEffect(() => {
+    if (settings.provider !== "ollama") {
+      setActiveHost(null);
+      return;
+    }
+
+    let cancelled = false;
+    async function syncActiveHost(): Promise<void> {
+      const verifiedHost = await checkOllamaHost(settings.ollamaUrl, {
+        timeoutMs: 800
+      });
+      if (!verifiedHost) {
+        if (!cancelled) {
+          setActiveHost(null);
         }
         return;
       }
 
-      if (onboarding.step === "provider" || onboarding.step === "model") {
-        const optionCount = onboarding.step === "provider" ? 3 : onboarding.models.length;
-        if (key.upArrow) {
-          setOnboardingIndex((currentIndex) => (currentIndex - 1 + optionCount) % optionCount);
-          return;
-        }
+      const details = await readOllamaHostDetails(verifiedHost).catch(() => ({
+        host: verifiedHost,
+        models: [] as string[],
+        runningModels: [] as string[],
+        fetchedAt: Date.now()
+      }));
 
-        if (key.downArrow) {
-          setOnboardingIndex((currentIndex) => (currentIndex + 1) % optionCount);
-          return;
-        }
-
-        if (key.return) {
-          const value = String(onboardingIndex + 1);
-          void handleOnboardingSubmit(
-            value,
-            onboarding,
-            settings,
-            appendLine,
-            setSettings,
-            setModelOptions,
-            setTelemetry,
-            setOnboarding,
-            setOnboardingBusyMessage
-          );
-          return;
-        }
+      if (cancelled) {
+        return;
       }
 
-      if (onboarding.step === "codex-login" && key.return) {
-        void handleOnboardingSubmit(
-          "",
-          onboarding,
-          settings,
-          appendLine,
-          setSettings,
-          setModelOptions,
-          setTelemetry,
-          setOnboarding,
-          setOnboardingBusyMessage
-        );
-        return;
+      setActiveHost(details);
+      if (details.models.length > 0) {
+        setModelOptions((currentModels) => (currentModels.length > 0 && currentModels.join("\n") === details.models.join("\n") ? currentModels : details.models));
       }
     }
 
-    if (!onboarding && paletteItems.length > 0) {
+    void syncActiveHost();
+    return () => {
+      cancelled = true;
+    };
+  }, [settings.ollamaUrl, settings.provider]);
+
+  useEffect(() => {
+    if (onboarding || isRunning) {
+      return;
+    }
+
+    const trimmedInput = input.trim();
+    if (settings.provider === "ollama" && (trimmedInput === "/connect" || trimmedInput === "/hosts") && hostOptions.length === 0 && !isLoadingHosts) {
+      void loadHostSuggestions(false, false);
+    }
+
+    if ((trimmedInput === "/models" || trimmedInput === "/model") && modelOptions.length === 0 && !isLoadingModels) {
+      void loadProviderModels(false);
+    }
+  }, [hostOptions.length, input, isLoadingHosts, isLoadingModels, isRunning, loadHostSuggestions, loadProviderModels, modelOptions.length, onboarding, settings.provider]);
+
+  useInput((inputValue, key) => {
+    if (onboarding) {
+      if (key.escape || key.leftArrow) {
+        goBackOnboarding();
+        return;
+      }
+
+      const optionCount = getOnboardingOptionCount(onboarding);
+      if (optionCount > 0 && key.upArrow) {
+        setOnboardingIndex((currentIndex) => (currentIndex - 1 + optionCount) % optionCount);
+        return;
+      }
+
+      if (optionCount > 0 && key.downArrow) {
+        setOnboardingIndex((currentIndex) => (currentIndex + 1) % optionCount);
+        return;
+      }
+
+      if (optionCount > 0 && key.return) {
+        void handleOnboardingSubmit(String(onboardingIndex + 1));
+        return;
+      }
+
+      if (onboarding.step === "codex-login" && key.return) {
+        void handleOnboardingSubmit("");
+        return;
+      }
+
+      return;
+    }
+
+    if (paletteItems.length > 0) {
       if (key.upArrow) {
         setPaletteIndex((currentIndex) => (currentIndex - 1 + paletteItems.length) % paletteItems.length);
         return;
@@ -584,24 +1106,8 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         return;
       }
 
-      if (key.return) {
-        const selectedItem = paletteItems[paletteIndex];
-        if (!selectedItem) {
-          return;
-        }
-
-        if (selectedItem.hint === "run") {
-          setInput("");
-          void handleSlashCommand(selectedItem.label);
-          return;
-        }
-
-        setInput(selectedItem.label);
-        return;
-      }
-
       if (key.escape) {
-        setInput(input.trim() === "/" ? "" : "/");
+        setInput("");
         return;
       }
     }
@@ -675,41 +1181,6 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
     };
   }, []);
 
-  useEffect(() => {
-    let isMounted = true;
-
-    async function updateActiveHost(): Promise<void> {
-      if (settings.provider !== "ollama") {
-        if (isMounted) {
-          setActiveHost(null);
-        }
-        return;
-      }
-
-      const host = await checkOllamaHost(settings.ollamaUrl, {
-        label: "current",
-        source: "current",
-        timeoutMs: 500
-      });
-      if (!host) {
-        if (isMounted) {
-          setActiveHost(null);
-        }
-        return;
-      }
-
-      const details = await readOllamaHostDetails(host).catch(() => null);
-      if (isMounted) {
-        setActiveHost(details);
-      }
-    }
-
-    void updateActiveHost();
-    return () => {
-      isMounted = false;
-    };
-  }, [settings.ollamaUrl, settings.provider]);
-
   return (
     <Box flexDirection="column" paddingX={1}>
       <Header
@@ -738,19 +1209,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           input={onboardingInput}
           busyMessage={onboardingBusyMessage}
           onInputChange={setOnboardingInput}
-          onInputSubmit={(value) =>
-            void handleOnboardingSubmit(
-              value,
-              onboarding,
-              settings,
-              appendLine,
-              setSettings,
-              setModelOptions,
-              setTelemetry,
-              setOnboarding,
-              setOnboardingBusyMessage
-            )
-          }
+          onInputSubmit={(value) => void handleOnboardingSubmit(value)}
         />
       ) : (
         <Box flexDirection="row">
@@ -823,211 +1282,6 @@ async function loadAvailableModels(
   return models;
 }
 
-async function handleOnboardingSubmit(
-  value: string,
-  onboarding: OnboardingState,
-  settings: AgentRunnerOptions,
-  appendLine: (line: Omit<LogLine, "id">) => void,
-  setSettings: React.Dispatch<React.SetStateAction<AgentRunnerOptions>>,
-  setModelOptions: React.Dispatch<React.SetStateAction<string[]>>,
-  setTelemetry: React.Dispatch<React.SetStateAction<ModelTelemetry | null>>,
-  setOnboarding: React.Dispatch<React.SetStateAction<OnboardingState | null>>,
-  setOnboardingBusyMessage: React.Dispatch<React.SetStateAction<string | null>>
-): Promise<void> {
-  if (onboarding.step === "provider") {
-    const provider = readOnboardingProvider(value);
-    if (!provider) {
-      appendLine({
-        tone: "warning",
-        label: "onboarding",
-        text: "Type 1 or ollama, 2 or gemini, or 3 or codex."
-      });
-      return;
-    }
-
-    if (provider === "gemini") {
-      setOnboarding({
-        step: "gemini-key"
-      });
-      appendLine({
-        tone: "accent",
-        label: "onboarding",
-        text: "Paste your Gemini API key. The input is masked and will be saved to .env."
-      });
-      return;
-    }
-
-    if (provider === "codex" && !hasCodexCliOAuth()) {
-      setOnboarding({
-        step: "codex-login"
-      });
-      appendLine({
-        tone: "accent",
-        label: "onboarding",
-        text: "Run codex login in another terminal, then press Enter here."
-      });
-      return;
-    }
-
-    await enterModelSelection(provider, settings.ollamaUrl, settings.model, appendLine, setSettings, setModelOptions, setTelemetry, setOnboarding, setOnboardingBusyMessage);
-    return;
-  }
-
-  if (onboarding.step === "gemini-key") {
-    const apiKey = value.trim();
-    if (!apiKey) {
-      appendLine({
-        tone: "warning",
-        label: "onboarding",
-        text: "Gemini API key cannot be empty."
-      });
-      return;
-    }
-
-    process.env.GEMINI_API_KEY = apiKey;
-    savePatchPilotEnvValues({
-      PATCHPILOT_PROVIDER: "gemini",
-      PATCHPILOT_MODEL: defaultGeminiModel,
-      GEMINI_API_KEY: apiKey
-    });
-    appendLine({
-      tone: "success",
-      label: "onboarding",
-      text: "Gemini API key saved to PatchPilot config."
-    });
-    await enterModelSelection("gemini", settings.ollamaUrl, defaultGeminiModel, appendLine, setSettings, setModelOptions, setTelemetry, setOnboarding, setOnboardingBusyMessage);
-    return;
-  }
-
-  if (onboarding.step === "codex-login") {
-    if (!hasCodexCliOAuth()) {
-      appendLine({
-        tone: "warning",
-        label: "onboarding",
-        text: "Codex OAuth is still missing. Run codex login, then press Enter again."
-      });
-      return;
-    }
-
-    await enterModelSelection("codex", settings.ollamaUrl, defaultCodexModel, appendLine, setSettings, setModelOptions, setTelemetry, setOnboarding, setOnboardingBusyMessage);
-    return;
-  }
-
-  const selectedModel = selectModelFromInput(value, onboarding.models);
-  if (!selectedModel) {
-    appendLine({
-      tone: "warning",
-      label: "onboarding",
-      text: "Unknown model selection. Type a listed number or exact model name."
-    });
-    return;
-  }
-
-  setTelemetry(null);
-  setSettings((currentSettings) => ({
-    ...currentSettings,
-    provider: onboarding.provider,
-    model: selectedModel
-  }));
-  savePatchPilotEnvValues({
-    PATCHPILOT_PROVIDER: onboarding.provider,
-    PATCHPILOT_MODEL: selectedModel
-  });
-  setOnboardingBusyMessage(null);
-  setOnboarding(null);
-  appendLine({
-    tone: "success",
-    label: "onboarding",
-    text: `ready: ${onboarding.provider} using ${selectedModel}`
-  });
-}
-
-async function enterModelSelection(
-  provider: ModelProvider,
-  ollamaUrl: string,
-  currentModel: string,
-  appendLine: (line: Omit<LogLine, "id">) => void,
-  setSettings: React.Dispatch<React.SetStateAction<AgentRunnerOptions>>,
-  setModelOptions: React.Dispatch<React.SetStateAction<string[]>>,
-  setTelemetry: React.Dispatch<React.SetStateAction<ModelTelemetry | null>>,
-  setOnboarding: React.Dispatch<React.SetStateAction<OnboardingState | null>>,
-  setOnboardingBusyMessage: React.Dispatch<React.SetStateAction<string | null>>
-): Promise<void> {
-  setTelemetry(null);
-  setOnboardingBusyMessage(`Loading ${provider} models...`);
-  setSettings((currentSettings) => ({
-    ...currentSettings,
-    provider,
-    model: defaultModelForProvider(provider, currentModel)
-  }));
-
-  try {
-    const models = await loadAvailableModels(provider, ollamaUrl, setModelOptions, true);
-    if (models.length === 0) {
-      setOnboardingBusyMessage(null);
-      appendLine({
-        tone: "warning",
-        label: "onboarding",
-        text:
-          provider === "ollama"
-            ? "No Ollama models found. Pull one first."
-            : provider === "gemini"
-              ? "No Gemini models listed. Check your API key."
-              : "No Codex OAuth models listed."
-      });
-      setOnboarding(null);
-      return;
-    }
-
-    setOnboarding({
-      step: "model",
-      provider,
-      models
-    });
-    setOnboardingBusyMessage(null);
-    appendLine({
-      tone: "accent",
-      label: "onboarding",
-      text: `Choose a ${provider} model by number or name.`,
-      detail: formatModelOptions(models.slice(0, 12), defaultModelForProvider(provider, currentModel))
-    });
-  } catch (error) {
-    setOnboardingBusyMessage(null);
-    appendLine({
-      tone: "danger",
-      label: "onboarding",
-      text: error instanceof Error ? error.message : String(error)
-    });
-    setOnboarding(null);
-  }
-}
-
-function readOnboardingProvider(value: string): ModelProvider | null {
-  const normalizedValue = value.trim().toLowerCase();
-  if (normalizedValue === "1" || normalizedValue === "ollama" || normalizedValue === "local") {
-    return "ollama";
-  }
-
-  if (normalizedValue === "2" || normalizedValue === "gemini" || normalizedValue === "google") {
-    return "gemini";
-  }
-
-  if (normalizedValue === "3" || normalizedValue === "codex" || normalizedValue === "openai-codex") {
-    return "codex";
-  }
-
-  return null;
-}
-
-function selectModelFromInput(value: string, models: string[]): string | null {
-  const modelIndex = Number.parseInt(value.trim(), 10);
-  if (Number.isInteger(modelIndex)) {
-    return models[modelIndex - 1] ?? null;
-  }
-
-  return models.includes(value.trim()) ? value.trim() : null;
-}
-
 async function loadKnownOrAvailableModels(
   provider: ModelProvider,
   ollamaUrl: string,
@@ -1058,14 +1312,16 @@ async function switchModel(
   setTelemetry: React.Dispatch<React.SetStateAction<ModelTelemetry | null>>,
   knownModels?: string[]
 ): Promise<void> {
-  const installedModels = knownModels ?? (await loadAvailableModels(provider, ollamaUrl, setModelOptions).catch((error: unknown) => {
-    appendLine({
-      tone: "danger",
-      label: "models",
-      text: error instanceof Error ? error.message : String(error)
-    });
-    return null;
-  }));
+  const installedModels =
+    knownModels ??
+    (await loadAvailableModels(provider, ollamaUrl, setModelOptions).catch((error: unknown) => {
+      appendLine({
+        tone: "danger",
+        label: "models",
+        text: error instanceof Error ? error.message : String(error)
+      });
+      return null;
+    }));
 
   if (!installedModels) {
     return;
@@ -1080,9 +1336,9 @@ async function switchModel(
         installedModels.length > 0
           ? `Use /models and pick one of:\n${formatModelOptions(installedModels, currentModel)}`
           : provider === "ollama"
-            ? "Pull a model first, for example: ollama pull qwen2.5-coder:7b"
+            ? "No models installed on the selected host."
             : provider === "gemini"
-              ? "Check GEMINI_API_KEY in .env."
+              ? "Check GEMINI_API_KEY in PatchPilot config."
               : "Run codex login first."
     });
     return;
@@ -1101,84 +1357,6 @@ async function switchModel(
     tone: "success",
     label: "model",
     text: `switched to ${nextModel}`
-  });
-}
-
-async function handleConnectCommand(
-  args: string[],
-  currentOllamaUrl: string,
-  appendLine: (line: Omit<LogLine, "id">) => void,
-  hostOptions: OllamaHost[],
-  setHostOptions: React.Dispatch<React.SetStateAction<OllamaHost[]>>,
-  setSettings: React.Dispatch<React.SetStateAction<AgentRunnerOptions>>,
-  setTelemetry: React.Dispatch<React.SetStateAction<ModelTelemetry | null>>
-): Promise<void> {
-  const requestedHost = args.join(" ").trim();
-  if (!requestedHost) {
-    appendLine({
-      tone: "muted",
-      label: "hosts",
-      text: "Scanning LAN for real Ollama hosts..."
-    });
-    await loadHosts(currentOllamaUrl, appendLine, setHostOptions);
-    return;
-  }
-
-  const hostIndex = Number.parseInt(requestedHost, 10);
-  const selectedHost = Number.isInteger(hostIndex) ? hostOptions[hostIndex - 1] : undefined;
-  const nextUrl = selectedHost ? selectedHost.url : normalizeOllamaUrl(requestedHost);
-
-  appendLine({
-    tone: "muted",
-    label: "ollama",
-    text: `checking ${nextUrl}...`
-  });
-  const verifiedHost = await checkOllamaHost(nextUrl, {
-    label: selectedHost?.label,
-    source: selectedHost?.source,
-    timeoutMs: 1200
-  });
-  if (!verifiedHost) {
-    appendLine({
-      tone: "warning",
-      label: "ollama",
-      text: `No Ollama server answered at ${nextUrl}.`,
-      detail: "Start Ollama.app or run ollama serve locally. For remote hosts, check the IP, firewall, and OLLAMA_HOST."
-    });
-    return;
-  }
-
-  setTelemetry(null);
-  setSettings((currentSettings) => ({
-    ...currentSettings,
-    ollamaUrl: nextUrl
-  }));
-  appendLine({
-    tone: "success",
-    label: "ollama",
-    text: `connected to ${verifiedHost.url}`,
-    detail: `Ollama ${verifiedHost.version ?? "unknown version"} on ${verifiedHost.label}. Inference uses this host; workspace tools still run here.`
-  });
-}
-
-async function loadHosts(
-  currentOllamaUrl: string,
-  appendLine: (line: Omit<LogLine, "id">) => void,
-  setHostOptions: React.Dispatch<React.SetStateAction<OllamaHost[]>>
-): Promise<void> {
-  const hosts = await discoverOllamaHosts(currentOllamaUrl);
-  setHostOptions(hosts);
-  appendLine({
-    tone: hosts.length > 0 ? "accent" : "warning",
-    label: "hosts",
-    text:
-      hosts.length > 0
-        ? `Found ${hosts.length} Ollama host${hosts.length === 1 ? "" : "s"}. Select with /connect 1 or type a host manually.`
-        : "No reachable Ollama hosts found.",
-    detail:
-      hosts.length > 0
-        ? formatHostOptions(hosts)
-        : "Start Ollama locally, or expose a remote server with OLLAMA_HOST=0.0.0.0:11434 and check the firewall. Manual: /connect 192.168.x.x:11434"
   });
 }
 
@@ -1214,60 +1392,158 @@ async function resolveRunnableSettings(
       installedModels.length > 0
         ? `Pick an installed model first:\n${formatModelOptions(installedModels, settings.model)}`
         : settings.provider === "ollama"
-          ? "No models installed. Pull one first, for example: ollama pull qwen2.5-coder:7b"
+          ? "No models installed on the selected host."
           : settings.provider === "gemini"
-            ? "No Gemini models listed. Check GEMINI_API_KEY in .env."
+            ? "No Gemini models listed. Check GEMINI_API_KEY in PatchPilot config."
             : "Codex OAuth is not ready. Run codex login."
   });
   return null;
 }
 
-function buildCommandSuggestionItems(
-  input: string,
-  hostOptions: OllamaHost[],
-  modelOptions: string[],
-  currentModel: string
-): CommandSuggestionItem[] {
-  if (!input.startsWith("/")) {
+function buildCommandSuggestionItems(options: {
+  input: string;
+  provider: ModelProvider;
+  hostOptions: OllamaHost[];
+  modelOptions: string[];
+  currentModel: string;
+  isLoadingHosts: boolean;
+  isLoadingModels: boolean;
+}): PaletteSuggestion[] {
+  if (!options.input.startsWith("/")) {
     return [];
   }
 
-  const items: CommandSuggestionItem[] = filterSlashCommands(input)
+  const trimmedInput = options.input.trimStart().toLowerCase();
+  const items: PaletteSuggestion[] = filterSlashCommands(options.input)
     .slice(0, 6)
-    .map((command) => ({
-      key: `command-${command.name}`,
-      category: command.category,
-      label: command.usage.includes("<") || command.usage.includes("[") ? `/${command.name} ` : `/${command.name}`,
-      detail: command.description,
-      hint: command.usage.includes("<") || command.usage.includes("[") ? "fill" : "run"
-    }));
+    .map((command) => {
+      const baseCommand = `/${command.name}`;
+      return {
+        key: `command-${command.name}`,
+        category: command.category,
+        label: baseCommand,
+        detail: command.description,
+        hint: command.usage.includes("<") || command.usage.includes("[") ? "fill" : "run",
+        command: baseCommand,
+        execute: !command.usage.includes("<") && !command.usage.includes("[")
+      };
+    });
 
-  const commandInput = input.trimStart();
-  if (commandInput.startsWith("/connect")) {
-    items.push(
-      ...hostOptions.slice(0, 3).map((host, index) => ({
-        key: `host-${host.url}`,
+  if (options.provider === "ollama" && (trimmedInput === "/connect" || trimmedInput.startsWith("/connect ") || trimmedInput.startsWith("/host"))) {
+    if (options.isLoadingHosts) {
+      items.unshift({
+        key: "hosts-loading",
         category: "host",
-        label: `/connect ${index + 1}`,
-        detail: `${host.label} ${host.url}`,
-        hint: "run"
-      }))
-    );
+        label: "Loading Hosts",
+        detail: "Scanning LAN and Tailscale peers...",
+        command: "/connect",
+        execute: false
+      });
+    } else {
+      items.unshift(
+        ...options.hostOptions.slice(0, 5).map((host) => ({
+          key: `host-${host.url}`,
+          category: "host",
+          label: host.deviceName,
+          detail: `${host.kind}  ${host.url}${host.version ? `  Ollama ${host.version}` : ""}`,
+          command: `/connect ${host.url}`,
+          execute: true
+        }))
+      );
+    }
   }
 
-  if (commandInput.startsWith("/models")) {
-    items.push(
-      ...modelOptions.slice(0, 4).map((model, index) => ({
-        key: `model-${model}`,
+  if (trimmedInput === "/models" || trimmedInput.startsWith("/models") || trimmedInput === "/model" || trimmedInput.startsWith("/model")) {
+    if (options.isLoadingModels) {
+      items.unshift({
+        key: "models-loading",
         category: "model",
-        label: `/models ${index + 1}`,
-        detail: `${model}${model === currentModel ? "  current" : ""}`,
-        hint: "run"
-      }))
-    );
+        label: "Loading Models",
+        detail: `Fetching ${options.provider} models...`,
+        command: "/models",
+        execute: false
+      });
+    } else {
+      items.unshift(
+        ...options.modelOptions.slice(0, 8).map((model) => ({
+          key: `model-${model}`,
+          category: "model",
+          label: model,
+          detail: `${model === options.currentModel ? "current" : "available"}  ${options.provider}`,
+          command: `/model ${model}`,
+          execute: true
+        }))
+      );
+    }
   }
 
-  return items;
+  return items.slice(0, 8);
+}
+
+function getOnboardingOptionCount(onboarding: OnboardingState): number {
+  switch (onboarding.step) {
+    case "entry":
+      return 4;
+    case "host":
+      return onboarding.hosts.length + 1;
+    case "model":
+      return onboarding.models.length;
+    default:
+      return 0;
+  }
+}
+
+function readEntrySelection(value: string, selectedIndex: number): "local" | "host" | "gemini" | "codex" | null {
+  const normalizedValue = value.trim().toLowerCase();
+  if (!normalizedValue) {
+    return ["local", "host", "gemini", "codex"][selectedIndex] as "local" | "host" | "gemini" | "codex";
+  }
+
+  if (normalizedValue === "1" || normalizedValue === "local" || normalizedValue === "this device") {
+    return "local";
+  }
+
+  if (normalizedValue === "2" || normalizedValue === "host" || normalizedValue === "remote host" || normalizedValue === "remote") {
+    return "host";
+  }
+
+  if (normalizedValue === "3" || normalizedValue === "gemini" || normalizedValue === "google") {
+    return "gemini";
+  }
+
+  if (normalizedValue === "4" || normalizedValue === "codex") {
+    return "codex";
+  }
+
+  return null;
+}
+
+function readIndexedSelection(value: string, selectedIndex: number): number | null {
+  const normalizedValue = value.trim();
+  if (!normalizedValue) {
+    return selectedIndex;
+  }
+
+  const parsedIndex = Number.parseInt(normalizedValue, 10);
+  return Number.isInteger(parsedIndex) ? parsedIndex - 1 : null;
+}
+
+function selectModelFromInput(value: string, models: string[], selectedIndex?: number): string | null {
+  const normalizedValue = normalizeModelAlias(value.trim());
+  if (!normalizedValue && selectedIndex !== undefined) {
+    return models[selectedIndex] ?? null;
+  }
+
+  if (!normalizedValue) {
+    return null;
+  }
+
+  const modelIndex = Number.parseInt(normalizedValue, 10);
+  if (Number.isInteger(modelIndex)) {
+    return models[modelIndex - 1] ?? null;
+  }
+
+  return models.includes(normalizedValue) ? normalizedValue : null;
 }
 
 function defaultModelForProvider(provider: ModelProvider, currentModel: string): string {
@@ -1355,7 +1631,7 @@ function formatHostOptions(hosts: OllamaHost[]): string {
   return hosts
     .map((host, index) => {
       const version = host.version ? `  Ollama ${host.version}` : "";
-      return `${index + 1}. ${host.label}  ${host.url}${version}`;
+      return `${index + 1}. ${host.deviceName}  ${host.kind}  ${host.url}${version}`;
     })
     .join("\n");
 }

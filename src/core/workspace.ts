@@ -81,15 +81,15 @@ export class WorkspaceTools {
     try {
       switch (call.name) {
         case "list_files":
-          return this.listFiles(readString(call.arguments.path, "."));
+          return await this.listFiles(readString(call.arguments.path, "."));
         case "read_file":
-          return this.readFile(readString(call.arguments.path, ""));
+          return await this.readFile(readString(call.arguments.path, ""));
         case "search_text":
-          return this.searchText(readString(call.arguments.query, ""));
+          return await this.searchText(readString(call.arguments.query, ""));
         case "write_file":
-          return this.writeFile(readString(call.arguments.path, ""), readString(call.arguments.content, ""));
+          return await this.writeFile(readString(call.arguments.path, ""), readString(call.arguments.content, ""));
         case "run_shell":
-          return this.runShell(readString(call.arguments.command, ""));
+          return await this.runShell(readString(call.arguments.command, ""));
         default:
           return denied(`unknown tool: ${String((call as { name?: unknown }).name ?? "unknown")}`);
       }

@@ -2,10 +2,18 @@ import React from "react";
 import { Box, Text } from "ink";
 import TextInput from "ink-text-input";
 import type { ModelProvider } from "../../core/types.js";
+import type { OllamaHost } from "../hosts.js";
 
 export type OnboardingState =
   | {
-      step: "provider";
+      step: "entry";
+    }
+  | {
+      step: "host";
+      hosts: OllamaHost[];
+    }
+  | {
+      step: "host-input";
     }
   | {
       step: "gemini-key";
@@ -17,23 +25,25 @@ export type OnboardingState =
       step: "model";
       provider: ModelProvider;
       models: string[];
+      deviceName?: string;
     };
 
-const providerOptions: Array<{ value: ModelProvider; label: string; description: string }> = [
+const entryOptions = [
   {
-    value: "ollama",
-    label: "Ollama",
-    description: "Local or LAN model server"
+    label: "This Device",
+    description: "Run Ollama locally on this machine"
   },
   {
-    value: "gemini",
+    label: "Remote Host",
+    description: "Use Ollama from another LAN or Tailscale machine"
+  },
+  {
     label: "Gemini",
-    description: "Google API key from PatchPilot config"
+    description: "Use the Google Gemini API key from PatchPilot config"
   },
   {
-    value: "codex",
     label: "Codex",
-    description: "ChatGPT login through Codex CLI"
+    description: "Use the ChatGPT login through Codex CLI"
   }
 ];
 
@@ -46,17 +56,24 @@ export function OnboardingPanel(props: {
   onInputChange: (value: string) => void;
   onInputSubmit: (value: string) => void;
 }): React.ReactElement {
-  const currentStepIndex = props.state.step === "provider" ? 0 : props.state.step === "gemini-key" || props.state.step === "codex-login" ? 1 : 2;
-  const modelState = props.state.step === "model" ? props.state : null;
+  const currentStepIndex =
+    props.state.step === "entry"
+      ? 0
+      : props.state.step === "host" || props.state.step === "host-input"
+        ? 1
+        : props.state.step === "gemini-key" || props.state.step === "codex-login"
+          ? 2
+          : 3;
+  const selectedModel = props.state.step === "model" ? props.state.models[props.selectedIndex] ?? null : null;
 
   return (
     <Box borderStyle="round" borderColor="cyan" flexDirection="column" paddingX={2} height={Math.max(18, props.height + 4)}>
       <Text color="cyan" bold>
         PatchPilot Setup
       </Text>
-      <Text color="gray">A dedicated first-run flow for provider, auth, and model setup.</Text>
+      <Text color="gray">Choose where inference runs before the workspace session starts.</Text>
       <Box marginTop={1}>
-        {["provider", "auth", "model"].map((step, index) => (
+        {["mode", "host", "auth", "model"].map((step, index) => (
           <Text key={step} color={index <= currentStepIndex ? "cyan" : "gray"}>
             {index > 0 ? "  " : ""}
             [{index + 1}] {step}
@@ -68,28 +85,51 @@ export function OnboardingPanel(props: {
           <Text color="yellow">{props.busyMessage}</Text>
         </Box>
       ) : null}
-      {props.state.step === "provider" ? (
+      {props.state.step === "entry" ? (
         <SelectionList
-          title="Choose a provider"
-          subtitle="Use up/down and Enter. Escape cancels."
-          rows={providerOptions.map((option) => ({
-            label: option.label,
-            description: option.description
-          }))}
+          title="Where should the model run?"
+          subtitle="Use up/down and Enter. Escape skips setup."
+          rows={entryOptions}
           selectedIndex={props.selectedIndex}
         />
       ) : null}
+      {props.state.step === "host" ? (
+        <SelectionList
+          title="Choose a host"
+          subtitle="Top item lets you enter a host manually. Left arrow goes back."
+          rows={[
+            {
+              label: "Enter Host Manually",
+              description: "Type a LAN IP, Tailscale IP, MagicDNS name, or full URL"
+            },
+            ...props.state.hosts.map((host) => ({
+              label: host.deviceName,
+              description: `${host.kind}  ${host.url}${host.version ? `  Ollama ${host.version}` : ""}`
+            }))
+          ]}
+          selectedIndex={props.selectedIndex}
+        />
+      ) : null}
+      {props.state.step === "host-input" ? (
+        <InputStep
+          title="Connect to a host"
+          description="Enter a LAN IP, Tailscale IP, MagicDNS name, or full URL."
+          prompt="host > "
+          value={props.input}
+          onChange={props.onInputChange}
+          onSubmit={props.onInputSubmit}
+        />
+      ) : null}
       {props.state.step === "gemini-key" ? (
-        <Box flexDirection="column" marginTop={2}>
-          <Text color="white" bold>
-            Enter your Gemini API key
-          </Text>
-          <Text color="gray">It will be stored in PatchPilot&apos;s own config directory, not in the repository.</Text>
-          <Box marginTop={1}>
-            <Text color="cyan">key &gt; </Text>
-            <TextInput value={props.input} onChange={props.onInputChange} onSubmit={props.onInputSubmit} mask="*" />
-          </Box>
-        </Box>
+        <InputStep
+          title="Enter your Gemini API key"
+          description="It will be stored in PatchPilot's config directory, not in the repository."
+          prompt="key  > "
+          value={props.input}
+          onChange={props.onInputChange}
+          onSubmit={props.onInputSubmit}
+          mask="*"
+        />
       ) : null}
       {props.state.step === "codex-login" ? (
         <Box flexDirection="column" marginTop={2}>
@@ -97,22 +137,45 @@ export function OnboardingPanel(props: {
             Connect Codex CLI
           </Text>
           <Text color="gray">Run `codex login` in another terminal, then press Enter here to continue.</Text>
-          <Text color="gray">Escape goes back to provider selection.</Text>
+          <Text color="gray">Escape or left arrow goes back.</Text>
         </Box>
       ) : null}
-      {modelState ? (
+      {props.state.step === "model" ? (
         <SelectionList
-          title={`Choose a ${modelState.provider} model`}
-          subtitle="Use up/down and Enter. Escape goes back."
-          rows={modelState.models.map((model) => ({
+          title={`Choose a ${props.state.provider} model${props.state.deviceName ? ` on ${props.state.deviceName}` : ""}`}
+          subtitle="Use up/down and Enter. Left arrow goes back."
+          rows={props.state.models.map((model) => ({
             label: model,
-            description: model === modelState.models[props.selectedIndex] ? "selected" : "available"
+            description: model === selectedModel ? "selected" : "available"
           }))}
           selectedIndex={props.selectedIndex}
         />
       ) : null}
       <Box marginTop={1}>
-        <Text color="gray">This setup window keeps onboarding separate from the chat transcript.</Text>
+        <Text color="gray">Remote host mode keeps file reads, writes, shell, Git, and tests on this device. Only inference moves.</Text>
+      </Box>
+    </Box>
+  );
+}
+
+function InputStep(props: {
+  title: string;
+  description: string;
+  prompt: string;
+  value: string;
+  onChange: (value: string) => void;
+  onSubmit: (value: string) => void;
+  mask?: string;
+}): React.ReactElement {
+  return (
+    <Box flexDirection="column" marginTop={2}>
+      <Text color="white" bold>
+        {props.title}
+      </Text>
+      <Text color="gray">{props.description}</Text>
+      <Box marginTop={1}>
+        <Text color="cyan">{props.prompt}</Text>
+        <TextInput value={props.value} onChange={props.onChange} onSubmit={props.onSubmit} mask={props.mask} />
       </Box>
     </Box>
   );
