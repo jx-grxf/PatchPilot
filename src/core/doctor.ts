@@ -1,6 +1,8 @@
 import { spawn } from "node:child_process";
 import { describeComputeTarget } from "./compute.js";
+import { GeminiClient, readGeminiApiKey } from "./gemini.js";
 import { OllamaClient } from "./ollama.js";
+import type { ModelProvider } from "./types.js";
 
 export type DoctorResult = {
   name: string;
@@ -8,11 +10,16 @@ export type DoctorResult = {
   details: string;
 };
 
-export async function runDoctor(ollamaUrl: string, model?: string): Promise<DoctorResult[]> {
+export async function runDoctor(provider: ModelProvider, ollamaUrl: string, model?: string): Promise<DoctorResult[]> {
   const results: DoctorResult[] = [];
 
   results.push(await checkCommand("node", ["--version"]));
   results.push(await checkCommand("git", ["--version"]));
+
+  if (provider === "gemini") {
+    results.push(...(await checkGemini(model)));
+    return results;
+  }
 
   const computeTarget = describeComputeTarget(ollamaUrl);
   if (computeTarget.kind === "local") {
@@ -50,6 +57,45 @@ export async function runDoctor(ollamaUrl: string, model?: string): Promise<Doct
   } catch (error) {
     results.push({
       name: "ollama",
+      ok: false,
+      details: error instanceof Error ? error.message : String(error)
+    });
+  }
+
+  return results;
+}
+
+async function checkGemini(model?: string): Promise<DoctorResult[]> {
+  const results: DoctorResult[] = [
+    {
+      name: "gemini-key",
+      ok: Boolean(readGeminiApiKey()),
+      details: readGeminiApiKey() ? "GEMINI_API_KEY is configured" : "missing. Add GEMINI_API_KEY to .env"
+    }
+  ];
+
+  if (!readGeminiApiKey()) {
+    return results;
+  }
+
+  const gemini = new GeminiClient();
+  try {
+    const models = await gemini.listModels();
+    results.push({
+      name: "gemini",
+      ok: true,
+      details: models.length > 0 ? `available models: ${models.slice(0, 12).join(", ")}` : "API reachable, no generateContent models listed"
+    });
+    if (model) {
+      results.push({
+        name: "gemini-model",
+        ok: models.includes(model),
+        details: models.includes(model) ? `${model} is available` : `${model} is not listed by Gemini models API`
+      });
+    }
+  } catch (error) {
+    results.push({
+      name: "gemini",
       ok: false,
       details: error instanceof Error ? error.message : String(error)
     });

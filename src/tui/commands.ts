@@ -26,6 +26,18 @@ export const slashCommands: SlashCommand[] = [
     category: "session"
   },
   {
+    name: "provider",
+    usage: "/provider ollama|gemini",
+    description: "Switch between local Ollama and Gemini API inference.",
+    category: "model"
+  },
+  {
+    name: "onboarding",
+    usage: "/onboarding",
+    description: "Choose provider, configure API key, and select a model.",
+    category: "model"
+  },
+  {
     name: "write",
     usage: "/write on|off",
     description: "Enable or disable workspace writes.",

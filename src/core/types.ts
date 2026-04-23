@@ -5,6 +5,25 @@ export type ChatMessage = {
   content: string;
 };
 
+export type ModelProvider = "ollama" | "gemini";
+
+export type ModelChatOptions = {
+  model: string;
+  messages: ChatMessage[];
+  formatJson?: boolean;
+  signal?: AbortSignal;
+};
+
+export type ModelChatResult = {
+  content: string;
+  telemetry: ModelTelemetry;
+};
+
+export type ModelClient = {
+  chat(options: ModelChatOptions): Promise<ModelChatResult>;
+  listModels(): Promise<string[]>;
+};
+
 export type AgentToolName =
   | "list_files"
   | "read_file"

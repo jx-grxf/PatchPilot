@@ -1,4 +1,4 @@
-import type { ChatMessage, ModelTelemetry } from "./types.js";
+import type { ModelChatOptions, ModelChatResult, ModelTelemetry } from "./types.js";
 
 export const defaultOllamaModel = "qwen2.5-coder:7b";
 export const defaultOllamaUrl = "http://127.0.0.1:11434";
@@ -23,18 +23,6 @@ type OllamaTagsResponse = {
   }>;
 };
 
-export type OllamaChatOptions = {
-  model: string;
-  messages: ChatMessage[];
-  formatJson?: boolean;
-  signal?: AbortSignal;
-};
-
-export type OllamaChatResult = {
-  content: string;
-  telemetry: ModelTelemetry;
-};
-
 type OllamaRuntimeOptions = {
   keepAlive: string;
   numCtx: number;
@@ -51,7 +39,7 @@ export class OllamaClient {
     this.runtimeOptions = runtimeOptions;
   }
 
-  async chat(options: OllamaChatOptions): Promise<OllamaChatResult> {
+  async chat(options: ModelChatOptions): Promise<ModelChatResult> {
     const response = await this.fetchOllama("/api/chat", {
       method: "POST",
       headers: {

@@ -1,12 +1,13 @@
 import React from "react";
 import { Box, Text } from "ink";
-import type { ModelTelemetry } from "../../core/types.js";
+import type { ModelProvider, ModelTelemetry } from "../../core/types.js";
 import { formatOllamaHost, formatTokens, shortenMiddle } from "../format.js";
 import type { AgentMode, AdvisorNote } from "../types.js";
 
 export function Sidebar(props: {
   workspace: string;
   model: string;
+  provider: ModelProvider;
   ollamaUrl: string;
   agentMode: AgentMode;
   allowWrite: boolean;
@@ -20,6 +21,7 @@ export function Sidebar(props: {
       <Text color="cyan" bold>
         Session
       </Text>
+      <SidebarRow label="provider" value={props.provider} color={props.provider === "gemini" ? "cyan" : "green"} />
       <SidebarRow label="mode" value={props.agentMode} color={props.agentMode === "build" ? "yellow" : "green"} />
       <SidebarRow label="write" value={props.allowWrite ? "on" : "off"} color={props.allowWrite ? "green" : "red"} />
       <SidebarRow label="shell" value={props.allowShell ? "on" : "off"} color={props.allowShell ? "green" : "red"} />
@@ -30,7 +32,7 @@ export function Sidebar(props: {
           Target
         </Text>
         <Text color="gray" wrap="truncate">
-          {shortenMiddle(formatOllamaHost(props.ollamaUrl), 26)}
+          {props.provider === "gemini" ? "gemini api" : shortenMiddle(formatOllamaHost(props.ollamaUrl), 26)}
         </Text>
         <Text color="gray" wrap="truncate">
           {shortenMiddle(props.model, 26)}

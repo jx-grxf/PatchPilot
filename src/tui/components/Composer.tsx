@@ -5,6 +5,7 @@ import TextInput from "ink-text-input";
 export function Composer(props: {
   input: string;
   isRunning: boolean;
+  mask?: string;
   onChange: (value: string) => void;
   onSubmit: (value: string) => void;
 }): React.ReactElement {
@@ -14,7 +15,7 @@ export function Composer(props: {
       {props.isRunning ? (
         <Text color="gray">waiting for model or tool result...</Text>
       ) : (
-        <TextInput value={props.input} onChange={props.onChange} onSubmit={props.onSubmit} placeholder="Ask PatchPilot or type /help..." />
+        <TextInput value={props.input} onChange={props.onChange} onSubmit={props.onSubmit} placeholder="Ask PatchPilot or type /help..." mask={props.mask} />
       )}
     </Box>
   );

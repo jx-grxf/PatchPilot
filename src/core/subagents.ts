@@ -1,7 +1,6 @@
 import { readdir } from "node:fs/promises";
 import path from "node:path";
-import type { ChatMessage, ModelTelemetry, SubagentRole } from "./types.js";
-import type { OllamaClient } from "./ollama.js";
+import type { ChatMessage, ModelClient, ModelTelemetry, SubagentRole } from "./types.js";
 
 export type SubagentAdvice = {
   role: SubagentRole;
@@ -37,7 +36,7 @@ const advisorSpecs: AdvisorSpec[] = [
 ];
 
 export async function runSubagentAdvisors(options: {
-  client: OllamaClient;
+  client: ModelClient;
   model: string;
   task: string;
   workspaceRoot: string;

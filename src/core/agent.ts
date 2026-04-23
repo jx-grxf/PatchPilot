@@ -1,10 +1,11 @@
 import { formatParseError, parseAgentResponse } from "./json.js";
-import { OllamaClient } from "./ollama.js";
+import { createModelClient } from "./modelClient.js";
 import { formatSubagentContext, runSubagentAdvisors } from "./subagents.js";
-import type { AgentEvent, ChatMessage } from "./types.js";
+import type { AgentEvent, ChatMessage, ModelClient, ModelProvider } from "./types.js";
 import { WorkspaceTools } from "./workspace.js";
 
 export type AgentRunnerOptions = {
+  provider: ModelProvider;
   model: string;
   ollamaUrl: string;
   workspace: string;
@@ -15,13 +16,16 @@ export type AgentRunnerOptions = {
 };
 
 export class AgentRunner {
-  private readonly client: OllamaClient;
+  private readonly client: ModelClient;
   private readonly tools: WorkspaceTools;
   private readonly options: AgentRunnerOptions;
 
   constructor(options: AgentRunnerOptions) {
     this.options = options;
-    this.client = new OllamaClient(options.ollamaUrl);
+    this.client = createModelClient({
+      provider: options.provider,
+      ollamaUrl: options.ollamaUrl
+    });
     this.tools = new WorkspaceTools({
       root: options.workspace,
       allowWrite: options.allowWrite,
@@ -169,8 +173,11 @@ function buildSystemPrompt(workspaceRoot: string, subagentContext: string): stri
     "Only use tools for explicit coding, repository, file, test, shell, or debugging tasks.",
     "For greetings, small talk, or ambiguous requests, return a final clarification question without tool calls.",
     "If you ask the user a question, use a final response and do not call tools.",
+    "Do not invent repository facts. If you have not read a file, say you have not verified it.",
     "Never pass placeholder examples like relative/path, path/to/file, or <path> as tool arguments.",
-    "For repository summaries, inspect README.md, package.json, and top-level source files before answering.",
+    "For repository summaries, inspect README.md, package.json, tests, docs, and top-level source files before answering.",
+    "For implementation tasks, first inspect the narrowest relevant files, then edit only what is needed.",
+    "When diagnosing a failure, form a concrete hypothesis, gather targeted evidence with tools, then fix the smallest cause.",
     `Workspace root: ${workspaceRoot}`,
     subagentContext
       ? [
@@ -200,6 +207,8 @@ function buildSystemPrompt(workspaceRoot: string, subagentContext: string): stri
     "",
     "Be conservative. Prefer reading before writing. Keep changes focused.",
     "Batch independent read-only tool calls in one response when it helps avoid extra thinking steps.",
+    "Prefer parallel read-only context gathering over one file per step.",
+    "In final answers, separate verified facts from remaining risks.",
     "Keep tool requests and final answers compact."
   ].join("\n");
 }

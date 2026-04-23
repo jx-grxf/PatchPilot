@@ -2,6 +2,7 @@ import React from "react";
 import { Box, Text } from "ink";
 import { describeComputeTarget } from "../../core/compute.js";
 import type { ModelTelemetry } from "../../core/types.js";
+import type { ModelProvider } from "../../core/types.js";
 import {
   formatGpuMemory,
   formatGpuPower,
@@ -24,6 +25,7 @@ import type { AgentMode } from "../types.js";
 
 export function Header(props: {
   model: string;
+  provider: ModelProvider;
   workspace: string;
   status: string;
   allowWrite: boolean;
@@ -35,7 +37,7 @@ export function Header(props: {
   systemStats: SystemStats;
   gpuStats: GpuStats | null;
 }): React.ReactElement {
-  const computeTarget = describeComputeTarget(props.ollamaUrl);
+  const computeTarget = props.provider === "gemini" ? { kind: "cloud" } : describeComputeTarget(props.ollamaUrl);
   const memoryColor = usageColor(props.systemStats.memoryPercent);
   const modelHint = getModelHint(props.model);
 
@@ -58,8 +60,9 @@ export function Header(props: {
       <Box flexDirection="column">
         <HeaderMetricLine
           items={[
+            ["provider", props.provider, props.provider === "gemini" ? "cyan" : "green"],
             ["model", shortenMiddle(props.model, 30), modelHint.color],
-            ["host", shortenMiddle(formatOllamaHost(props.ollamaUrl), 22), "cyan"],
+            ["host", props.provider === "gemini" ? "gemini api" : shortenMiddle(formatOllamaHost(props.ollamaUrl), 22), "cyan"],
             ["compute", computeTarget.kind, computeTarget.kind === "remote" ? "yellow" : "green"],
             ["mode", props.agentMode, props.agentMode === "build" ? "yellow" : "green"],
             ["advisors", props.subagents ? "on" : "off", props.subagents ? "cyan" : "gray"],

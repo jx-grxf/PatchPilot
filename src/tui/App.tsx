@@ -3,11 +3,15 @@ import { Box, useApp, useInput } from "ink";
 import { AgentRunner, type AgentRunnerOptions } from "../core/agent.js";
 import { describeComputeTarget } from "../core/compute.js";
 import { runDoctor } from "../core/doctor.js";
-import { OllamaClient } from "../core/ollama.js";
-import type { AgentEvent, ModelTelemetry } from "../core/types.js";
+import { defaultGeminiModel } from "../core/gemini.js";
+import { saveDotEnvValues } from "../core/env.js";
+import { createModelClient } from "../core/modelClient.js";
+import { defaultOllamaModel } from "../core/ollama.js";
+import type { AgentEvent, ModelProvider, ModelTelemetry } from "../core/types.js";
 import { CommandSuggestions } from "./components/CommandSuggestions.js";
 import { Composer, FooterHints } from "./components/Composer.js";
 import { Header } from "./components/Header.js";
+import { OnboardingPanel, type OnboardingState } from "./components/OnboardingPanel.js";
 import { Sidebar } from "./components/Sidebar.js";
 import { Transcript } from "./components/Transcript.js";
 import { filterSlashCommands, formatCommandDetail } from "./commands.js";
@@ -34,7 +38,9 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   const [agentMode, setAgentMode] = useState<AgentMode>(props.allowWrite || props.allowShell ? "build" : "plan");
   const [hostOptions, setHostOptions] = useState<OllamaHost[]>([]);
   const [modelOptions, setModelOptions] = useState<string[]>([]);
+  const [onboarding, setOnboarding] = useState<OnboardingState | null>(null);
   const [settings, setSettings] = useState<AgentRunnerOptions>({
+    provider: props.provider,
     model: props.model,
     ollamaUrl: props.ollamaUrl,
     workspace: props.workspace,
@@ -171,6 +177,46 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
             text: `write ${settings.allowWrite ? "on" : "off"} | shell ${settings.allowShell ? "on" : "off"} | subagents ${settings.subagents ? "on" : "off"}`
           });
           return;
+        case "provider": {
+          const nextProvider = args[0]?.toLowerCase();
+          if (nextProvider !== "ollama" && nextProvider !== "gemini") {
+            appendLine({
+              tone: "accent",
+              label: "provider",
+              text: `current ${settings.provider}. Use /provider ollama or /provider gemini.`
+            });
+            return;
+          }
+
+          const nextModel = defaultModelForProvider(nextProvider, settings.model);
+          setTelemetry(null);
+          setModelOptions([]);
+          setSettings((currentSettings) => ({
+            ...currentSettings,
+            provider: nextProvider,
+            model: nextModel
+          }));
+          saveDotEnvValues({
+            PATCHPILOT_PROVIDER: nextProvider,
+            PATCHPILOT_MODEL: nextModel
+          });
+          appendLine({
+            tone: "success",
+            label: "provider",
+            text: `switched to ${nextProvider} using ${nextModel}`
+          });
+          return;
+        }
+        case "onboarding":
+          setOnboarding({
+            step: "provider"
+          });
+          appendLine({
+            tone: "accent",
+            label: "onboarding",
+            text: "Choose a provider: type 1 for Ollama or 2 for Gemini."
+          });
+          return;
         case "agents":
         case "subagents": {
           const subagentsEnabled = readToggle(args[0], !settings.subagents);
@@ -232,13 +278,13 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
             return;
           }
 
-          await switchModel(nextModel, settings.ollamaUrl, settings.model, appendLine, setModelOptions, setSettings, setTelemetry);
+          await switchModel(settings.provider, nextModel, settings.ollamaUrl, settings.model, appendLine, setModelOptions, setSettings, setTelemetry);
           return;
         }
         case "models": {
           const requestedModel = args.join(" ").trim();
           if (requestedModel) {
-            const installedModels = await loadKnownOrInstalledModels(settings.ollamaUrl, modelOptions, setModelOptions, appendLine);
+            const installedModels = await loadKnownOrAvailableModels(settings.provider, settings.ollamaUrl, modelOptions, setModelOptions, appendLine);
             if (!installedModels) {
               return;
             }
@@ -265,24 +311,24 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
               return;
             }
 
-            await switchModel(nextModel, settings.ollamaUrl, settings.model, appendLine, setModelOptions, setSettings, setTelemetry, installedModels);
+            await switchModel(settings.provider, nextModel, settings.ollamaUrl, settings.model, appendLine, setModelOptions, setSettings, setTelemetry, installedModels);
             return;
           }
 
           appendLine({
             tone: "muted",
             label: "models",
-            text: `loading models from ${formatOllamaHost(settings.ollamaUrl)}...`
+            text: `loading ${settings.provider} models...`
           });
 
           try {
-            const models = await loadInstalledModels(settings.ollamaUrl, setModelOptions);
+            const models = await loadAvailableModels(settings.provider, settings.ollamaUrl, setModelOptions);
             if (models.length === 0) {
               appendLine({
                 tone: "warning",
                 label: "models",
-                text: "No installed Ollama models found on the selected host.",
-                detail: "Pull one first, for example: ollama pull qwen2.5-coder:7b"
+              text: `No ${settings.provider} models found.`,
+              detail: settings.provider === "ollama" ? "Pull one first, for example: ollama pull qwen2.5-coder:7b" : "Check GEMINI_API_KEY in .env."
               });
               return;
             }
@@ -306,12 +352,20 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           appendLine({
             tone: "accent",
             label: "status",
-            text: `model ${settings.model} | host ${settings.ollamaUrl} | compute ${describeComputeTarget(settings.ollamaUrl).kind} | agents ${settings.subagents ? "on" : "off"} | write ${settings.allowWrite ? "on" : "off"} | shell ${settings.allowShell ? "on" : "off"} | ${formatTokens(telemetry)}`
+            text: `provider ${settings.provider} | model ${settings.model} | host ${settings.provider === "gemini" ? "gemini api" : settings.ollamaUrl} | compute ${settings.provider === "gemini" ? "cloud" : describeComputeTarget(settings.ollamaUrl).kind} | agents ${settings.subagents ? "on" : "off"} | write ${settings.allowWrite ? "on" : "off"} | shell ${settings.allowShell ? "on" : "off"} | ${formatTokens(telemetry)}`
           });
           return;
         case "connect":
         case "host":
         case "ollama":
+          if (settings.provider === "gemini") {
+            appendLine({
+              tone: "warning",
+              label: "provider",
+              text: "Ollama host switching is only available with /provider ollama."
+            });
+            return;
+          }
           await handleConnectCommand(args, settings.ollamaUrl, appendLine, hostOptions, setHostOptions, setSettings, setTelemetry);
           return;
         case "hosts":
@@ -328,7 +382,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
             label: "doctor",
             text: "checking local requirements..."
           });
-          const doctorResults = await runDoctor(settings.ollamaUrl, settings.model);
+          const doctorResults = await runDoctor(settings.provider, settings.ollamaUrl, settings.model);
           for (const result of doctorResults) {
             appendLine({
               tone: result.ok ? "success" : "danger",
@@ -372,9 +426,14 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         return;
       }
 
+      if (onboarding) {
+        await handleOnboardingSubmit(nextValue, onboarding, settings, appendLine, setSettings, setModelOptions, setTelemetry, setOnboarding);
+        return;
+      }
+
       await runTask(nextValue);
     },
-    [handleSlashCommand, isRunning, runTask]
+    [appendLine, handleSlashCommand, isRunning, onboarding, runTask, settings]
   );
 
   useEffect(() => {
@@ -435,6 +494,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
     <Box flexDirection="column" paddingX={1}>
       <Header
         model={settings.model}
+        provider={settings.provider}
         workspace={settings.workspace}
         status={status}
         allowWrite={settings.allowWrite}
@@ -451,6 +511,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         <Sidebar
           workspace={settings.workspace}
           model={settings.model}
+          provider={settings.provider}
           ollamaUrl={settings.ollamaUrl}
           agentMode={agentMode}
           allowWrite={settings.allowWrite}
@@ -461,7 +522,14 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         />
         <Box flexDirection="column" flexGrow={1}>
           <Transcript lines={lines} isRunning={isRunning} />
-          <Composer input={input} isRunning={isRunning} onChange={setInput} onSubmit={(value) => void handleSubmit(value)} />
+          <Composer
+            input={input}
+            isRunning={isRunning}
+            mask={onboarding?.step === "gemini-key" ? "*" : undefined}
+            onChange={setInput}
+            onSubmit={(value) => void handleSubmit(value)}
+          />
+          <OnboardingPanel state={onboarding} />
           {!isRunning && input.startsWith("/") ? (
             <CommandSuggestions input={input} hostOptions={hostOptions} modelOptions={modelOptions} currentModel={settings.model} />
           ) : null}
@@ -472,23 +540,191 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   );
 }
 
-async function loadInstalledModels(
+async function loadAvailableModels(
+  provider: ModelProvider,
   ollamaUrl: string,
   setModelOptions: React.Dispatch<React.SetStateAction<string[]>>
 ): Promise<string[]> {
-  const models = await new OllamaClient(ollamaUrl).listModels();
+  const models = await createModelClient({
+    provider,
+    ollamaUrl
+  }).listModels();
   setModelOptions(models);
   return models;
 }
 
-async function loadKnownOrInstalledModels(
+async function handleOnboardingSubmit(
+  value: string,
+  onboarding: OnboardingState,
+  settings: AgentRunnerOptions,
+  appendLine: (line: Omit<LogLine, "id">) => void,
+  setSettings: React.Dispatch<React.SetStateAction<AgentRunnerOptions>>,
+  setModelOptions: React.Dispatch<React.SetStateAction<string[]>>,
+  setTelemetry: React.Dispatch<React.SetStateAction<ModelTelemetry | null>>,
+  setOnboarding: React.Dispatch<React.SetStateAction<OnboardingState | null>>
+): Promise<void> {
+  if (onboarding.step === "provider") {
+    const provider = readOnboardingProvider(value);
+    if (!provider) {
+      appendLine({
+        tone: "warning",
+        label: "onboarding",
+        text: "Type 1 or ollama, or type 2 or gemini."
+      });
+      return;
+    }
+
+    if (provider === "gemini") {
+      setOnboarding({
+        step: "gemini-key"
+      });
+      appendLine({
+        tone: "accent",
+        label: "onboarding",
+        text: "Paste your Gemini API key. The input is masked and will be saved to .env."
+      });
+      return;
+    }
+
+    await enterModelSelection(provider, settings.ollamaUrl, settings.model, appendLine, setSettings, setModelOptions, setTelemetry, setOnboarding);
+    return;
+  }
+
+  if (onboarding.step === "gemini-key") {
+    const apiKey = value.trim();
+    if (!apiKey) {
+      appendLine({
+        tone: "warning",
+        label: "onboarding",
+        text: "Gemini API key cannot be empty."
+      });
+      return;
+    }
+
+    process.env.GEMINI_API_KEY = apiKey;
+    saveDotEnvValues({
+      PATCHPILOT_PROVIDER: "gemini",
+      PATCHPILOT_MODEL: defaultGeminiModel,
+      GEMINI_API_KEY: apiKey
+    });
+    appendLine({
+      tone: "success",
+      label: "onboarding",
+      text: "Gemini API key saved to .env."
+    });
+    await enterModelSelection("gemini", settings.ollamaUrl, defaultGeminiModel, appendLine, setSettings, setModelOptions, setTelemetry, setOnboarding);
+    return;
+  }
+
+  const selectedModel = selectModelFromInput(value, onboarding.models);
+  if (!selectedModel) {
+    appendLine({
+      tone: "warning",
+      label: "onboarding",
+      text: "Unknown model selection. Type a listed number or exact model name."
+    });
+    return;
+  }
+
+  setTelemetry(null);
+  setSettings((currentSettings) => ({
+    ...currentSettings,
+    provider: onboarding.provider,
+    model: selectedModel
+  }));
+  saveDotEnvValues({
+    PATCHPILOT_PROVIDER: onboarding.provider,
+    PATCHPILOT_MODEL: selectedModel
+  });
+  setOnboarding(null);
+  appendLine({
+    tone: "success",
+    label: "onboarding",
+    text: `ready: ${onboarding.provider} using ${selectedModel}`
+  });
+}
+
+async function enterModelSelection(
+  provider: ModelProvider,
+  ollamaUrl: string,
+  currentModel: string,
+  appendLine: (line: Omit<LogLine, "id">) => void,
+  setSettings: React.Dispatch<React.SetStateAction<AgentRunnerOptions>>,
+  setModelOptions: React.Dispatch<React.SetStateAction<string[]>>,
+  setTelemetry: React.Dispatch<React.SetStateAction<ModelTelemetry | null>>,
+  setOnboarding: React.Dispatch<React.SetStateAction<OnboardingState | null>>
+): Promise<void> {
+  setTelemetry(null);
+  setSettings((currentSettings) => ({
+    ...currentSettings,
+    provider,
+    model: defaultModelForProvider(provider, currentModel)
+  }));
+
+  try {
+    const models = await loadAvailableModels(provider, ollamaUrl, setModelOptions);
+    if (models.length === 0) {
+      appendLine({
+        tone: "warning",
+        label: "onboarding",
+        text: provider === "ollama" ? "No Ollama models found. Pull one first." : "No Gemini models listed. Check your API key."
+      });
+      setOnboarding(null);
+      return;
+    }
+
+    setOnboarding({
+      step: "model",
+      provider,
+      models
+    });
+    appendLine({
+      tone: "accent",
+      label: "onboarding",
+      text: `Choose a ${provider} model by number or name.`,
+      detail: formatModelOptions(models.slice(0, 12), defaultModelForProvider(provider, currentModel))
+    });
+  } catch (error) {
+    appendLine({
+      tone: "danger",
+      label: "onboarding",
+      text: error instanceof Error ? error.message : String(error)
+    });
+    setOnboarding(null);
+  }
+}
+
+function readOnboardingProvider(value: string): ModelProvider | null {
+  const normalizedValue = value.trim().toLowerCase();
+  if (normalizedValue === "1" || normalizedValue === "ollama" || normalizedValue === "local") {
+    return "ollama";
+  }
+
+  if (normalizedValue === "2" || normalizedValue === "gemini" || normalizedValue === "google") {
+    return "gemini";
+  }
+
+  return null;
+}
+
+function selectModelFromInput(value: string, models: string[]): string | null {
+  const modelIndex = Number.parseInt(value.trim(), 10);
+  if (Number.isInteger(modelIndex)) {
+    return models[modelIndex - 1] ?? null;
+  }
+
+  return models.includes(value.trim()) ? value.trim() : null;
+}
+
+async function loadKnownOrAvailableModels(
+  provider: ModelProvider,
   ollamaUrl: string,
   modelOptions: string[],
   setModelOptions: React.Dispatch<React.SetStateAction<string[]>>,
   appendLine: (line: Omit<LogLine, "id">) => void
 ): Promise<string[] | null> {
   try {
-    return modelOptions.length > 0 ? modelOptions : await loadInstalledModels(ollamaUrl, setModelOptions);
+    return modelOptions.length > 0 ? modelOptions : await loadAvailableModels(provider, ollamaUrl, setModelOptions);
   } catch (error) {
     appendLine({
       tone: "danger",
@@ -500,6 +736,7 @@ async function loadKnownOrInstalledModels(
 }
 
 async function switchModel(
+  provider: ModelProvider,
   nextModel: string,
   ollamaUrl: string,
   currentModel: string,
@@ -509,7 +746,7 @@ async function switchModel(
   setTelemetry: React.Dispatch<React.SetStateAction<ModelTelemetry | null>>,
   knownModels?: string[]
 ): Promise<void> {
-  const installedModels = knownModels ?? (await loadInstalledModels(ollamaUrl, setModelOptions).catch((error: unknown) => {
+  const installedModels = knownModels ?? (await loadAvailableModels(provider, ollamaUrl, setModelOptions).catch((error: unknown) => {
     appendLine({
       tone: "danger",
       label: "models",
@@ -526,11 +763,13 @@ async function switchModel(
     appendLine({
       tone: "warning",
       label: "model",
-      text: `${nextModel} is not installed on ${formatOllamaHost(ollamaUrl)}.`,
+      text: `${nextModel} is not available for ${provider}.`,
       detail:
         installedModels.length > 0
           ? `Use /models and pick one of:\n${formatModelOptions(installedModels, currentModel)}`
-          : "Pull a model first, for example: ollama pull qwen2.5-coder:7b"
+          : provider === "ollama"
+            ? "Pull a model first, for example: ollama pull qwen2.5-coder:7b"
+            : "Check GEMINI_API_KEY in .env."
     });
     return;
   }
@@ -540,6 +779,10 @@ async function switchModel(
     ...currentSettings,
     model: nextModel
   }));
+  saveDotEnvValues({
+    PATCHPILOT_PROVIDER: provider,
+    PATCHPILOT_MODEL: nextModel
+  });
   appendLine({
     tone: "success",
     label: "model",
@@ -632,11 +875,11 @@ async function resolveRunnableSettings(
 ): Promise<AgentRunnerOptions | null> {
   let installedModels: string[];
   try {
-    installedModels = await loadInstalledModels(settings.ollamaUrl, setModelOptions);
+    installedModels = await loadAvailableModels(settings.provider, settings.ollamaUrl, setModelOptions);
   } catch (error) {
     appendLine({
       tone: "danger",
-      label: "ollama",
+      label: settings.provider,
       text: error instanceof Error ? error.message : String(error)
     });
     return null;
@@ -649,13 +892,23 @@ async function resolveRunnableSettings(
   appendLine({
     tone: "warning",
     label: "model",
-    text: `${settings.model} is not installed on ${formatOllamaHost(settings.ollamaUrl)}.`,
+    text: `${settings.model} is not available for ${settings.provider}.`,
     detail:
       installedModels.length > 0
         ? `Pick an installed model first:\n${formatModelOptions(installedModels, settings.model)}`
-        : "No models installed. Pull one first, for example: ollama pull qwen2.5-coder:7b"
+        : settings.provider === "ollama"
+          ? "No models installed. Pull one first, for example: ollama pull qwen2.5-coder:7b"
+          : "No Gemini models listed. Check GEMINI_API_KEY in .env."
   });
   return null;
+}
+
+function defaultModelForProvider(provider: ModelProvider, currentModel: string): string {
+  if (provider === "gemini") {
+    return currentModel.startsWith("gemini-") ? currentModel : defaultGeminiModel;
+  }
+
+  return currentModel.startsWith("gemini-") ? defaultOllamaModel : currentModel;
 }
 
 function upsertAdvisorNote(notes: AdvisorNote[], nextNote: AdvisorNote): AdvisorNote[] {
