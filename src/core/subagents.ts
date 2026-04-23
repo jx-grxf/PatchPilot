@@ -44,7 +44,7 @@ export async function runSubagentAdvisors(options: {
   const workspaceHint = await buildWorkspaceHint(options.workspaceRoot);
   const userMessage = [
     `Task: ${options.task}`,
-    `Workspace: ${options.workspaceRoot}`,
+    `Workspace: ${path.basename(options.workspaceRoot) || "workspace"}`,
     "",
     "Workspace hint:",
     workspaceHint
@@ -94,7 +94,7 @@ async function buildWorkspaceHint(workspaceRoot: string): Promise<string> {
     .filter((entry) => !entry.name.startsWith(".") || entry.name === ".github")
     .sort((left, right) => left.name.localeCompare(right.name))
     .slice(0, 60)
-    .map((entry) => `${entry.isDirectory() ? "dir " : "file"} ${path.posix.normalize(entry.name)}`);
+    .map((entry) => `${entry.isDirectory() ? "dir " : "file"} ${entry.name}`);
 
   return visibleEntries.length > 0 ? visibleEntries.join("\n") : "No top-level workspace entries could be read.";
 }

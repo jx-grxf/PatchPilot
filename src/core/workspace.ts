@@ -41,6 +41,20 @@ const textFileExtensions = new Set([
   ".yaml"
 ]);
 
+const blockedPathNames = new Set([
+  ".env",
+  ".env.local",
+  ".env.development",
+  ".env.production",
+  ".env.test",
+  ".npmrc",
+  ".pypirc",
+  ".netrc",
+  "id_rsa",
+  "id_ed25519",
+  "known_hosts"
+]);
+
 export type WorkspaceToolsOptions = {
   root: string;
   allowWrite: boolean;
@@ -110,6 +124,10 @@ export class WorkspaceTools {
       return denied(`read_file denied placeholder path: ${requestedPath}`);
     }
 
+    if (isSensitivePath(requestedPath)) {
+      return denied(`read_file denied sensitive path: ${requestedPath}`);
+    }
+
     const absolutePath = await this.resolveReadPath(requestedPath);
     const content = await readFile(absolutePath, "utf8").catch((error: unknown) => {
       throw new Error(`file not found or unreadable: ${requestedPath} (${error instanceof Error ? error.message : String(error)})`);
@@ -125,6 +143,11 @@ export class WorkspaceTools {
   private async searchText(query: string): Promise<ToolResult> {
     if (!query.trim()) {
       return denied("search_text requires a non-empty query.");
+    }
+
+    const ripgrepResult = await searchTextWithRipgrep(this.root, query);
+    if (ripgrepResult) {
+      return ripgrepResult;
     }
 
     const rootRealPath = await this.rootRealPath;
@@ -170,6 +193,10 @@ export class WorkspaceTools {
       return denied(`write_file denied placeholder path: ${requestedPath}`);
     }
 
+    if (isSensitivePath(requestedPath)) {
+      return denied(`write_file denied sensitive path: ${requestedPath}`);
+    }
+
     const absolutePath = await this.resolveWritePath(requestedPath);
     await mkdir(path.dirname(absolutePath), { recursive: true });
     await writeFile(absolutePath, content, "utf8");
@@ -188,6 +215,11 @@ export class WorkspaceTools {
 
     if (!command.trim()) {
       return denied("run_shell requires a command.");
+    }
+
+    const shellSafetyError = validateShellCommand(command);
+    if (shellSafetyError) {
+      return denied(`run_shell denied. ${shellSafetyError}`);
     }
 
     const output = await runCommand(command, this.root, this.timeoutMs);
@@ -266,6 +298,10 @@ async function walkFiles(
         continue;
       }
 
+      if (isSensitivePath(entry.name)) {
+        continue;
+      }
+
       await visit(path.join(currentPath, entry.name), depth + 1);
     }
   }
@@ -273,6 +309,83 @@ async function walkFiles(
   await access(startPath, constants.R_OK);
   await visit(startPath, 0);
   return results;
+}
+
+async function searchTextWithRipgrep(workspaceRoot: string, query: string): Promise<ToolResult | null> {
+  const ignoreGlobs = [
+    "!.git/**",
+    "!node_modules/**",
+    "!dist/**",
+    "!coverage/**",
+    "!.next/**",
+    "!.turbo/**",
+    "!.vite/**",
+    "!build/**",
+    "!out/**",
+    "!DerivedData/**"
+  ];
+
+  return new Promise((resolve) => {
+    const child = spawn(
+      "rg",
+      [
+        "--line-number",
+        "--ignore-case",
+        "--no-heading",
+        "--color",
+        "never",
+        "--max-count",
+        "80",
+        ...ignoreGlobs.flatMap((glob) => ["--glob", glob]),
+        query,
+        "."
+      ],
+      {
+        cwd: workspaceRoot,
+        stdio: ["ignore", "pipe", "pipe"],
+        windowsHide: true
+      }
+    );
+
+    let stdout = "";
+    let stderr = "";
+
+    child.stdout.on("data", (chunk: Buffer) => {
+      stdout += chunk.toString("utf8");
+    });
+
+    child.stderr.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString("utf8");
+    });
+
+    child.on("error", () => {
+      resolve(null);
+    });
+
+    child.on("close", (exitCode) => {
+      if (exitCode === 0 || exitCode === 1) {
+        const content = stdout.trim();
+        const lines = content ? content.split(/\r?\n/).slice(0, 80) : [];
+        resolve({
+          ok: true,
+          summary: `found ${lines.length} matches`,
+          content: lines.join("\n") || "No matches."
+        });
+        return;
+      }
+
+      if (stderr.trim()) {
+        resolve({
+          ok: false,
+          summary: "ripgrep search failed",
+          content: clip(stderr.trim(), 1200)
+        });
+        return;
+      }
+
+      resolve(null);
+    });
+  });
 }
 
 async function assertInsideWorkspace(workspaceRealRoot: string, candidatePath: string, requestedPath: string): Promise<void> {
@@ -340,6 +453,14 @@ function isPlaceholderPath(value: string): boolean {
   return ["relative/path", "path/to/file", "file/path", "<path>", "<file>", "filename"].includes(normalizedValue);
 }
 
+function isSensitivePath(value: string): boolean {
+  const normalizedPath = value.trim().replaceAll("\\", "/");
+  return normalizedPath
+    .split("/")
+    .filter(Boolean)
+    .some((part) => blockedPathNames.has(part.toLowerCase()));
+}
+
 function denied(message: string): ToolResult {
   return {
     ok: false,
@@ -362,4 +483,38 @@ function clip(content: string, maxLength: number): string {
   }
 
   return `${content.slice(0, maxLength)}\n...[clipped ${content.length - maxLength} chars]`;
+}
+
+function validateShellCommand(command: string): string | null {
+  const trimmedCommand = command.trim();
+  if (/[;&|><`$\n\r]/.test(trimmedCommand)) {
+    return "shell metacharacters are blocked; run a single simple command.";
+  }
+
+  const tokens = trimmedCommand.match(/"[^"]*"|'[^']*'|\S+/g) ?? [];
+  if (tokens.length === 0) {
+    return "command is empty.";
+  }
+
+  const executable = stripQuotes(tokens[0] ?? "").toLowerCase();
+  if (["bash", "sh", "zsh", "fish", "pwsh", "powershell", "powershell.exe", "python", "python3", "node", "ruby", "perl"].includes(executable)) {
+    return `executable "${executable}" is blocked.`;
+  }
+
+  for (const token of tokens.slice(1)) {
+    const normalizedToken = stripQuotes(token);
+    if (normalizedToken.startsWith("/") || normalizedToken.startsWith("~")) {
+      return "absolute and home-relative paths are blocked.";
+    }
+
+    if (/(^|[\\/])\.\.([\\/]|$)/.test(normalizedToken)) {
+      return "parent directory traversal is blocked.";
+    }
+  }
+
+  return null;
+}
+
+function stripQuotes(value: string): string {
+  return value.replace(/^['"]|['"]$/g, "");
 }

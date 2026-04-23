@@ -1,4 +1,5 @@
 import { formatParseError, parseAgentResponse } from "./json.js";
+import path from "node:path";
 import { createModelClient } from "./modelClient.js";
 import { formatSubagentContext, runSubagentAdvisors } from "./subagents.js";
 import type { AgentEvent, ChatMessage, ModelClient, ModelProvider } from "./types.js";
@@ -145,7 +146,7 @@ export class AgentRunner {
       });
       messages.push({
         role: "user",
-        content: `Tool results:\n${JSON.stringify(toolResults, null, 2)}`
+        content: formatToolResultsForPrompt(toolResults)
       });
     }
 
@@ -179,7 +180,7 @@ function buildSystemPrompt(workspaceRoot: string, subagentContext: string): stri
     "For repository summaries, inspect README.md, package.json, tests, docs, and top-level source files before answering.",
     "For implementation tasks, first inspect the narrowest relevant files, then edit only what is needed.",
     "When diagnosing a failure, form a concrete hypothesis, gather targeted evidence with tools, then fix the smallest cause.",
-    `Workspace root: ${workspaceRoot}`,
+    `Workspace label: ${path.basename(workspaceRoot) || "workspace"}`,
     subagentContext
       ? [
           "",
@@ -248,4 +249,32 @@ async function executeToolSafely(tools: WorkspaceTools, toolCall: Parameters<Wor
     summary: toolResult.summary,
     content: toolResult.content
   };
+}
+
+function formatToolResultsForPrompt(
+  toolResults: Array<{
+    tool: string;
+    ok: boolean;
+    summary: string;
+    content: string;
+  }>
+): string {
+  return [
+    "Tool results:",
+    ...toolResults.map((toolResult, index) =>
+      [
+        `${index + 1}. ${toolResult.tool} (${toolResult.ok ? "ok" : "error"})`,
+        `summary: ${toolResult.summary}`,
+        `content: ${clipPromptValue(toolResult.content, 1200)}`
+      ].join("\n")
+    )
+  ].join("\n\n");
+}
+
+function clipPromptValue(value: string, maxLength: number): string {
+  if (value.length <= maxLength) {
+    return value;
+  }
+
+  return `${value.slice(0, maxLength)}\n...[clipped ${value.length - maxLength} chars]`;
 }

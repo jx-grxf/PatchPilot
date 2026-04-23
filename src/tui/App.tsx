@@ -5,7 +5,7 @@ import { defaultCodexModel, hasCodexCliOAuth } from "../core/codex.js";
 import { describeComputeTarget } from "../core/compute.js";
 import { runDoctor } from "../core/doctor.js";
 import { defaultGeminiModel } from "../core/gemini.js";
-import { saveDotEnvValues } from "../core/env.js";
+import { savePatchPilotEnvValues } from "../core/env.js";
 import { createModelClient } from "../core/modelClient.js";
 import { defaultOllamaModel } from "../core/ollama.js";
 import { addTelemetryToSession, emptySessionTelemetry, estimateTokens } from "../core/tokenAccounting.js";
@@ -25,6 +25,9 @@ import { maxTranscriptLines, type AdvisorNote, type AgentMode, type LogLine } fr
 export type PatchPilotAppProps = AgentRunnerOptions & {
   initialTask?: string;
 };
+
+const modelCacheTtlMs = 5 * 60_000;
+const modelCache = new Map<string, { models: string[]; expiresAt: number }>();
 
 export function App(props: PatchPilotAppProps): React.ReactElement {
   const { exit } = useApp();
@@ -212,7 +215,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
             provider: nextProvider,
             model: nextModel
           }));
-          saveDotEnvValues({
+          savePatchPilotEnvValues({
             PATCHPILOT_PROVIDER: nextProvider,
             PATCHPILOT_MODEL: nextModel
           });
@@ -338,7 +341,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           });
 
           try {
-            const models = await loadAvailableModels(settings.provider, settings.ollamaUrl, setModelOptions);
+            const models = await loadAvailableModels(settings.provider, settings.ollamaUrl, setModelOptions, true);
             if (models.length === 0) {
               appendLine({
                 tone: "warning",
@@ -605,12 +608,24 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
 async function loadAvailableModels(
   provider: ModelProvider,
   ollamaUrl: string,
-  setModelOptions: React.Dispatch<React.SetStateAction<string[]>>
+  setModelOptions: React.Dispatch<React.SetStateAction<string[]>>,
+  refresh = false
 ): Promise<string[]> {
+  const cacheKey = `${provider}:${provider === "ollama" ? ollamaUrl : "default"}`;
+  const cachedModels = modelCache.get(cacheKey);
+  if (!refresh && cachedModels && cachedModels.expiresAt > Date.now()) {
+    setModelOptions(cachedModels.models);
+    return cachedModels.models;
+  }
+
   const models = await createModelClient({
     provider,
     ollamaUrl
   }).listModels();
+  modelCache.set(cacheKey, {
+    models,
+    expiresAt: Date.now() + modelCacheTtlMs
+  });
   setModelOptions(models);
   return models;
 }
@@ -676,7 +691,7 @@ async function handleOnboardingSubmit(
     }
 
     process.env.GEMINI_API_KEY = apiKey;
-    saveDotEnvValues({
+    savePatchPilotEnvValues({
       PATCHPILOT_PROVIDER: "gemini",
       PATCHPILOT_MODEL: defaultGeminiModel,
       GEMINI_API_KEY: apiKey
@@ -720,7 +735,7 @@ async function handleOnboardingSubmit(
     provider: onboarding.provider,
     model: selectedModel
   }));
-  saveDotEnvValues({
+  savePatchPilotEnvValues({
     PATCHPILOT_PROVIDER: onboarding.provider,
     PATCHPILOT_MODEL: selectedModel
   });
@@ -750,7 +765,7 @@ async function enterModelSelection(
   }));
 
   try {
-    const models = await loadAvailableModels(provider, ollamaUrl, setModelOptions);
+    const models = await loadAvailableModels(provider, ollamaUrl, setModelOptions, true);
     if (models.length === 0) {
       appendLine({
         tone: "warning",
@@ -878,7 +893,7 @@ async function switchModel(
     ...currentSettings,
     model: nextModel
   }));
-  saveDotEnvValues({
+  savePatchPilotEnvValues({
     PATCHPILOT_PROVIDER: provider,
     PATCHPILOT_MODEL: nextModel
   });

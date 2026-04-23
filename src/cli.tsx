@@ -4,14 +4,14 @@ import React from "react";
 import { render } from "ink";
 import { Command } from "commander";
 import { defaultCodexModel } from "./core/codex.js";
-import { loadDotEnv } from "./core/env.js";
+import { loadPatchPilotEnv } from "./core/env.js";
 import { defaultGeminiModel } from "./core/gemini.js";
 import { readModelProvider } from "./core/modelClient.js";
 import { runDoctor } from "./core/doctor.js";
 import { defaultOllamaModel, resolveOllamaBaseUrl } from "./core/ollama.js";
 import { App } from "./tui/App.js";
 
-loadDotEnv();
+loadPatchPilotEnv();
 
 const defaultOllamaUrl = resolveOllamaBaseUrl();
 const defaultProvider = readModelProvider();

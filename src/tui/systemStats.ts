@@ -3,6 +3,8 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
+const gpuStatsRetryDelayMs = 60_000;
+let gpuProbeDisabledUntil = 0;
 
 export type SystemStats = {
   cpuPercent: number | null;
@@ -80,6 +82,10 @@ function bytesToGb(value: number): number {
 }
 
 export async function readGpuStats(): Promise<GpuStats | null> {
+  if (Date.now() < gpuProbeDisabledUntil) {
+    return null;
+  }
+
   try {
     const { stdout } = await execFileAsync("nvidia-smi", [
       "--query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw,power.limit",
@@ -104,6 +110,7 @@ export async function readGpuStats(): Promise<GpuStats | null> {
       powerLimitWatts: readNullableNumber(powerLimit)
     };
   } catch {
+    gpuProbeDisabledUntil = Date.now() + gpuStatsRetryDelayMs;
     return null;
   }
 }

@@ -1,4 +1,5 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import path from "node:path";
 
 export function loadDotEnv(cwd = process.cwd()): void {
@@ -43,6 +44,29 @@ export function saveDotEnvValues(values: Record<string, string>, cwd = process.c
   }
 
   writeFileSync(envPath, `${nextLines.join("\n").replace(/\n+$/, "")}\n`, "utf8");
+}
+
+export function getPatchPilotConfigDir(env: NodeJS.ProcessEnv = process.env): string {
+  return env.PATCHPILOT_CONFIG_DIR?.trim() || path.join(homedir(), ".patchpilot");
+}
+
+export function getPatchPilotEnvPath(env: NodeJS.ProcessEnv = process.env): string {
+  return path.join(getPatchPilotConfigDir(env), "config.env");
+}
+
+export function loadPatchPilotEnv(env: NodeJS.ProcessEnv = process.env): void {
+  const envPath = getPatchPilotEnvPath(env);
+  if (!existsSync(envPath)) {
+    return;
+  }
+
+  loadDotEnv(path.dirname(envPath));
+}
+
+export function savePatchPilotEnvValues(values: Record<string, string>, env: NodeJS.ProcessEnv = process.env): void {
+  const configDir = getPatchPilotConfigDir(env);
+  mkdirSync(configDir, { recursive: true });
+  saveDotEnvValues(values, configDir);
 }
 
 function parseEnvLine(line: string): { key: string; value: string } | null {
