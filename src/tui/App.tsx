@@ -4,6 +4,7 @@ import TextInput from "ink-text-input";
 import { AgentRunner, type AgentRunnerOptions } from "../core/agent.js";
 import { describeComputeTarget } from "../core/compute.js";
 import { runDoctor } from "../core/doctor.js";
+import { OllamaClient } from "../core/ollama.js";
 import type { AgentEvent, ModelTelemetry } from "../core/types.js";
 import { filterSlashCommands, formatCommandDetail } from "./commands.js";
 import { checkOllamaHost, discoverOllamaHosts, normalizeOllamaUrl, type OllamaHost } from "./hosts.js";
@@ -35,6 +36,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   const [gpuStats, setGpuStats] = useState<GpuStats | null>(null);
   const [agentMode, setAgentMode] = useState<AgentMode>(props.allowWrite || props.allowShell ? "build" : "plan");
   const [hostOptions, setHostOptions] = useState<OllamaHost[]>([]);
+  const [modelOptions, setModelOptions] = useState<string[]>([]);
   const [settings, setSettings] = useState<AgentRunnerOptions>({
     model: props.model,
     ollamaUrl: props.ollamaUrl,
@@ -196,7 +198,8 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
             appendLine({
               tone: "accent",
               label: "model",
-              text: settings.model
+              text: settings.model,
+              detail: modelOptions.length > 0 ? formatModelOptions(modelOptions, settings.model) : "Use /models to list installed models."
             });
             return;
           }
@@ -210,6 +213,69 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
             label: "model",
             text: `switched to ${nextModel}`
           });
+          return;
+        }
+        case "models": {
+          const requestedModel = args.join(" ").trim();
+          if (requestedModel) {
+            const modelIndex = Number.parseInt(requestedModel, 10);
+            const selectedModel = Number.isInteger(modelIndex) ? modelOptions[modelIndex - 1] : undefined;
+            const nextModel = selectedModel ?? normalizeModelAlias(requestedModel);
+
+            if (!nextModel) {
+              appendLine({
+                tone: "warning",
+                label: "models",
+                text: "No model selected. Use /models to list installed models, then /models 1."
+              });
+              return;
+            }
+
+            setTelemetry(null);
+            setSettings((currentSettings) => ({
+              ...currentSettings,
+              model: nextModel
+            }));
+            appendLine({
+              tone: "success",
+              label: "model",
+              text: `switched to ${nextModel}`
+            });
+            return;
+          }
+
+          appendLine({
+            tone: "muted",
+            label: "models",
+            text: `loading models from ${formatOllamaHost(settings.ollamaUrl)}...`
+          });
+
+          try {
+            const models = await new OllamaClient(settings.ollamaUrl).listModels();
+            setModelOptions(models);
+            if (models.length === 0) {
+              appendLine({
+                tone: "warning",
+                label: "models",
+                text: "No installed Ollama models found on the selected host.",
+                detail: "Pull one first, for example: ollama pull qwen2.5-coder:7b"
+              });
+              return;
+            }
+
+            appendLine({
+              tone: "accent",
+              label: "models",
+              text: `Found ${models.length} installed model${models.length === 1 ? "" : "s"}. Select with /models 1 or /model <name>.`,
+              detail: formatModelOptions(models, settings.model)
+            });
+          } catch (error) {
+            appendLine({
+              tone: "danger",
+              label: "models",
+              text: error instanceof Error ? error.message : String(error)
+            });
+          }
           return;
         }
         case "status":
@@ -336,7 +402,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           });
       }
     },
-    [agentMode, appendLine, exit, hostOptions, settings, telemetry]
+    [agentMode, appendLine, exit, hostOptions, modelOptions, settings, telemetry]
   );
 
   const handleSubmit = useCallback(
@@ -439,7 +505,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         )}
       </Box>
 
-      {!isRunning && input.startsWith("/") ? <CommandSuggestions input={input} hostOptions={hostOptions} /> : null}
+      {!isRunning && input.startsWith("/") ? <CommandSuggestions input={input} hostOptions={hostOptions} modelOptions={modelOptions} currentModel={settings.model} /> : null}
 
       <Box marginTop={1}>
         <Text color="gray">type / for commands  |  /connect switches compute  |  /agents toggles subagents  |  /exit quits</Text>
@@ -538,14 +604,20 @@ function EmptyState(): React.ReactElement {
   );
 }
 
-function CommandSuggestions(props: { input: string; hostOptions: OllamaHost[] }): React.ReactElement | null {
+function CommandSuggestions(props: {
+  input: string;
+  hostOptions: OllamaHost[];
+  modelOptions: string[];
+  currentModel: string;
+}): React.ReactElement | null {
   const suggestions = filterSlashCommands(props.input);
   if (suggestions.length === 0) {
     return null;
   }
 
-  const isConnectInput = props.input.trimStart().startsWith("/connect");
-  const hosts = isConnectInput ? props.hostOptions.slice(0, 5) : [];
+  const commandInput = props.input.trimStart();
+  const hosts = commandInput.startsWith("/connect") ? props.hostOptions.slice(0, 5) : [];
+  const models = commandInput.startsWith("/models") ? props.modelOptions.slice(0, 8) : [];
 
   return (
     <Box borderStyle="round" borderColor="gray" flexDirection="column" paddingX={1} marginTop={1}>
@@ -563,6 +635,17 @@ function CommandSuggestions(props: { input: string; hostOptions: OllamaHost[] })
           {hosts.map((host, index) => (
             <Text key={host.url} color="gray">
               {index + 1}. {host.label} {host.url}
+            </Text>
+          ))}
+        </Box>
+      ) : null}
+      {models.length > 0 ? (
+        <Box flexDirection="column" marginTop={1}>
+          <Text color="gray">Last loaded Ollama models</Text>
+          {models.map((model, index) => (
+            <Text key={model} color={model === props.currentModel ? "green" : "gray"}>
+              {index + 1}. {model}
+              {model === props.currentModel ? "  current" : ""}
             </Text>
           ))}
         </Box>
@@ -718,6 +801,15 @@ function formatHostOptions(hosts: OllamaHost[]): string {
     .map((host, index) => {
       const version = host.version ? `  Ollama ${host.version}` : "";
       return `${index + 1}. ${host.label}  ${host.url}${version}`;
+    })
+    .join("\n");
+}
+
+function formatModelOptions(models: string[], currentModel: string): string {
+  return models
+    .map((model, index) => {
+      const currentMarker = model === currentModel ? "  current" : "";
+      return `${index + 1}. ${model}${currentMarker}`;
     })
     .join("\n");
 }

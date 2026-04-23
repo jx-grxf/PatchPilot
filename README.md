@@ -176,6 +176,8 @@ Inside the TUI, use `/help` to see available commands. Permissions can be change
 | `/write on\|off` | Enable or disable workspace writes |
 | `/shell on\|off` | Enable or disable shell commands |
 | `/model <name>` | Switch the Ollama model for the current session |
+| `/models` | List installed models on the selected Ollama host |
+| `/models <number>` | Select a model from the last `/models` list |
 | `/model uncensored` | Switch to `huihui_ai/qwen2.5-coder-abliterate:7b` |
 | `/model default` | Switch back to `qwen2.5-coder:7b` |
 | `/connect` | Auto-scan the LAN for reachable Ollama servers |

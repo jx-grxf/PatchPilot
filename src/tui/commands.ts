@@ -36,6 +36,11 @@ export const slashCommands: SlashCommand[] = [
     description: "Switch the Ollama model for this session."
   },
   {
+    name: "models",
+    usage: "/models [number|name]",
+    description: "List installed Ollama models or select one."
+  },
+  {
     name: "mode",
     usage: "/mode plan|build",
     description: "Switch between read-only planning and implementation mode."

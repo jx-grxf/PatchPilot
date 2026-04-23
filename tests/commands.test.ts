@@ -14,6 +14,10 @@ describe("filterSlashCommands", () => {
     expect(filterSlashCommands("/b").map((command) => command.name)).toContain("build");
   });
 
+  it("filters model commands by prefix", () => {
+    expect(filterSlashCommands("/model").map((command) => command.name)).toEqual(["model", "models"]);
+  });
+
   it("includes subagent controls", () => {
     expect(filterSlashCommands("/a").map((command) => command.name)).toEqual(["agents"]);
   });
