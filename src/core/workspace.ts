@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { constants } from "node:fs";
-import { access, mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
+import { access, lstat, mkdir, readdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
 import { platform } from "node:os";
 import path from "node:path";
 import type { AgentToolCall, ToolResult } from "./types.js";
@@ -50,12 +50,14 @@ export type WorkspaceToolsOptions = {
 
 export class WorkspaceTools {
   readonly root: string;
+  private readonly rootRealPath: Promise<string>;
   private readonly allowWrite: boolean;
   private readonly allowShell: boolean;
   private readonly timeoutMs: number;
 
   constructor(options: WorkspaceToolsOptions) {
     this.root = path.resolve(options.root);
+    this.rootRealPath = realpath(this.root).catch(() => this.root);
     this.allowWrite = options.allowWrite;
     this.allowShell = options.allowShell;
     this.timeoutMs = options.timeoutMs ?? 60_000;
@@ -90,8 +92,8 @@ export class WorkspaceTools {
   }
 
   private async listFiles(requestedPath: string): Promise<ToolResult> {
-    const rootPath = this.resolveInsideWorkspace(requestedPath);
-    const entries = await walkFiles(rootPath, this.root, 3, 160);
+    const rootPath = await this.resolveReadPath(requestedPath);
+    const entries = await walkFiles(rootPath, this.root, await this.rootRealPath, 3, 160);
     return {
       ok: true,
       summary: `listed ${entries.length} files`,
@@ -108,7 +110,7 @@ export class WorkspaceTools {
       return denied(`read_file denied placeholder path: ${requestedPath}`);
     }
 
-    const absolutePath = this.resolveInsideWorkspace(requestedPath);
+    const absolutePath = await this.resolveReadPath(requestedPath);
     const content = await readFile(absolutePath, "utf8").catch((error: unknown) => {
       throw new Error(`file not found or unreadable: ${requestedPath} (${error instanceof Error ? error.message : String(error)})`);
     });
@@ -125,7 +127,8 @@ export class WorkspaceTools {
       return denied("search_text requires a non-empty query.");
     }
 
-    const files = await walkFiles(this.root, this.root, 8, 800);
+    const rootRealPath = await this.rootRealPath;
+    const files = await walkFiles(this.root, this.root, rootRealPath, 8, 800);
     const matches: string[] = [];
 
     for (const filePath of files) {
@@ -167,7 +170,7 @@ export class WorkspaceTools {
       return denied(`write_file denied placeholder path: ${requestedPath}`);
     }
 
-    const absolutePath = this.resolveInsideWorkspace(requestedPath);
+    const absolutePath = await this.resolveWritePath(requestedPath);
     await mkdir(path.dirname(absolutePath), { recursive: true });
     await writeFile(absolutePath, content, "utf8");
 
@@ -194,9 +197,42 @@ export class WorkspaceTools {
       content: clip(output.output, 20_000)
     };
   }
+
+  private async resolveReadPath(requestedPath: string): Promise<string> {
+    const absolutePath = this.resolveInsideWorkspace(requestedPath);
+    const resolvedPath = await realpath(absolutePath).catch((error: unknown) => {
+      throw new Error(`file not found or unreadable: ${requestedPath} (${error instanceof Error ? error.message : String(error)})`);
+    });
+    await assertInsideWorkspace(await this.rootRealPath, resolvedPath, requestedPath);
+    return resolvedPath;
+  }
+
+  private async resolveWritePath(requestedPath: string): Promise<string> {
+    const absolutePath = this.resolveInsideWorkspace(requestedPath);
+    const rootRealPath = await this.rootRealPath;
+    const existingParent = await findNearestExistingParent(absolutePath);
+    const parentRealPath = await realpath(existingParent);
+    await assertInsideWorkspace(rootRealPath, parentRealPath, requestedPath);
+
+    const targetStat = await lstat(absolutePath).catch(() => null);
+    if (targetStat) {
+      const resolvedTargetPath = await realpath(absolutePath).catch((error: unknown) => {
+        throw new Error(`file not writable: ${requestedPath} (${error instanceof Error ? error.message : String(error)})`);
+      });
+      await assertInsideWorkspace(rootRealPath, resolvedTargetPath, requestedPath);
+    }
+
+    return absolutePath;
+  }
 }
 
-async function walkFiles(startPath: string, workspaceRoot: string, maxDepth: number, maxEntries: number): Promise<string[]> {
+async function walkFiles(
+  startPath: string,
+  workspaceRoot: string,
+  workspaceRealRoot: string,
+  maxDepth: number,
+  maxEntries: number
+): Promise<string[]> {
   const results: string[] = [];
 
   async function visit(currentPath: string, depth: number): Promise<void> {
@@ -204,11 +240,21 @@ async function walkFiles(startPath: string, workspaceRoot: string, maxDepth: num
       return;
     }
 
-    const currentStat = await stat(currentPath);
+    const currentStat = await lstat(currentPath);
+    if (currentStat.isSymbolicLink()) {
+      return;
+    }
+
     if (currentStat.isFile()) {
       results.push(normalizeRelative(workspaceRoot, currentPath));
       return;
     }
+
+    if (!currentStat.isDirectory()) {
+      return;
+    }
+
+    await assertInsideWorkspace(workspaceRealRoot, await realpath(currentPath), normalizeRelative(workspaceRoot, currentPath));
 
     const entries = await readdir(currentPath, { withFileTypes: true });
     for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
@@ -227,6 +273,30 @@ async function walkFiles(startPath: string, workspaceRoot: string, maxDepth: num
   await access(startPath, constants.R_OK);
   await visit(startPath, 0);
   return results;
+}
+
+async function assertInsideWorkspace(workspaceRealRoot: string, candidatePath: string, requestedPath: string): Promise<void> {
+  const relativePath = path.relative(workspaceRealRoot, candidatePath);
+  if (relativePath.startsWith("..") || path.isAbsolute(relativePath)) {
+    throw new Error(`Path escapes workspace: ${requestedPath}`);
+  }
+}
+
+async function findNearestExistingParent(absolutePath: string): Promise<string> {
+  let currentPath = path.dirname(absolutePath);
+  while (true) {
+    const currentStat = await stat(currentPath).catch(() => null);
+    if (currentStat?.isDirectory()) {
+      return currentPath;
+    }
+
+    const parentPath = path.dirname(currentPath);
+    if (parentPath === currentPath) {
+      return currentPath;
+    }
+
+    currentPath = parentPath;
+  }
 }
 
 function runCommand(command: string, cwd: string, timeoutMs: number): Promise<{ exitCode: number | null; output: string }> {

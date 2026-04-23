@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -100,5 +100,90 @@ describe("WorkspaceTools", () => {
 
     expect(result.ok).toBe(false);
     expect(result.summary).toContain("unknown tool");
+  });
+
+  it("skips symlinked directories when listing files", async () => {
+    const outsideRoot = await mkdtemp(path.join(tmpdir(), "patchpilot-outside-"));
+    await mkdir(path.join(tempRoot, "src"));
+    await writeFile(path.join(outsideRoot, "secret.txt"), "classified\n");
+    await symlink(outsideRoot, path.join(tempRoot, "src", "linked-outside"));
+
+    const tools = new WorkspaceTools({
+      root: tempRoot,
+      allowWrite: false,
+      allowShell: false
+    });
+
+    const result = await tools.execute({
+      name: "list_files",
+      arguments: {
+        path: "."
+      }
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.content).not.toContain("linked-outside");
+
+    await rm(outsideRoot, {
+      recursive: true,
+      force: true
+    });
+  });
+
+  it("rejects reading a symlink that points outside the workspace", async () => {
+    const outsideRoot = await mkdtemp(path.join(tmpdir(), "patchpilot-outside-"));
+    const outsideFile = path.join(outsideRoot, "secret.txt");
+    await writeFile(outsideFile, "classified\n");
+    await symlink(outsideFile, path.join(tempRoot, "leak.txt"));
+
+    const tools = new WorkspaceTools({
+      root: tempRoot,
+      allowWrite: false,
+      allowShell: false
+    });
+
+    const result = await tools.execute({
+      name: "read_file",
+      arguments: {
+        path: "leak.txt"
+      }
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.summary).toContain("escapes workspace");
+
+    await rm(outsideRoot, {
+      recursive: true,
+      force: true
+    });
+  });
+
+  it("rejects writing through a symlinked directory outside the workspace", async () => {
+    const outsideRoot = await mkdtemp(path.join(tmpdir(), "patchpilot-outside-"));
+    await mkdir(path.join(tempRoot, "safe"));
+    await symlink(outsideRoot, path.join(tempRoot, "safe", "linked-outside"));
+
+    const tools = new WorkspaceTools({
+      root: tempRoot,
+      allowWrite: true,
+      allowShell: false
+    });
+
+    const result = await tools.execute({
+      name: "write_file",
+      arguments: {
+        path: "safe/linked-outside/secret.txt",
+        content: "nope"
+      }
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.summary).toContain("escapes workspace");
+    await expect(readFile(path.join(outsideRoot, "secret.txt"), "utf8")).rejects.toThrow();
+
+    await rm(outsideRoot, {
+      recursive: true,
+      force: true
+    });
   });
 });
