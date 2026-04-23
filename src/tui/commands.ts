@@ -128,6 +128,11 @@ export function filterSlashCommands(input: string): SlashCommand[] {
     return slashCommands;
   }
 
+  const prefixMatches = slashCommands.filter((command) => command.name.startsWith(commandPart));
+  if (prefixMatches.length > 0) {
+    return prefixMatches;
+  }
+
   return slashCommands
     .map((command) => ({
       command,
