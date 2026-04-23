@@ -10,7 +10,7 @@ import { createModelClient } from "../core/modelClient.js";
 import { defaultOllamaModel } from "../core/ollama.js";
 import { addTelemetryToSession, emptySessionTelemetry, estimateTokens } from "../core/tokenAccounting.js";
 import type { AgentEvent, ModelProvider, ModelTelemetry, SessionTelemetry } from "../core/types.js";
-import { CommandSuggestions } from "./components/CommandSuggestions.js";
+import { CommandSuggestions, type CommandSuggestionItem } from "./components/CommandSuggestions.js";
 import { Composer, FooterHints } from "./components/Composer.js";
 import { Header } from "./components/Header.js";
 import { OnboardingPanel, type OnboardingState } from "./components/OnboardingPanel.js";
@@ -34,6 +34,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   const { stdout } = useStdout();
   const [input, setInput] = useState(props.initialTask ?? "");
   const didRunInitialTask = useRef(false);
+  const didOpenDefaultOnboarding = useRef(false);
   const [lines, setLines] = useState<LogLine[]>([]);
   const [advisorNotes, setAdvisorNotes] = useState<AdvisorNote[]>([]);
   const [isRunning, setIsRunning] = useState(false);
@@ -46,6 +47,10 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   const [hostOptions, setHostOptions] = useState<OllamaHost[]>([]);
   const [modelOptions, setModelOptions] = useState<string[]>([]);
   const [onboarding, setOnboarding] = useState<OnboardingState | null>(null);
+  const [onboardingIndex, setOnboardingIndex] = useState(0);
+  const [onboardingInput, setOnboardingInput] = useState("");
+  const [onboardingBusyMessage, setOnboardingBusyMessage] = useState<string | null>(null);
+  const [paletteIndex, setPaletteIndex] = useState(0);
   const [activeScrollPane, setActiveScrollPane] = useState<"transcript" | "session">("transcript");
   const [transcriptScrollOffset, setTranscriptScrollOffset] = useState(0);
   const [sessionScrollOffset, setSessionScrollOffset] = useState(0);
@@ -65,6 +70,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   const panelHeight = Math.max(12, terminalRows - 11);
   const transcriptWidth = Math.max(42, terminalColumns - 38);
   const scrollStep = Math.max(4, Math.floor(panelHeight * 0.8));
+  const paletteItems = !isRunning && !onboarding ? buildCommandSuggestionItems(input, hostOptions, modelOptions, settings.model) : [];
 
   const appendLine = useCallback((line: Omit<LogLine, "id">) => {
     setLines((currentLines) => [
@@ -230,11 +236,9 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           setOnboarding({
             step: "provider"
           });
-          appendLine({
-            tone: "accent",
-            label: "onboarding",
-            text: "Choose a provider: type 1 for Ollama, 2 for Gemini, or 3 for Codex OAuth."
-          });
+          setOnboardingIndex(0);
+          setOnboardingInput("");
+          setOnboardingBusyMessage(null);
           return;
         case "agents":
         case "subagents": {
@@ -454,7 +458,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       }
 
       if (onboarding) {
-        await handleOnboardingSubmit(nextValue, onboarding, settings, appendLine, setSettings, setModelOptions, setTelemetry, setOnboarding);
+        await handleOnboardingSubmit(nextValue, onboarding, settings, appendLine, setSettings, setModelOptions, setTelemetry, setOnboarding, setOnboardingBusyMessage);
         return;
       }
 
@@ -472,7 +476,135 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
     void runTask(props.initialTask);
   }, [props.initialTask, runTask]);
 
+  useEffect(() => {
+    setPaletteIndex(0);
+  }, [input, hostOptions, modelOptions, onboarding, settings.model]);
+
+  useEffect(() => {
+    if (didOpenDefaultOnboarding.current || props.initialTask || process.env.PATCHPILOT_PROVIDER || onboarding) {
+      return;
+    }
+
+    didOpenDefaultOnboarding.current = true;
+    setOnboarding({
+      step: "provider"
+    });
+    setOnboardingIndex(0);
+    setOnboardingInput("");
+  }, [onboarding, props.initialTask]);
+
   useInput((inputValue, key) => {
+    if (onboarding) {
+      if (key.escape) {
+        if (onboarding.step === "provider") {
+          setOnboarding(null);
+          setOnboardingBusyMessage(null);
+        } else if (onboarding.step === "model") {
+          setOnboardingBusyMessage(null);
+          setOnboardingInput("");
+          setOnboardingIndex(0);
+          setOnboarding(
+            onboarding.provider === "gemini"
+              ? {
+                  step: "gemini-key"
+                }
+              : onboarding.provider === "codex" && !hasCodexCliOAuth()
+                ? {
+                    step: "codex-login"
+                  }
+                : {
+                    step: "provider"
+                  }
+          );
+        } else {
+          setOnboarding({
+            step: "provider"
+          });
+          setOnboardingBusyMessage(null);
+          setOnboardingInput("");
+          setOnboardingIndex(0);
+        }
+        return;
+      }
+
+      if (onboarding.step === "provider" || onboarding.step === "model") {
+        const optionCount = onboarding.step === "provider" ? 3 : onboarding.models.length;
+        if (key.upArrow) {
+          setOnboardingIndex((currentIndex) => (currentIndex - 1 + optionCount) % optionCount);
+          return;
+        }
+
+        if (key.downArrow) {
+          setOnboardingIndex((currentIndex) => (currentIndex + 1) % optionCount);
+          return;
+        }
+
+        if (key.return) {
+          const value = String(onboardingIndex + 1);
+          void handleOnboardingSubmit(
+            value,
+            onboarding,
+            settings,
+            appendLine,
+            setSettings,
+            setModelOptions,
+            setTelemetry,
+            setOnboarding,
+            setOnboardingBusyMessage
+          );
+          return;
+        }
+      }
+
+      if (onboarding.step === "codex-login" && key.return) {
+        void handleOnboardingSubmit(
+          "",
+          onboarding,
+          settings,
+          appendLine,
+          setSettings,
+          setModelOptions,
+          setTelemetry,
+          setOnboarding,
+          setOnboardingBusyMessage
+        );
+        return;
+      }
+    }
+
+    if (!onboarding && paletteItems.length > 0) {
+      if (key.upArrow) {
+        setPaletteIndex((currentIndex) => (currentIndex - 1 + paletteItems.length) % paletteItems.length);
+        return;
+      }
+
+      if (key.downArrow) {
+        setPaletteIndex((currentIndex) => (currentIndex + 1) % paletteItems.length);
+        return;
+      }
+
+      if (key.return) {
+        const selectedItem = paletteItems[paletteIndex];
+        if (!selectedItem) {
+          return;
+        }
+
+        if (selectedItem.hint === "run") {
+          setInput("");
+          void handleSlashCommand(selectedItem.label);
+          return;
+        }
+
+        setInput(selectedItem.label);
+        return;
+      }
+
+      if (key.escape) {
+        setInput(input.trim() === "/" ? "" : "/");
+        return;
+      }
+    }
+
     const canUsePanelKeys = input.length === 0 || isRunning;
     if (canUsePanelKeys && key.leftArrow) {
       setActiveScrollPane("session");
@@ -561,46 +693,69 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         gpuStats={gpuStats}
       />
 
-      <Box flexDirection="row">
-        <Sidebar
-          workspace={settings.workspace}
-          model={settings.model}
-          provider={settings.provider}
-          ollamaUrl={settings.ollamaUrl}
-          agentMode={agentMode}
-          allowWrite={settings.allowWrite}
-          allowShell={settings.allowShell}
-          subagents={settings.subagents}
-          telemetry={telemetry}
-          sessionTelemetry={sessionTelemetry}
-          draftTokens={draftTokens}
+      {onboarding ? (
+        <OnboardingPanel
+          state={onboarding}
           height={panelHeight}
-          scrollOffset={sessionScrollOffset}
-          advisors={advisorNotes}
+          selectedIndex={onboardingIndex}
+          input={onboardingInput}
+          busyMessage={onboardingBusyMessage}
+          onInputChange={setOnboardingInput}
+          onInputSubmit={(value) =>
+            void handleOnboardingSubmit(
+              value,
+              onboarding,
+              settings,
+              appendLine,
+              setSettings,
+              setModelOptions,
+              setTelemetry,
+              setOnboarding,
+              setOnboardingBusyMessage
+            )
+          }
         />
-        <Box flexDirection="column" flexGrow={1}>
-          <Transcript
-            lines={lines}
-            isRunning={isRunning}
-            height={panelHeight}
-            width={transcriptWidth}
-            scrollOffset={transcriptScrollOffset}
-          />
-          <Composer
-            input={input}
-            isRunning={isRunning}
+      ) : (
+        <Box flexDirection="row">
+          <Sidebar
+            workspace={settings.workspace}
+            model={settings.model}
+            provider={settings.provider}
+            ollamaUrl={settings.ollamaUrl}
+            agentMode={agentMode}
+            allowWrite={settings.allowWrite}
+            allowShell={settings.allowShell}
+            subagents={settings.subagents}
+            telemetry={telemetry}
+            sessionTelemetry={sessionTelemetry}
             draftTokens={draftTokens}
-            mask={onboarding?.step === "gemini-key" ? "*" : undefined}
-            onChange={setInput}
-            onSubmit={(value) => void handleSubmit(value)}
+            height={panelHeight}
+            scrollOffset={sessionScrollOffset}
+            advisors={advisorNotes}
+            isActive={activeScrollPane === "session"}
           />
-          <OnboardingPanel state={onboarding} />
-          {!isRunning && input.startsWith("/") ? (
-            <CommandSuggestions input={input} hostOptions={hostOptions} modelOptions={modelOptions} currentModel={settings.model} />
-          ) : null}
-          <FooterHints activePane={activeScrollPane} />
+          <Box flexDirection="column" flexGrow={1}>
+            <Transcript
+              lines={lines}
+              isRunning={isRunning}
+              isActive={activeScrollPane === "transcript"}
+              height={panelHeight}
+              width={transcriptWidth}
+              scrollOffset={transcriptScrollOffset}
+            />
+            <Composer
+              input={input}
+              isRunning={isRunning}
+              status={status}
+              draftTokens={draftTokens}
+              onChange={setInput}
+              onSubmit={(value) => void handleSubmit(value)}
+            />
+            {paletteItems.length > 0 ? <CommandSuggestions items={paletteItems} selectedIndex={paletteIndex} /> : null}
+            <FooterHints activePane={activeScrollPane} />
+          </Box>
         </Box>
-      </Box>
+      )}
     </Box>
   );
 }
@@ -638,7 +793,8 @@ async function handleOnboardingSubmit(
   setSettings: React.Dispatch<React.SetStateAction<AgentRunnerOptions>>,
   setModelOptions: React.Dispatch<React.SetStateAction<string[]>>,
   setTelemetry: React.Dispatch<React.SetStateAction<ModelTelemetry | null>>,
-  setOnboarding: React.Dispatch<React.SetStateAction<OnboardingState | null>>
+  setOnboarding: React.Dispatch<React.SetStateAction<OnboardingState | null>>,
+  setOnboardingBusyMessage: React.Dispatch<React.SetStateAction<string | null>>
 ): Promise<void> {
   if (onboarding.step === "provider") {
     const provider = readOnboardingProvider(value);
@@ -675,7 +831,7 @@ async function handleOnboardingSubmit(
       return;
     }
 
-    await enterModelSelection(provider, settings.ollamaUrl, settings.model, appendLine, setSettings, setModelOptions, setTelemetry, setOnboarding);
+    await enterModelSelection(provider, settings.ollamaUrl, settings.model, appendLine, setSettings, setModelOptions, setTelemetry, setOnboarding, setOnboardingBusyMessage);
     return;
   }
 
@@ -699,9 +855,9 @@ async function handleOnboardingSubmit(
     appendLine({
       tone: "success",
       label: "onboarding",
-      text: "Gemini API key saved to .env."
+      text: "Gemini API key saved to PatchPilot config."
     });
-    await enterModelSelection("gemini", settings.ollamaUrl, defaultGeminiModel, appendLine, setSettings, setModelOptions, setTelemetry, setOnboarding);
+    await enterModelSelection("gemini", settings.ollamaUrl, defaultGeminiModel, appendLine, setSettings, setModelOptions, setTelemetry, setOnboarding, setOnboardingBusyMessage);
     return;
   }
 
@@ -715,7 +871,7 @@ async function handleOnboardingSubmit(
       return;
     }
 
-    await enterModelSelection("codex", settings.ollamaUrl, defaultCodexModel, appendLine, setSettings, setModelOptions, setTelemetry, setOnboarding);
+    await enterModelSelection("codex", settings.ollamaUrl, defaultCodexModel, appendLine, setSettings, setModelOptions, setTelemetry, setOnboarding, setOnboardingBusyMessage);
     return;
   }
 
@@ -739,6 +895,7 @@ async function handleOnboardingSubmit(
     PATCHPILOT_PROVIDER: onboarding.provider,
     PATCHPILOT_MODEL: selectedModel
   });
+  setOnboardingBusyMessage(null);
   setOnboarding(null);
   appendLine({
     tone: "success",
@@ -755,9 +912,11 @@ async function enterModelSelection(
   setSettings: React.Dispatch<React.SetStateAction<AgentRunnerOptions>>,
   setModelOptions: React.Dispatch<React.SetStateAction<string[]>>,
   setTelemetry: React.Dispatch<React.SetStateAction<ModelTelemetry | null>>,
-  setOnboarding: React.Dispatch<React.SetStateAction<OnboardingState | null>>
+  setOnboarding: React.Dispatch<React.SetStateAction<OnboardingState | null>>,
+  setOnboardingBusyMessage: React.Dispatch<React.SetStateAction<string | null>>
 ): Promise<void> {
   setTelemetry(null);
+  setOnboardingBusyMessage(`Loading ${provider} models...`);
   setSettings((currentSettings) => ({
     ...currentSettings,
     provider,
@@ -767,6 +926,7 @@ async function enterModelSelection(
   try {
     const models = await loadAvailableModels(provider, ollamaUrl, setModelOptions, true);
     if (models.length === 0) {
+      setOnboardingBusyMessage(null);
       appendLine({
         tone: "warning",
         label: "onboarding",
@@ -786,6 +946,7 @@ async function enterModelSelection(
       provider,
       models
     });
+    setOnboardingBusyMessage(null);
     appendLine({
       tone: "accent",
       label: "onboarding",
@@ -793,6 +954,7 @@ async function enterModelSelection(
       detail: formatModelOptions(models.slice(0, 12), defaultModelForProvider(provider, currentModel))
     });
   } catch (error) {
+    setOnboardingBusyMessage(null);
     appendLine({
       tone: "danger",
       label: "onboarding",
@@ -1020,6 +1182,54 @@ async function resolveRunnableSettings(
             : "Codex OAuth is not ready. Run codex login."
   });
   return null;
+}
+
+function buildCommandSuggestionItems(
+  input: string,
+  hostOptions: OllamaHost[],
+  modelOptions: string[],
+  currentModel: string
+): CommandSuggestionItem[] {
+  if (!input.startsWith("/")) {
+    return [];
+  }
+
+  const items: CommandSuggestionItem[] = filterSlashCommands(input)
+    .slice(0, 6)
+    .map((command) => ({
+      key: `command-${command.name}`,
+      category: command.category,
+      label: command.usage.includes("<") || command.usage.includes("[") ? `/${command.name} ` : `/${command.name}`,
+      detail: command.description,
+      hint: command.usage.includes("<") || command.usage.includes("[") ? "fill" : "run"
+    }));
+
+  const commandInput = input.trimStart();
+  if (commandInput.startsWith("/connect")) {
+    items.push(
+      ...hostOptions.slice(0, 3).map((host, index) => ({
+        key: `host-${host.url}`,
+        category: "host",
+        label: `/connect ${index + 1}`,
+        detail: `${host.label} ${host.url}`,
+        hint: "run"
+      }))
+    );
+  }
+
+  if (commandInput.startsWith("/models")) {
+    items.push(
+      ...modelOptions.slice(0, 4).map((model, index) => ({
+        key: `model-${model}`,
+        category: "model",
+        label: `/models ${index + 1}`,
+        detail: `${model}${model === currentModel ? "  current" : ""}`,
+        hint: "run"
+      }))
+    );
+  }
+
+  return items;
 }
 
 function defaultModelForProvider(provider: ModelProvider, currentModel: string): string {

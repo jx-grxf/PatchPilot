@@ -14,6 +14,7 @@ type TranscriptRow = {
 export function Transcript(props: {
   lines: LogLine[];
   isRunning: boolean;
+  isActive: boolean;
   height: number;
   width: number;
   scrollOffset: number;
@@ -28,7 +29,7 @@ export function Transcript(props: {
   return (
     <Box
       borderStyle="round"
-      borderColor={props.isRunning ? "cyan" : "gray"}
+      borderColor={props.isActive ? "cyan" : props.isRunning ? "yellow" : "gray"}
       flexDirection="column"
       paddingX={1}
       height={props.height}

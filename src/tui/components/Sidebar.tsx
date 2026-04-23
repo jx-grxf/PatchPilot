@@ -25,6 +25,7 @@ export function Sidebar(props: {
   advisors: AdvisorNote[];
   height: number;
   scrollOffset: number;
+  isActive: boolean;
 }): React.ReactElement {
   const rows = buildSidebarRows(props);
   const visibleRowCount = Math.max(1, props.height - 2);
@@ -34,7 +35,7 @@ export function Sidebar(props: {
   const visibleRows = rows.slice(Math.max(0, rows.length - contentRowCount - clampedOffset), rows.length - clampedOffset);
 
   return (
-    <Box width={32} height={props.height} overflowY="hidden" borderStyle="round" borderColor="gray" flexDirection="column" paddingX={1} marginRight={1}>
+    <Box width={32} height={props.height} overflowY="hidden" borderStyle="round" borderColor={props.isActive ? "cyan" : "gray"} flexDirection="column" paddingX={1} marginRight={1}>
       {visibleRows.map((row, index) => (
         <Text key={`${index}-${row.text}`} color={row.color} bold={row.bold} wrap="truncate">
           {row.text}

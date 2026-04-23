@@ -128,7 +128,14 @@ export function filterSlashCommands(input: string): SlashCommand[] {
     return slashCommands;
   }
 
-  return slashCommands.filter((command) => command.name.startsWith(commandPart));
+  return slashCommands
+    .map((command) => ({
+      command,
+      score: scoreSlashCommand(command, commandPart)
+    }))
+    .filter((item): item is { command: SlashCommand; score: number } => item.score !== null)
+    .sort((left, right) => left.score - right.score || left.command.name.localeCompare(right.command.name))
+    .map((item) => item.command);
 }
 
 export function formatCommandList(): string {
@@ -142,4 +149,35 @@ export function formatCommandDetail(): string {
       return `${command.category.padEnd(11)} ${command.usage}${shortcut} - ${command.description}`;
     })
     .join("\n");
+}
+
+function scoreSlashCommand(command: SlashCommand, query: string): number | null {
+  const haystacks = [
+    command.name,
+    command.usage,
+    command.description,
+    command.category,
+    command.shortcut ?? ""
+  ].map((value) => value.toLowerCase());
+
+  if (command.name.startsWith(query)) {
+    return 0;
+  }
+
+  if (command.usage.toLowerCase().startsWith(`/${query}`)) {
+    return 1;
+  }
+
+  const directMatchIndex = haystacks.findIndex((value) => value.includes(query));
+  if (directMatchIndex >= 0) {
+    return 2 + directMatchIndex;
+  }
+
+  const queryTokens = query.split(/[\s-]+/).filter(Boolean);
+  if (queryTokens.length === 0) {
+    return null;
+  }
+
+  const tokenMatch = haystacks.some((value) => queryTokens.every((token) => value.includes(token)));
+  return tokenMatch ? 10 : null;
 }

@@ -1,61 +1,52 @@
 import React from "react";
 import { Box, Text } from "ink";
-import { filterSlashCommands } from "../commands.js";
-import type { OllamaHost } from "../hosts.js";
+
+export type CommandSuggestionItem = {
+  key: string;
+  category: string;
+  label: string;
+  detail: string;
+  hint?: string;
+};
 
 export function CommandSuggestions(props: {
-  input: string;
-  hostOptions: OllamaHost[];
-  modelOptions: string[];
-  currentModel: string;
+  items: CommandSuggestionItem[];
+  selectedIndex: number;
 }): React.ReactElement | null {
-  const suggestions = filterSlashCommands(props.input);
-  if (suggestions.length === 0) {
+  if (props.items.length === 0) {
     return null;
   }
 
-  const commandInput = props.input.trimStart();
-  const hosts = commandInput.startsWith("/connect") ? props.hostOptions.slice(0, 5) : [];
-  const models = commandInput.startsWith("/models") ? props.modelOptions.slice(0, 8) : [];
-
   return (
-    <Box borderStyle="round" borderColor="gray" flexDirection="column" paddingX={1} marginTop={1}>
-      <Text color="gray">Command palette</Text>
-      {suggestions.slice(0, 8).map((command) => (
-        <Box key={command.name}>
-          <Box width={16}>
-            <Text color="gray">{command.category}</Text>
-          </Box>
-          <Box width={30}>
-            <Text color="cyan">{command.usage}</Text>
-          </Box>
-          <Text color="gray">
-            {command.description}
-            {command.shortcut ? ` (${command.shortcut})` : ""}
-          </Text>
-        </Box>
-      ))}
-      {hosts.length > 0 ? (
-        <Box flexDirection="column" marginTop={1}>
-          <Text color="gray">Last scanned Ollama hosts</Text>
-          {hosts.map((host, index) => (
-            <Text key={host.url} color="gray">
-              {index + 1}. {host.label} {host.url}
+    <Box borderStyle="round" borderColor="cyan" flexDirection="column" paddingX={1} marginTop={1}>
+      <Text color="cyan" bold>
+        Command palette
+      </Text>
+      <Text color="gray">Use up/down to pick, Enter to apply, Escape to clear.</Text>
+      {props.items.slice(0, 8).map((item, index) => {
+        const isSelected = index === props.selectedIndex;
+        return (
+          <Box key={item.key} marginTop={index === 0 ? 1 : 0}>
+            <Box width={2}>
+              <Text color={isSelected ? "cyan" : "gray"}>{isSelected ? ">" : " "}</Text>
+            </Box>
+            <Box width={13}>
+              <Text color={isSelected ? "cyan" : "gray"} bold={isSelected}>
+                {item.category}
+              </Text>
+            </Box>
+            <Box width={32}>
+              <Text color={isSelected ? "white" : "cyan"} bold={isSelected} wrap="truncate">
+                {item.label}
+              </Text>
+            </Box>
+            <Text color={isSelected ? "white" : "gray"} wrap="truncate">
+              {item.detail}
+              {item.hint ? `  ${item.hint}` : ""}
             </Text>
-          ))}
-        </Box>
-      ) : null}
-      {models.length > 0 ? (
-        <Box flexDirection="column" marginTop={1}>
-          <Text color="gray">Last loaded Ollama models</Text>
-          {models.map((model, index) => (
-            <Text key={model} color={model === props.currentModel ? "green" : "gray"}>
-              {index + 1}. {model}
-              {model === props.currentModel ? "  current" : ""}
-            </Text>
-          ))}
-        </Box>
-      ) : null}
+          </Box>
+        );
+      })}
     </Box>
   );
 }

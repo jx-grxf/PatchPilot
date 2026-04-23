@@ -1,5 +1,6 @@
 import React from "react";
 import { Box, Text } from "ink";
+import TextInput from "ink-text-input";
 import type { ModelProvider } from "../../core/types.js";
 
 export type OnboardingState =
@@ -18,46 +19,139 @@ export type OnboardingState =
       models: string[];
     };
 
-export function OnboardingPanel(props: { state: OnboardingState | null }): React.ReactElement | null {
-  if (!props.state) {
-    return null;
+const providerOptions: Array<{ value: ModelProvider; label: string; description: string }> = [
+  {
+    value: "ollama",
+    label: "Ollama",
+    description: "Local or LAN model server"
+  },
+  {
+    value: "gemini",
+    label: "Gemini",
+    description: "Google API key from PatchPilot config"
+  },
+  {
+    value: "codex",
+    label: "Codex",
+    description: "ChatGPT login through Codex CLI"
   }
+];
+
+export function OnboardingPanel(props: {
+  state: OnboardingState;
+  height: number;
+  selectedIndex: number;
+  input: string;
+  busyMessage?: string | null;
+  onInputChange: (value: string) => void;
+  onInputSubmit: (value: string) => void;
+}): React.ReactElement {
+  const currentStepIndex = props.state.step === "provider" ? 0 : props.state.step === "gemini-key" || props.state.step === "codex-login" ? 1 : 2;
+  const modelState = props.state.step === "model" ? props.state : null;
 
   return (
-    <Box borderStyle="round" borderColor="cyan" flexDirection="column" paddingX={1} marginTop={1}>
+    <Box borderStyle="round" borderColor="cyan" flexDirection="column" paddingX={2} height={Math.max(18, props.height + 4)}>
       <Text color="cyan" bold>
-        Onboarding
+        PatchPilot Setup
       </Text>
+      <Text color="gray">A dedicated first-run flow for provider, auth, and model setup.</Text>
+      <Box marginTop={1}>
+        {["provider", "auth", "model"].map((step, index) => (
+          <Text key={step} color={index <= currentStepIndex ? "cyan" : "gray"}>
+            {index > 0 ? "  " : ""}
+            [{index + 1}] {step}
+          </Text>
+        ))}
+      </Box>
+      {props.busyMessage ? (
+        <Box marginTop={1}>
+          <Text color="yellow">{props.busyMessage}</Text>
+        </Box>
+      ) : null}
       {props.state.step === "provider" ? (
-        <>
-          <Text color="gray">Choose provider:</Text>
-          <Text color="gray">1. Ollama - local or LAN model server</Text>
-          <Text color="gray">2. Gemini - Google Gemini API key from .env</Text>
-          <Text color="gray">3. Codex - ChatGPT Plus/Pro login through Codex CLI</Text>
-        </>
+        <SelectionList
+          title="Choose a provider"
+          subtitle="Use up/down and Enter. Escape cancels."
+          rows={providerOptions.map((option) => ({
+            label: option.label,
+            description: option.description
+          }))}
+          selectedIndex={props.selectedIndex}
+        />
       ) : null}
       {props.state.step === "gemini-key" ? (
-        <>
-          <Text color="gray">Paste your Gemini API key.</Text>
-          <Text color="gray">PatchPilot saves it to .env as GEMINI_API_KEY and masks the input.</Text>
-        </>
+        <Box flexDirection="column" marginTop={2}>
+          <Text color="white" bold>
+            Enter your Gemini API key
+          </Text>
+          <Text color="gray">It will be stored in PatchPilot&apos;s own config directory, not in the repository.</Text>
+          <Box marginTop={1}>
+            <Text color="cyan">key &gt; </Text>
+            <TextInput value={props.input} onChange={props.onInputChange} onSubmit={props.onInputSubmit} mask="*" />
+          </Box>
+        </Box>
       ) : null}
       {props.state.step === "codex-login" ? (
-        <>
-          <Text color="gray">Use your ChatGPT plan through Codex CLI OAuth.</Text>
-          <Text color="gray">Run `codex login` in another terminal, then press Enter here.</Text>
-        </>
+        <Box flexDirection="column" marginTop={2}>
+          <Text color="white" bold>
+            Connect Codex CLI
+          </Text>
+          <Text color="gray">Run `codex login` in another terminal, then press Enter here to continue.</Text>
+          <Text color="gray">Escape goes back to provider selection.</Text>
+        </Box>
       ) : null}
-      {props.state.step === "model" ? (
-        <>
-          <Text color="gray">Choose a {props.state.provider} model by number or name:</Text>
-          {props.state.models.slice(0, 12).map((model, index) => (
-            <Text key={model} color="gray">
-              {index + 1}. {model}
+      {modelState ? (
+        <SelectionList
+          title={`Choose a ${modelState.provider} model`}
+          subtitle="Use up/down and Enter. Left arrow goes back."
+          rows={modelState.models.map((model) => ({
+            label: model,
+            description: model === modelState.models[props.selectedIndex] ? "selected" : "available"
+          }))}
+          selectedIndex={props.selectedIndex}
+        />
+      ) : null}
+      <Box marginTop={1}>
+        <Text color="gray">This setup window keeps onboarding separate from the chat transcript.</Text>
+      </Box>
+    </Box>
+  );
+}
+
+function SelectionList(props: {
+  title: string;
+  subtitle: string;
+  rows: Array<{ label: string; description: string }>;
+  selectedIndex: number;
+}): React.ReactElement {
+  const startIndex = Math.max(0, Math.min(props.selectedIndex - 4, Math.max(0, props.rows.length - 8)));
+  const visibleRows = props.rows.slice(startIndex, startIndex + 8);
+
+  return (
+    <Box flexDirection="column" marginTop={2}>
+      <Text color="white" bold>
+        {props.title}
+      </Text>
+      <Text color="gray">{props.subtitle}</Text>
+      {visibleRows.map((row, index) => {
+        const absoluteIndex = startIndex + index;
+        const isSelected = absoluteIndex === props.selectedIndex;
+        return (
+          <Box key={`${absoluteIndex}-${row.label}`} marginTop={1}>
+            <Box width={3}>
+              <Text color={isSelected ? "cyan" : "gray"}>{isSelected ? ">" : " "}</Text>
+            </Box>
+            <Box width={28}>
+              <Text color={isSelected ? "white" : "cyan"} bold={isSelected} wrap="truncate">
+                {row.label}
+              </Text>
+            </Box>
+            <Text color={isSelected ? "white" : "gray"} wrap="truncate">
+              {row.description}
             </Text>
-          ))}
-        </>
-      ) : null}
+          </Box>
+        );
+      })}
     </Box>
   );
 }
