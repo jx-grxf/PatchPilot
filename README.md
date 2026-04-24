@@ -14,9 +14,31 @@
 
 </div>
 
-PatchPilot is a terminal coding assistant designed around local models, visible tool execution, and a clean patch-oriented workflow. It starts small on purpose: one agent, one workspace boundary, explicit write and shell permissions, and an interface that makes every step observable.
+# !!!Security and legal notice!!!
+PatchPilot is a coding agent that can read/write files and run shell commands when those capabilities are enabled. Use it only in repositories and environments you trust.
 
-This repository is now prepared as a public preview: the TUI, docs, safety defaults, and GitHub workflows are set up for open development.
+## Security notice
+
+- **No zero-risk guarantee:** LLM-driven tooling can make incorrect or unsafe suggestions. Always review diffs and commands before applying them.
+- **Sensitive data handling:** Never expose private keys, passwords, tokens, credentials, or confidential code to providers you do not fully trust.
+- **Provider data flow:** Local provider (`ollama`) keeps inference on your own infrastructure. Cloud providers (`gemini`, `codex`) may process prompts and context remotely under their own terms.
+- **Permission model:** Keep write and shell permissions disabled unless needed. Enable them only for the current task and disable afterward.
+- **Workspace boundary:** Run PatchPilot in a dedicated project root and avoid mixing unrelated sensitive material in that workspace.
+- **User responsibility:** You are responsible for reviewing, testing, and validating all generated changes before merge, deployment, or production use.
+
+## Legal notice
+
+- **License:** This project is provided under the [MIT License](LICENSE).
+- **No warranty:** The software is provided "AS IS", without warranties of any kind, express or implied.
+- **Limitation of liability:** The authors and contributors are not liable for damages, data loss, security incidents, or other consequences resulting from use or misuse.
+- **Third-party services:** Use of model providers and external services is subject to their own terms, privacy policies, retention settings, and regional compliance requirements.
+- **Compliance:** If you process personal, regulated, or company-restricted data, ensure your usage complies with applicable law, contracts, and internal policies.
+
+## Responsible disclosure
+
+If you discover a security issue, please do not publish exploit details immediately. Open a private security report via GitHub Security Advisories or contact the maintainer directly, and include reproduction steps and impact.
+
+PatchPilot is designed for transparent, user-controlled operation, but safe usage requires deliberate permission control, careful review, and standard engineering safeguards.
 
 ---
 
