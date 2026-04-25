@@ -2,7 +2,7 @@
 
 # PatchPilot
 
-**A local-first coding agent TUI for safe patching, guided setup, and observable runs.**
+**A local-first coding agent TUI for safe patching, guided setup, and observable runs with high efficiency using a custom token-caching system.**
 
 [![CI](https://github.com/jx-grxf/PatchPilot/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/jx-grxf/PatchPilot/actions/workflows/ci.yml)
 ![Status](https://img.shields.io/badge/status-public%20preview-0ea5e9)
@@ -350,6 +350,7 @@ npm run build
 | Memory | Repository summaries and local task state |
 | Model support | Native Ollama tool-calling when model support is reliable |
 | Distribution | Tauri shell with PatchPilot CLI sidecar for signed macOS and Windows releases |
+| Efficiency | Token-caching for better performance |
 
 ## License
 
