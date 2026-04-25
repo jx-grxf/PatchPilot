@@ -14,8 +14,19 @@
 
 </div>
 
+---
+## Showcase
+
+<p align="center">
+  <img src="docs/showcase/patchpilot-showcase.svg" alt="PatchPilot terminal interface overview" width="920">
+</p>
+
+---
+
 # !!!Security and legal notice!!!
-PatchPilot is a coding agent that can read/write files and run shell commands when those capabilities are enabled. Use it only in repositories and environments you trust.
+PatchPilot is an experimental coding agent that can read/write files and run shell commands when those capabilities are enabled. Use it only in repositories and environments you trust.
+
+ I don't want to scare people. But I must point out that using PatchPilot involves risks and that I am not liable for any problems or damages that may arise.
 
 ## Security notice
 
@@ -42,27 +53,31 @@ PatchPilot is designed for transparent, user-controlled operation, but safe usag
 
 ---
 
-## Showcase
+# Enough with the legal stuff for now—THIS is Patchpilot. 
 
-<p align="center">
-  <img src="docs/showcase/patchpilot-showcase.svg" alt="PatchPilot terminal interface overview" width="920">
-</p>
-
----
 
 ## Contents
 
-- [Highlights](#highlights)
-- [Why This Exists](#why-this-exists)
-- [Current Workflow](#current-workflow)
-- [Tech Stack](#tech-stack)
-- [Requirements](#requirements)
-- [Quick Start](#quick-start)
-- [Usage](#usage)
-- [Safety Model](#safety-model)
-- [Development](#development)
-- [Roadmap](#roadmap)
-- [License](#license)
+- [PatchPilot](#patchpilot)
+  - [Showcase](#showcase)
+- [!!!Security and legal notice!!!](#security-and-legal-notice)
+  - [Security notice](#security-notice)
+  - [Legal notice](#legal-notice)
+  - [Responsible disclosure](#responsible-disclosure)
+- [Enough with the legal stuff for now—THIS is Patchpilot.](#enough-with-the-legal-stuff-for-nowthis-is-patchpilot)
+  - [Contents](#contents)
+  - [Highlights](#highlights)
+  - [Why This Exists](#why-this-exists)
+  - [Current Workflow](#current-workflow)
+  - [Tech Stack](#tech-stack)
+  - [Requirements](#requirements)
+  - [Quick Start](#quick-start)
+  - [Usage](#usage)
+  - [Remote Ollama](#remote-ollama)
+  - [Safety Model](#safety-model)
+  - [Development](#development)
+  - [Roadmap](#roadmap)
+  - [License](#license)
 
 ---
 
