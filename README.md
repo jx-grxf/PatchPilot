@@ -26,7 +26,7 @@
 # !!!Security and legal notice!!!
 PatchPilot is an experimental coding agent that can read/write files and run shell commands when those capabilities are enabled. Use it only in repositories and environments you trust.
 
- I don't want to scare people. But I must point out that using PatchPilot involves risks and that I am not liable for any problems or damages that may arise.
+**I don't want to scare people. But I must point out that using PatchPilot involves risks and that I am not liable for any problems or damages that may arise.**
 
 ## Security notice
 
@@ -53,7 +53,7 @@ PatchPilot is designed for transparent, user-controlled operation, but safe usag
 
 ---
 
-# Enough with the legal stuff for now—THIS is Patchpilot. 
+# Enough with the legal stuff, now to the good and unique things about PatchPilot!
 
 
 ## Contents
@@ -64,7 +64,7 @@ PatchPilot is designed for transparent, user-controlled operation, but safe usag
   - [Security notice](#security-notice)
   - [Legal notice](#legal-notice)
   - [Responsible disclosure](#responsible-disclosure)
-- [Enough with the legal stuff for now—THIS is Patchpilot.](#enough-with-the-legal-stuff-for-nowthis-is-patchpilot)
+- [Enough with the legal stuff, now to the good and unique things about PatchPilot!](#enough-with-the-legal-stuff-now-to-the-good-and-unique-things-about-patchpilot)
   - [Contents](#contents)
   - [Highlights](#highlights)
   - [Why This Exists](#why-this-exists)
