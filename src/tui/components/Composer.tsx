@@ -34,8 +34,8 @@ export function Composer(props: {
   const elapsedSeconds = runningSince ? Math.max(0, Math.floor((Date.now() - runningSince) / 1000)) : 0;
 
   return (
-    <Box marginTop={1} flexDirection="column">
-      <Box>
+    <Box flexDirection="column" height={2} overflowY="hidden">
+      <Box height={1}>
         <Text color={props.isRunning ? "yellow" : "cyan"}>{props.isRunning ? "running  " : "patch >  "}</Text>
         {props.isRunning ? (
           <Text color="yellow">
@@ -46,7 +46,7 @@ export function Composer(props: {
           <TextInput value={props.input} onChange={props.onChange} onSubmit={props.onSubmit} placeholder="Ask PatchPilot or type /help..." mask={props.mask} />
         )}
       </Box>
-      <Text color="gray">
+      <Text color="gray" wrap="truncate">
         {props.isRunning ? "Input is locked while the current run is active." : `prompt ${props.draftTokens} tok est`}
       </Text>
     </Box>
@@ -55,7 +55,7 @@ export function Composer(props: {
 
 export function FooterHints(props: { activePane: "transcript" | "session" }): React.ReactElement {
   return (
-    <Box marginTop={1}>
+    <Box height={1} overflowY="hidden">
       <Text color="gray">
         tab mode  |  pane {props.activePane}  |  left/right pane  |  pgup/pgdn scroll  |  / starts palette
       </Text>

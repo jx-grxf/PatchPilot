@@ -91,9 +91,9 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         })
       : [];
   const rootHeight = Math.max(24, terminalRows);
-  const headerReservedHeight = 7;
+  const headerReservedHeight = 8;
   const paletteReservedHeight = !onboarding && paletteItems.length > 0 ? 4 : 0;
-  const composerReservedHeight = onboarding ? 0 : 3;
+  const composerReservedHeight = onboarding ? 0 : 2;
   const footerReservedHeight = onboarding ? 0 : 1;
   const panelHeight = Math.max(8, rootHeight - headerReservedHeight - composerReservedHeight - paletteReservedHeight - footerReservedHeight);
   const transcriptWidth = Math.max(42, terminalColumns - 38);
@@ -400,12 +400,6 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
 
           if (!details) {
             setOnboardingBusyMessage("Local Ollama is not reachable. Start Ollama.app or run `ollama serve`, then press Enter again.");
-            appendLine({
-              tone: "warning",
-              label: "onboarding",
-              text: "Local Ollama is not reachable.",
-              detail: "Start Ollama.app or run `ollama serve`, then try again."
-            });
             return;
           }
 
