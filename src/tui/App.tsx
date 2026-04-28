@@ -19,7 +19,7 @@ import { Sidebar } from "./components/Sidebar.js";
 import { Transcript } from "./components/Transcript.js";
 import { filterSlashCommands, formatCommandDetail } from "./commands.js";
 import { formatCost, formatSessionTokens, formatTokens, normalizeModelAlias, readToggle } from "./format.js";
-import { checkOllamaHost, discoverOllamaHosts, normalizeOllamaUrl, readOllamaHostDetails, type OllamaHost, type OllamaHostDetails } from "./hosts.js";
+import { checkOllamaHost, discoverOllamaHosts, normalizeOllamaUrl, readOllamaHostDetails, startLocalOllamaAppAndWait, type OllamaHost, type OllamaHostDetails } from "./hosts.js";
 import { readGpuStats, readSystemStats, type GpuStats, type SystemStats } from "./systemStats.js";
 import { maxTranscriptLines, type AdvisorNote, type AgentMode, type LogLine } from "./types.js";
 
@@ -389,11 +389,17 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
 
         if (selection === "local") {
           setOnboardingBusyMessage("Checking local Ollama...");
-          const details = await connectToHost("local", {
+          let details = await connectToHost("local", {
             announce: false
           });
+          if (!details && process.platform === "darwin") {
+            setOnboardingBusyMessage("Starting Ollama.app and waiting for the local server...");
+            const startedHost = await startLocalOllamaAppAndWait();
+            details = startedHost ? await connectToHost(startedHost, { announce: false }) : null;
+          }
+
           if (!details) {
-            setOnboardingBusyMessage(null);
+            setOnboardingBusyMessage("Local Ollama is not reachable. Start Ollama.app or run `ollama serve`, then press Enter again.");
             appendLine({
               tone: "warning",
               label: "onboarding",
