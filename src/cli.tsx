@@ -59,6 +59,7 @@ program
   .option("--ollama-url <url>", "Ollama base URL", defaultOllamaUrl)
   .option("--steps <count>", "Maximum agent steps", "8")
   .option("--thinking <mode>", "Thinking budget mode: fixed or adaptive.", process.env.PATCHPILOT_THINKING_MODE ?? "fixed")
+  .option("--reasoning <effort>", "Provider reasoning effort: low, medium, high, xhigh, or adaptive.", process.env.PATCHPILOT_REASONING_EFFORT ?? "medium")
   .option("--apply", "Allow file writes inside the workspace.", false)
   .option("--allow-shell", "Allow shell commands inside the workspace.", false)
   .option("--no-subagents", "Disable planner and reviewer subagents for faster local runs.")
@@ -77,9 +78,14 @@ program
         allowShell={Boolean(options.allowShell)}
         maxSteps={Number.isFinite(maxSteps) ? maxSteps : 8}
         thinkingMode={String(options.thinking) === "adaptive" ? "adaptive" : "fixed"}
+        reasoningEffort={readReasoningEffort(String(options.reasoning))}
         subagents={options.subagents !== false}
       />
     );
   });
 
 await program.parseAsync(process.argv);
+
+function readReasoningEffort(value: string): "low" | "medium" | "high" | "xhigh" | "adaptive" {
+  return value === "low" || value === "medium" || value === "high" || value === "xhigh" || value === "adaptive" ? value : "medium";
+}

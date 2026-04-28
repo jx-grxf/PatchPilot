@@ -6,11 +6,13 @@ export type ChatMessage = {
 };
 
 export type ModelProvider = "ollama" | "gemini" | "codex" | "openrouter";
+export type ReasoningEffort = "low" | "medium" | "high" | "xhigh";
 
 export type ModelChatOptions = {
   model: string;
   messages: ChatMessage[];
   formatJson?: boolean;
+  reasoningEffort?: ReasoningEffort;
   signal?: AbortSignal;
 };
 

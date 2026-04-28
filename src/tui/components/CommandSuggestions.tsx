@@ -18,10 +18,7 @@ export function CommandSuggestions(props: {
   }
 
   return (
-    <Box borderStyle="round" borderColor="cyan" flexDirection="column" paddingX={1} marginTop={1}>
-      <Text color="cyan" bold>
-        Command palette
-      </Text>
+    <Box borderStyle="round" borderColor="cyan" flexDirection="column" paddingX={1} height={Math.min(8, props.items.length) + 4} overflowY="hidden">
       <Text color="gray">Use up/down to pick, Enter to apply, Escape to clear.</Text>
       {props.items.slice(0, 8).map((item, index) => {
         const isSelected = index === props.selectedIndex;

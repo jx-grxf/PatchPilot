@@ -17,7 +17,7 @@ import { Header } from "./components/Header.js";
 import { OnboardingPanel, type OnboardingState } from "./components/OnboardingPanel.js";
 import { Sidebar } from "./components/Sidebar.js";
 import { Transcript } from "./components/Transcript.js";
-import { filterSlashCommands, formatCommandDetail } from "./commands.js";
+import { filterSlashCommands, formatCommandDetail, formatCommandHelp } from "./commands.js";
 import { formatCost, formatSessionTokens, formatTokens, normalizeModelAlias, readToggle } from "./format.js";
 import { checkOllamaHost, discoverOllamaHosts, normalizeOllamaUrl, readOllamaHostDetails, startLocalOllamaAppAndWait, type OllamaHost, type OllamaHostDetails } from "./hosts.js";
 import { readGpuStats, readSystemStats, type GpuStats, type SystemStats } from "./systemStats.js";
@@ -73,6 +73,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
     allowShell: props.allowShell,
     maxSteps: props.maxSteps,
     thinkingMode: props.thinkingMode,
+    reasoningEffort: props.reasoningEffort,
     subagents: props.subagents
   });
   const draftTokens = estimateTokens(input);
@@ -92,7 +93,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       : [];
   const rootHeight = Math.max(24, terminalRows);
   const headerReservedHeight = 8;
-  const paletteReservedHeight = !onboarding && paletteItems.length > 0 ? 4 : 0;
+  const paletteReservedHeight = !onboarding && paletteItems.length > 0 ? Math.min(8, paletteItems.length) + 4 : 0;
   const composerReservedHeight = onboarding ? 0 : 2;
   const footerReservedHeight = onboarding ? 0 : 1;
   const panelHeight = Math.max(8, rootHeight - headerReservedHeight - composerReservedHeight - paletteReservedHeight - footerReservedHeight);
@@ -591,7 +592,8 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         return;
       }
 
-      const selectedModel = selectModelFromInput(value, onboarding.models, onboardingIndex);
+      const selectableModels = filterModelOptions(onboardingInput, onboarding.models);
+      const selectedModel = selectModelFromInput(value, selectableModels, onboardingIndex);
       if (!selectedModel) {
         appendLine({
           tone: "warning",
@@ -699,12 +701,16 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       switch (command) {
         case "":
         case "help":
-          appendLine({
-            tone: "accent",
-            label: "commands",
-            text: "Slash commands. Type / plus a few letters to filter.",
-            detail: formatCommandDetail()
-          });
+          {
+            const helpTopic = args.join(" ").trim();
+            const detail = helpTopic ? formatCommandHelp(helpTopic) : formatCommandDetail();
+            appendLine({
+              tone: detail ? "accent" : "warning",
+              label: "commands",
+              text: helpTopic ? (detail ? `Help for /${helpTopic.replace(/^\//, "")}` : `No help topic for /${helpTopic.replace(/^\//, "")}.`) : "Slash commands. Type / plus a few letters to filter.",
+              detail: detail ?? "Use /help to list commands."
+            });
+          }
           return;
         case "build":
         case "plan":
@@ -805,6 +811,31 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           });
           return;
         }
+        case "reasoning": {
+          const nextEffort = args[0]?.toLowerCase();
+          if (!isReasoningEffort(nextEffort)) {
+            appendLine({
+              tone: "accent",
+              label: "reasoning",
+              text: `current ${settings.reasoningEffort}. Use /reasoning low, medium, high, xhigh, or adaptive.`
+            });
+            return;
+          }
+
+          setSettings((currentSettings) => ({
+            ...currentSettings,
+            reasoningEffort: nextEffort
+          }));
+          savePatchPilotEnvValues({
+            PATCHPILOT_REASONING_EFFORT: nextEffort
+          });
+          appendLine({
+            tone: "success",
+            label: "reasoning",
+            text: `provider reasoning ${nextEffort}${settings.provider === "ollama" ? " (Ollama ignores common reasoning effort)" : ""}`
+          });
+          return;
+        }
         case "write":
         case "apply": {
           const writeEnabled = readToggle(args[0], !settings.allowWrite);
@@ -857,7 +888,23 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
             return;
           }
 
-          await switchModel(settings.provider, requestedModel, settings.ollamaUrl, settings.model, appendLine, setModelOptions, setSettings, setTelemetry);
+          {
+            const models = await loadKnownOrAvailableModels(settings.provider, settings.ollamaUrl, modelOptions, setModelOptions, appendLine);
+            if (!models) {
+              return;
+            }
+            const nextModel = selectModelFromInput(requestedModel, models);
+            if (!nextModel) {
+              appendLine({
+                tone: "warning",
+                label: "model",
+                text: `No unique model match for "${requestedModel}".`,
+                detail: formatModelOptions(filterModelOptions(requestedModel, models).slice(0, 12), settings.model)
+              });
+              return;
+            }
+            await switchModel(settings.provider, nextModel, settings.ollamaUrl, settings.model, appendLine, setModelOptions, setSettings, setTelemetry, models);
+          }
           return;
         }
         case "models": {
@@ -927,7 +974,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
             text:
               settings.provider === "ollama"
                 ? `provider ollama | model ${settings.model} | host ${activeHost?.host.deviceName ?? settings.ollamaUrl} | route ${activeHost?.host.url ?? settings.ollamaUrl} | compute ${describeComputeTarget(settings.ollamaUrl).kind} | tools local | agents ${settings.subagents ? "on" : "off"} | write ${settings.allowWrite ? "on" : "off"} | shell ${settings.allowShell ? "on" : "off"} | draft ${draftTokens} tok | last ${formatTokens(telemetry)} | session ${formatSessionTokens(sessionTelemetry)} | cost ${formatCost(sessionTelemetry.estimatedCostUsd)}`
-                : `provider ${settings.provider} | model ${settings.model} | host ${settings.provider} oauth | compute cloud | agents ${settings.subagents ? "on" : "off"} | write ${settings.allowWrite ? "on" : "off"} | shell ${settings.allowShell ? "on" : "off"} | draft ${draftTokens} tok | last ${formatTokens(telemetry)} | session ${formatSessionTokens(sessionTelemetry)} | cost ${formatCost(sessionTelemetry.estimatedCostUsd)}`
+                : `provider ${settings.provider} | model ${settings.model} | host ${settings.provider} api | compute cloud | agents ${settings.subagents ? "on" : "off"} | think ${settings.thinkingMode} | reasoning ${settings.reasoningEffort} | write ${settings.allowWrite ? "on" : "off"} | shell ${settings.allowShell ? "on" : "off"} | draft ${draftTokens} tok | last ${formatTokens(telemetry)} | session ${formatSessionTokens(sessionTelemetry)} | cost ${formatCost(sessionTelemetry.estimatedCostUsd)}`
           });
           return;
         case "connect":
@@ -976,6 +1023,43 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           });
           await loadHostSuggestions(true, true);
           return;
+        case "eject": {
+          if (settings.provider !== "ollama") {
+            appendLine({
+              tone: "warning",
+              label: "eject",
+              text: "Eject is only available for Ollama models."
+            });
+            return;
+          }
+
+          const target = args.join(" ").trim();
+          const ejectedModels = await ejectOllamaModels({
+            target,
+            settings,
+            activeHost,
+            usedModels: usedOllamaModelsRef.current
+          });
+          if (ejectedModels.length === 0) {
+            appendLine({
+              tone: "warning",
+              label: "eject",
+              text: "No Ollama model was ejected."
+            });
+            return;
+          }
+
+          appendLine({
+            tone: "success",
+            label: "eject",
+            text: `ejected ${ejectedModels.join(", ")}`
+          });
+          if (activeHost) {
+            const details = await readOllamaHostDetails(activeHost.host, true).catch(() => activeHost);
+            setActiveHost(details);
+          }
+          return;
+        }
         case "doctor": {
           appendLine({
             tone: "muted",
@@ -1046,8 +1130,10 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
 
       if (nextValue.startsWith("/")) {
         const selectedItem = paletteItems[paletteIndex];
+        const commandHasArgs = /^\/\S+\s+\S/.test(nextValue);
         const shouldApplySuggestion =
           selectedItem &&
+          (!commandHasArgs || selectedItem.command !== selectedItem.label) &&
           (selectedItem.execute || selectedItem.command === nextValue || nextValue === "/" || nextValue.endsWith(" "));
         const commandToRun = shouldApplySuggestion ? selectedItem.command : nextValue;
 
@@ -1156,7 +1242,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         return;
       }
 
-      const optionCount = getOnboardingOptionCount(onboarding);
+      const optionCount = onboarding.step === "model" ? filterModelOptions(onboardingInput, onboarding.models).length : getOnboardingOptionCount(onboarding);
       if (optionCount > 0 && key.upArrow) {
         setOnboardingIndex((currentIndex) => (currentIndex - 1 + optionCount) % optionCount);
         return;
@@ -1175,6 +1261,20 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       if (onboarding.step === "codex-login" && key.return) {
         void handleOnboardingSubmit("");
         return;
+      }
+
+      if (onboarding.step === "model" && inputValue && !key.ctrl && !key.meta) {
+        if (key.backspace || key.delete) {
+          setOnboardingInput((currentValue) => currentValue.slice(0, -1));
+          setOnboardingIndex(0);
+          return;
+        }
+
+        if (/^[\w\s./:_-]$/.test(inputValue)) {
+          setOnboardingInput((currentValue) => `${currentValue}${inputValue}`);
+          setOnboardingIndex(0);
+          return;
+        }
       }
 
       return;
@@ -1294,6 +1394,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         agentMode={agentMode}
         subagents={settings.subagents}
         thinkingMode={settings.thinkingMode}
+        reasoningEffort={settings.reasoningEffort}
         ollamaUrl={settings.ollamaUrl}
         telemetry={telemetry}
         sessionTelemetry={sessionTelemetry}
@@ -1568,6 +1669,7 @@ function buildCommandSuggestionItems(options: {
   }
 
   if (trimmedInput === "/models" || trimmedInput.startsWith("/models") || trimmedInput === "/model" || trimmedInput.startsWith("/model")) {
+    const modelQuery = trimmedInput.replace(/^\/models?/, "").trim();
     if (options.isLoadingModels) {
       items.unshift({
         key: "models-loading",
@@ -1579,7 +1681,7 @@ function buildCommandSuggestionItems(options: {
       });
     } else {
       items.unshift(
-        ...options.modelOptions.slice(0, 8).map((model) => ({
+        ...filterModelOptions(modelQuery, options.modelOptions).slice(0, 8).map((model) => ({
           key: `model-${model}`,
           category: "model",
           label: model,
@@ -1661,7 +1763,46 @@ function selectModelFromInput(value: string, models: string[], selectedIndex?: n
     return models[modelIndex - 1] ?? null;
   }
 
-  return models.includes(normalizedValue) ? normalizedValue : null;
+  if (models.includes(normalizedValue)) {
+    return normalizedValue;
+  }
+
+  const matches = filterModelOptions(normalizedValue, models);
+  return matches.length === 1 ? matches[0] ?? null : null;
+}
+
+function filterModelOptions(query: string, models: string[]): string[] {
+  const normalizedQuery = query.trim().toLowerCase();
+  if (!normalizedQuery) {
+    return models;
+  }
+
+  return models
+    .map((model) => ({
+      model,
+      score: scoreModelMatch(model, normalizedQuery)
+    }))
+    .filter((item): item is { model: string; score: number } => item.score !== null)
+    .sort((left, right) => left.score - right.score || left.model.localeCompare(right.model))
+    .map((item) => item.model);
+}
+
+function scoreModelMatch(model: string, query: string): number | null {
+  const normalizedModel = model.toLowerCase();
+  if (normalizedModel === query) {
+    return 0;
+  }
+
+  if (normalizedModel.startsWith(query)) {
+    return 1;
+  }
+
+  if (normalizedModel.includes(query)) {
+    return 2 + normalizedModel.indexOf(query) / 1000;
+  }
+
+  const tokens = query.split(/[\s/:_-]+/).filter(Boolean);
+  return tokens.length > 0 && tokens.every((token) => normalizedModel.includes(token)) ? 10 : null;
 }
 
 function defaultModelForProvider(provider: ModelProvider, currentModel: string): string {
@@ -1693,6 +1834,46 @@ async function unloadUsedOllamaModels(usedModels: Set<string>): Promise<void> {
       await new OllamaClient(url).unloadModel(model);
     })
   );
+}
+
+async function ejectOllamaModels(options: {
+  target: string;
+  settings: AgentRunnerOptions;
+  activeHost: OllamaHostDetails | null;
+  usedModels: Set<string>;
+}): Promise<string[]> {
+  const target = options.target.trim();
+  const client = new OllamaClient(options.settings.ollamaUrl);
+  const models =
+    target === "all"
+      ? [
+          ...new Set([
+            ...[...options.usedModels]
+              .map((entry) => entry.split("|"))
+              .filter(([url]) => url === options.settings.ollamaUrl)
+              .map(([, model]) => model)
+              .filter((model): model is string => Boolean(model)),
+            ...(options.activeHost?.runningModels.map((model) => model.name) ?? [])
+          ])
+        ]
+      : [target || options.settings.model];
+
+  const ejected: string[] = [];
+  for (const model of models) {
+    await client.unloadModel(model).then(
+      () => {
+        ejected.push(model);
+        options.usedModels.delete(`${options.settings.ollamaUrl}|${model}`);
+      },
+      () => undefined
+    );
+  }
+
+  return ejected;
+}
+
+function isReasoningEffort(value: string | undefined): value is AgentRunnerOptions["reasoningEffort"] {
+  return value === "low" || value === "medium" || value === "high" || value === "xhigh" || value === "adaptive";
 }
 
 function upsertAdvisorNote(notes: AdvisorNote[], nextNote: AdvisorNote): AdvisorNote[] {

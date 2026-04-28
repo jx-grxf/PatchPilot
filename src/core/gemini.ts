@@ -26,6 +26,8 @@ type GeminiGenerateContentResponse = {
   usageMetadata?: {
     promptTokenCount?: number;
     candidatesTokenCount?: number;
+    cachedContentTokenCount?: number;
+    thoughtsTokenCount?: number;
     totalTokenCount?: number;
   };
   error?: {
@@ -75,7 +77,7 @@ export class GeminiClient {
       headers: {
         "Content-Type": "application/json"
       },
-      body: JSON.stringify(toGenerateContentRequest(options.messages, options.formatJson, this.runtimeOptions)),
+      body: JSON.stringify(toGenerateContentRequest(options.model, options.messages, options.formatJson, this.runtimeOptions, options.reasoningEffort)),
       signal: options.signal
     });
     const durationMs = Date.now() - startedAt;
@@ -146,7 +148,13 @@ export function readGeminiRuntimeOptions(env: NodeJS.ProcessEnv = process.env): 
   };
 }
 
-function toGenerateContentRequest(messages: ChatMessage[], formatJson: boolean | undefined, runtimeOptions: GeminiRuntimeOptions) {
+function toGenerateContentRequest(
+  model: string,
+  messages: ChatMessage[],
+  formatJson: boolean | undefined,
+  runtimeOptions: GeminiRuntimeOptions,
+  reasoningEffort: ModelChatOptions["reasoningEffort"]
+) {
   const systemText = messages
     .filter((message) => message.role === "system")
     .map((message) => message.content)
@@ -165,11 +173,35 @@ function toGenerateContentRequest(messages: ChatMessage[], formatJson: boolean |
         }
       : undefined,
     contents,
-    generationConfig: {
-      maxOutputTokens: runtimeOptions.maxOutputTokens,
-      temperature: runtimeOptions.temperature,
-      responseMimeType: formatJson ? "application/json" : undefined
-    }
+      generationConfig: {
+        maxOutputTokens: runtimeOptions.maxOutputTokens,
+        temperature: runtimeOptions.temperature,
+        thinkingConfig: buildGeminiThinkingConfig(model, reasoningEffort),
+        responseMimeType: formatJson ? "application/json" : undefined
+      }
+  };
+}
+
+function buildGeminiThinkingConfig(model: string, reasoningEffort: ModelChatOptions["reasoningEffort"]): Record<string, unknown> | undefined {
+  if (!reasoningEffort) {
+    return undefined;
+  }
+
+  if (/gemini-2\.5/i.test(model)) {
+    return {
+      thinkingBudget:
+        reasoningEffort === "low"
+          ? 512
+          : reasoningEffort === "medium"
+            ? 2048
+            : reasoningEffort === "high"
+              ? 8192
+              : 12_288
+    };
+  }
+
+  return {
+    thinkingLevel: reasoningEffort === "xhigh" ? "high" : reasoningEffort
   };
 }
 
@@ -196,14 +228,16 @@ function stripModelPrefix(model: string): string {
 function toTelemetry(payload: GeminiGenerateContentResponse, durationMs: number, model: string): ModelTelemetry {
   const promptTokens = payload.usageMetadata?.promptTokenCount ?? 0;
   const responseTokens = payload.usageMetadata?.candidatesTokenCount ?? 0;
+  const cachedPromptTokens = payload.usageMetadata?.cachedContentTokenCount ?? 0;
+  const thoughtsTokens = payload.usageMetadata?.thoughtsTokenCount ?? 0;
   const totalTokens = payload.usageMetadata?.totalTokenCount ?? promptTokens + responseTokens;
 
   return attachTokenCost(
     {
       promptTokens,
-      cachedPromptTokens: 0,
+      cachedPromptTokens,
       cacheWriteTokens: 0,
-      responseTokens,
+      responseTokens: responseTokens + thoughtsTokens,
       totalTokens,
       evalTokensPerSecond: responseTokens > 0 && durationMs > 0 ? responseTokens / (durationMs / 1000) : null,
       promptDurationMs: 0,

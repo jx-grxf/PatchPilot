@@ -36,6 +36,7 @@ export function Header(props: {
   agentMode: AgentMode;
   subagents: boolean;
   thinkingMode: "fixed" | "adaptive";
+  reasoningEffort: string;
   ollamaUrl: string;
   telemetry: ModelTelemetry | null;
   sessionTelemetry: SessionTelemetry;
@@ -96,6 +97,7 @@ export function Header(props: {
             ["mode", props.agentMode, props.agentMode === "build" ? "yellow" : "green"],
             ["advisors", props.subagents ? "on" : "off", props.subagents ? "cyan" : "gray"],
             ["think", props.thinkingMode, props.thinkingMode === "adaptive" ? "yellow" : "gray"],
+            ["reason", props.reasoningEffort, props.reasoningEffort === "adaptive" ? "yellow" : "cyan"],
             ["write", props.allowWrite ? "on" : "off", props.allowWrite ? "green" : "red"],
             ["shell", props.allowShell ? "on" : "off", props.allowShell ? "green" : "red"]
           ]}

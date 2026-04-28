@@ -59,7 +59,8 @@ export function attachTokenCost(
   telemetry: Omit<ModelTelemetry, "estimatedCostUsd" | "costSource">,
   provider: ModelProvider,
   model: string,
-  openRouterRates?: OpenRouterTokenRates | null
+  openRouterRates?: OpenRouterTokenRates | null,
+  providerCostUsd?: number | null
 ): ModelTelemetry {
   if (provider === "ollama") {
     return {
@@ -70,6 +71,15 @@ export function attachTokenCost(
   }
 
   if (provider === "openrouter") {
+    if (providerCostUsd !== undefined && providerCostUsd !== null) {
+      return {
+        ...telemetry,
+        cachedPromptTokens: Math.min(telemetry.cachedPromptTokens, telemetry.promptTokens),
+        estimatedCostUsd: providerCostUsd,
+        costSource: "api-pricing"
+      };
+    }
+
     if (!openRouterRates) {
       return {
         ...telemetry,
@@ -80,11 +90,12 @@ export function attachTokenCost(
     }
 
     const cachedPromptTokens = Math.min(telemetry.cachedPromptTokens, telemetry.promptTokens);
-    const uncachedPromptTokens = Math.max(0, telemetry.promptTokens - cachedPromptTokens);
+    const cacheWriteTokens = Math.min(telemetry.cacheWriteTokens, Math.max(0, telemetry.promptTokens - cachedPromptTokens));
+    const uncachedPromptTokens = Math.max(0, telemetry.promptTokens - cachedPromptTokens - cacheWriteTokens);
     const estimatedCostUsd =
       uncachedPromptTokens * openRouterRates.inputPerToken +
       cachedPromptTokens * openRouterRates.cachedInputPerToken +
-      telemetry.cacheWriteTokens * openRouterRates.cacheWritePerToken +
+      cacheWriteTokens * openRouterRates.cacheWritePerToken +
       telemetry.responseTokens * openRouterRates.outputPerToken;
 
     return {

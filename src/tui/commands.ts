@@ -4,6 +4,8 @@ export type SlashCommand = {
   description: string;
   category: "session" | "permissions" | "model" | "compute" | "utility";
   shortcut?: string;
+  aliases?: string[];
+  detail?: string;
 };
 
 export const slashCommands: SlashCommand[] = [
@@ -11,31 +13,45 @@ export const slashCommands: SlashCommand[] = [
     name: "help",
     usage: "/help",
     description: "Show available PatchPilot commands.",
-    category: "utility"
+    category: "utility",
+    detail: "Use /help to list commands. Use /help <command> for focused help, for example /help think or /help model."
   },
   {
     name: "permissions",
     usage: "/permissions",
     description: "Show write and shell permissions.",
-    category: "permissions"
+    category: "permissions",
+    aliases: ["perms"]
   },
   {
     name: "agents",
     usage: "/agents on|off",
     description: "Enable or disable planner/reviewer subagents.",
-    category: "session"
+    category: "session",
+    aliases: ["subagents"],
+    detail: "Advisor subagents add a short planner/reviewer brief before complex workspace tasks. Turn them off with /agents off when you want less noise or lower latency."
   },
   {
     name: "provider",
     usage: "/provider ollama|gemini|openrouter|codex",
     description: "Switch between Ollama, Gemini, OpenRouter, and Codex inference.",
-    category: "model"
+    category: "model",
+    detail: "Provider controls where inference runs. Ollama can be local or remote. Gemini, OpenRouter, and Codex are cloud providers."
   },
   {
     name: "think",
     usage: "/think fixed|adaptive",
     description: "Switch between fixed and adaptive thinking budgets.",
-    category: "session"
+    category: "session",
+    aliases: ["thinking"],
+    detail: "fixed uses exactly the configured --steps budget. adaptive shortens simple tasks and expands complex tasks up to a bounded budget. It does not change provider reasoning level; use /reasoning for that."
+  },
+  {
+    name: "reasoning",
+    usage: "/reasoning low|medium|high|xhigh|adaptive",
+    description: "Set provider reasoning effort where the provider supports it.",
+    category: "model",
+    detail: "Codex supports low, medium, high, and xhigh. OpenRouter receives reasoning.effort for compatible models. Gemini maps xhigh to high. Ollama has no common reasoning-effort API, so the value is ignored there. adaptive chooses effort from task complexity."
   },
   {
     name: "onboarding",
@@ -47,7 +63,8 @@ export const slashCommands: SlashCommand[] = [
     name: "write",
     usage: "/write on|off",
     description: "Enable or disable workspace writes.",
-    category: "permissions"
+    category: "permissions",
+    aliases: ["apply"]
   },
   {
     name: "shell",
@@ -59,13 +76,15 @@ export const slashCommands: SlashCommand[] = [
     name: "model",
     usage: "/model <name|uncensored|default>",
     description: "Switch the Ollama model for this session.",
-    category: "model"
+    category: "model",
+    detail: "Use /model to show cached provider models. Use /model <query> to search and select a unique model. OpenRouter supports IDs such as openrouter/auto and :free models."
   },
   {
     name: "models",
     usage: "/models [number|name]",
     description: "List installed Ollama models or select one.",
-    category: "model"
+    category: "model",
+    detail: "Loads models from the active provider and shows them in the palette. Use /models free, /models llama, or /models 3 to search or select."
   },
   {
     name: "mode",
@@ -90,7 +109,15 @@ export const slashCommands: SlashCommand[] = [
     name: "connect",
     usage: "/connect <host|local>",
     description: "Connect to a remote Ollama host.",
-    category: "compute"
+    category: "compute",
+    aliases: ["host", "ollama"]
+  },
+  {
+    name: "eject",
+    usage: "/eject [model|all]",
+    description: "Unload Ollama models from the active host.",
+    category: "compute",
+    detail: "/eject unloads the current Ollama model with keep_alive: 0. /eject all unloads models PatchPilot used in this session plus running models reported by /api/ps. Cloud providers do not need eject."
   },
   {
     name: "hosts",
@@ -120,7 +147,8 @@ export const slashCommands: SlashCommand[] = [
     name: "exit",
     usage: "/exit",
     description: "Quit PatchPilot.",
-    category: "utility"
+    category: "utility",
+    aliases: ["quit", "q"]
   }
 ];
 
@@ -160,6 +188,17 @@ export function formatCommandDetail(): string {
       return `${command.category.padEnd(11)} ${command.usage}${shortcut} - ${command.description}`;
     })
     .join("\n");
+}
+
+export function formatCommandHelp(name: string): string | null {
+  const normalizedName = name.trim().replace(/^\//, "").toLowerCase();
+  const command = slashCommands.find((item) => item.name === normalizedName || item.aliases?.includes(normalizedName));
+  if (!command) {
+    return null;
+  }
+
+  const aliases = command.aliases?.length ? `\naliases: ${command.aliases.map((alias) => `/${alias}`).join(", ")}` : "";
+  return [`${command.usage} - ${command.description}`, command.detail ?? "", aliases].filter(Boolean).join("\n");
 }
 
 function scoreSlashCommand(command: SlashCommand, query: string): number | null {

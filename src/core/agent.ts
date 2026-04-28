@@ -2,7 +2,7 @@ import { formatParseError, parseAgentResponse } from "./json.js";
 import path from "node:path";
 import { createModelClient } from "./modelClient.js";
 import { formatSubagentContext, runSubagentAdvisors } from "./subagents.js";
-import type { AgentEvent, ChatMessage, ModelClient, ModelProvider } from "./types.js";
+import type { AgentEvent, ChatMessage, ModelClient, ModelProvider, ReasoningEffort } from "./types.js";
 import { WorkspaceTools } from "./workspace.js";
 
 export type AgentRunnerOptions = {
@@ -14,6 +14,7 @@ export type AgentRunnerOptions = {
   allowShell: boolean;
   maxSteps: number;
   thinkingMode: "fixed" | "adaptive";
+  reasoningEffort: ReasoningEffort | "adaptive";
   subagents: boolean;
 };
 
@@ -39,6 +40,7 @@ export class AgentRunner {
   async *run(task: string): AsyncGenerator<AgentEvent> {
     const workspaceSummary = await buildWorkspaceSummary(this.tools.root);
     const maxSteps = resolveMaxSteps(task, this.options.maxSteps, this.options.thinkingMode);
+    const reasoningEffort = resolveReasoningEffort(task, this.options.reasoningEffort);
     let subagentContext = "";
     if (this.options.subagents && shouldUseSubagents(task)) {
       yield {
@@ -85,7 +87,8 @@ export class AgentRunner {
       const modelResponse = await this.client.chat({
         model: this.options.model,
         messages,
-        formatJson: true
+        formatJson: true,
+        reasoningEffort
       });
       const rawResponse = modelResponse.content;
 
@@ -314,6 +317,23 @@ function resolveMaxSteps(task: string, configuredMaxSteps: number, thinkingMode:
   const looksComplex = shouldUseSubagents(task) || words > 18 || /\b(implement|refactor|debug|fix|review|architektur|performance|pipeline|context|memory|provider)\b/i.test(task);
   const adaptiveSteps = looksComplex ? Math.max(configuredMaxSteps, 12) : Math.min(configuredMaxSteps, 5);
   return Math.max(3, Math.min(20, adaptiveSteps));
+}
+
+function resolveReasoningEffort(task: string, effort: AgentRunnerOptions["reasoningEffort"]): ReasoningEffort {
+  if (effort !== "adaptive") {
+    return effort;
+  }
+
+  const wordCount = task.trim().split(/\s+/).filter(Boolean).length;
+  if (wordCount > 40 || /\b(large|complex|refactor|architecture|architektur|debug|provider|pipeline|performance|security|release)\b/i.test(task)) {
+    return "high";
+  }
+
+  if (wordCount < 8 && !shouldUseSubagents(task)) {
+    return "low";
+  }
+
+  return "medium";
 }
 
 function clipPromptValue(value: string, maxLength: number): string {

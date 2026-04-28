@@ -93,6 +93,12 @@ export class OpenRouterClient {
         messages: options.messages,
         max_tokens: this.runtimeOptions.maxTokens,
         temperature: this.runtimeOptions.temperature,
+        reasoning: options.reasoningEffort
+          ? {
+              effort: options.reasoningEffort,
+              exclude: true
+            }
+          : undefined,
         response_format: options.formatJson ? { type: "json_object" } : undefined,
         usage: {
           include: true
@@ -220,7 +226,8 @@ async function toTelemetry(payload: OpenRouterChatResponse, durationMs: number, 
     },
     "openrouter",
     model,
-    rates
+    rates,
+    payload.usage?.cost
   );
 }
 

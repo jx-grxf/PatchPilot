@@ -71,7 +71,8 @@ export function OnboardingPanel(props: {
         : props.state.step === "gemini-key" || props.state.step === "openrouter-key" || props.state.step === "codex-login"
           ? 2
           : 3;
-  const selectedModel = props.state.step === "model" ? props.state.models[props.selectedIndex] ?? null : null;
+  const visibleModels = props.state.step === "model" ? filterModelRows(props.input, props.state.models) : [];
+  const selectedModel = props.state.step === "model" ? visibleModels[props.selectedIndex] ?? null : null;
 
   return (
     <Box borderStyle="round" borderColor="cyan" flexDirection="column" paddingX={2} height={props.height} overflowY="hidden">
@@ -159,21 +160,40 @@ export function OnboardingPanel(props: {
         </Box>
       ) : null}
       {props.state.step === "model" ? (
-        <SelectionList
-          title={`Choose a ${props.state.provider} model${props.state.deviceName ? ` on ${props.state.deviceName}` : ""}`}
-          subtitle="Use up/down and Enter. Left arrow goes back."
-          rows={props.state.models.map((model) => ({
-            label: model,
-            description: model === selectedModel ? "selected" : "available"
-          }))}
-          selectedIndex={props.selectedIndex}
-        />
+        <>
+          <InputStep
+            title={`Choose a ${props.state.provider} model${props.state.deviceName ? ` on ${props.state.deviceName}` : ""}`}
+            description="Type to search. Use up/down and Enter. Left arrow goes back."
+            prompt="find > "
+            value={props.input}
+            onChange={props.onInputChange}
+            onSubmit={props.onInputSubmit}
+          />
+          <SelectionList
+            title=""
+            subtitle={`${visibleModels.length} matching model${visibleModels.length === 1 ? "" : "s"}`}
+            rows={visibleModels.map((model) => ({
+              label: model,
+              description: model === selectedModel ? "selected" : "available"
+            }))}
+            selectedIndex={props.selectedIndex}
+          />
+        </>
       ) : null}
       <Box marginTop={1}>
         <Text color="gray">Remote host mode keeps file reads, writes, shell, Git, and tests on this device. Only inference moves.</Text>
       </Box>
     </Box>
   );
+}
+
+function filterModelRows(query: string, models: string[]): string[] {
+  const normalizedQuery = query.trim().toLowerCase();
+  if (!normalizedQuery) {
+    return models;
+  }
+
+  return models.filter((model) => normalizedQuery.split(/\s+/).every((token) => model.toLowerCase().includes(token)));
 }
 
 function InputStep(props: {

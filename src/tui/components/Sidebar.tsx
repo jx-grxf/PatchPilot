@@ -112,7 +112,7 @@ function buildSidebarRows(props: {
       text: advisor.role,
       color: "yellow"
     });
-    rows.push(...wrapSidebarText(advisor.message));
+    rows.push(...summarizeAdvisorText(advisor.message));
     rows.push(spacer());
   }
 
@@ -147,6 +147,18 @@ function spacer(): SidebarLine {
 
 function wrapSidebarText(value: string): SidebarLine[] {
   return wrapText(value, 28).map(muted);
+}
+
+function summarizeAdvisorText(value: string): SidebarLine[] {
+  const summary = value
+    .replace(/\*\*/g, "")
+    .split(/\r?\n/)
+    .map((line) => line.replace(/^[-*]\s*/, "").trim())
+    .filter(Boolean)
+    .slice(0, 3)
+    .join(" ");
+  const rows = wrapText(summary || "Advisor brief available in transcript.", 28).slice(0, 4);
+  return rows.map(muted);
 }
 
 function formatRunningModel(model: OllamaHostDetails["runningModels"][number]): string {

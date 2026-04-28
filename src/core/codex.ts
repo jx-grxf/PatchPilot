@@ -1,14 +1,18 @@
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
-import type { ModelChatOptions, ModelChatResult, ModelTelemetry } from "./types.js";
+import { promisify } from "node:util";
+import type { ModelChatOptions, ModelChatResult, ModelTelemetry, ReasoningEffort } from "./types.js";
 import { attachTokenCost, estimateTokens } from "./tokenAccounting.js";
 
-export const defaultCodexModel = "gpt-5.4";
+const execFileAsync = promisify(execFile);
+
+export const defaultCodexModel = "gpt-5.5";
 
 export const codexOAuthModels = [
+  "gpt-5.5",
   "gpt-5.4",
   "gpt-5.2-codex",
   "gpt-5.1-codex-max",
@@ -36,6 +40,7 @@ export class CodexCliClient {
       const prompt = buildCodexPrompt(options);
       const usage = await runCodexExec({
         model: options.model,
+        reasoningEffort: options.reasoningEffort,
         workspace: this.workspace,
         prompt,
         outputPath,
@@ -62,6 +67,25 @@ export class CodexCliClient {
   }
 
   async listModels(): Promise<string[]> {
+    return listCodexModels();
+  }
+}
+
+export async function listCodexModels(): Promise<string[]> {
+  try {
+    const { stdout } = await execFileAsync("codex", ["debug", "models", "--bundled"], {
+      timeout: 2500,
+      maxBuffer: 4_000_000,
+      windowsHide: true
+    });
+    const catalog = JSON.parse(stdout) as { models?: Array<{ slug?: unknown; visibility?: unknown }> };
+    const models =
+      catalog.models
+        ?.filter((model) => model.visibility === "list" && typeof model.slug === "string")
+        .map((model) => String(model.slug))
+        .filter(Boolean) ?? [];
+    return models.length > 0 ? models : codexOAuthModels;
+  } catch {
     return codexOAuthModels;
   }
 }
@@ -89,6 +113,7 @@ function buildCodexPrompt(options: ModelChatOptions): string {
 
 function runCodexExec(options: {
   model: string;
+  reasoningEffort?: ReasoningEffort;
   workspace: string;
   prompt: string;
   outputPath: string;
@@ -102,6 +127,7 @@ function runCodexExec(options: {
         "--json",
         "--model",
         options.model,
+        ...(options.reasoningEffort ? ["-c", `model_reasoning_effort="${options.reasoningEffort}"`] : []),
         "--sandbox",
         "read-only",
         "--cd",

@@ -35,8 +35,12 @@ describe("Codex OAuth provider", () => {
     expect(hasCodexCliOAuth(authPath)).toBe(true);
   });
 
-  it("lists supported Codex OAuth models statically", async () => {
-    await expect(new CodexCliClient({ workspace: tempRoot }).listModels()).resolves.toEqual(codexOAuthModels);
+  it("lists supported Codex OAuth models from the local catalog with fallback coverage", async () => {
+    const models = await new CodexCliClient({ workspace: tempRoot }).listModels();
+
+    expect(models).toContain("gpt-5.5");
+    expect(models.length).toBeGreaterThan(0);
+    expect(codexOAuthModels).toContain("gpt-5.5");
   });
 
   it("parses token usage from Codex JSONL events", () => {
