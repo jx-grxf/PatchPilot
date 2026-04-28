@@ -7,7 +7,8 @@ import { runDoctor } from "../core/doctor.js";
 import { savePatchPilotEnvValues } from "../core/env.js";
 import { defaultGeminiModel } from "../core/gemini.js";
 import { createModelClient } from "../core/modelClient.js";
-import { defaultOllamaModel } from "../core/ollama.js";
+import { defaultOllamaModel, OllamaClient } from "../core/ollama.js";
+import { defaultOpenRouterModel, isOpenRouterFreeModel } from "../core/openrouter.js";
 import { addTelemetryToSession, emptySessionTelemetry, estimateTokens } from "../core/tokenAccounting.js";
 import type { AgentEvent, ModelProvider, ModelTelemetry, SessionTelemetry } from "../core/types.js";
 import { CommandSuggestions, type CommandSuggestionItem } from "./components/CommandSuggestions.js";
@@ -40,6 +41,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   const [input, setInput] = useState(props.initialTask ?? "");
   const didRunInitialTask = useRef(false);
   const didOpenDefaultOnboarding = useRef(false);
+  const usedOllamaModelsRef = useRef(new Set<string>());
   const [lines, setLines] = useState<LogLine[]>([]);
   const [advisorNotes, setAdvisorNotes] = useState<AdvisorNote[]>([]);
   const [isRunning, setIsRunning] = useState(false);
@@ -70,14 +72,12 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
     allowWrite: props.allowWrite,
     allowShell: props.allowShell,
     maxSteps: props.maxSteps,
+    thinkingMode: props.thinkingMode,
     subagents: props.subagents
   });
   const draftTokens = estimateTokens(input);
   const terminalRows = stdout.rows ?? 40;
   const terminalColumns = stdout.columns ?? 120;
-  const panelHeight = Math.max(12, terminalRows - 11);
-  const transcriptWidth = Math.max(42, terminalColumns - 38);
-  const scrollStep = Math.max(4, Math.floor(panelHeight * 0.8));
   const paletteItems =
     !isRunning && !onboarding
       ? buildCommandSuggestionItems({
@@ -90,7 +90,14 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           isLoadingModels
         })
       : [];
-
+  const rootHeight = Math.max(24, terminalRows);
+  const headerReservedHeight = 7;
+  const paletteReservedHeight = !onboarding && paletteItems.length > 0 ? 4 : 0;
+  const composerReservedHeight = onboarding ? 0 : 3;
+  const footerReservedHeight = onboarding ? 0 : 1;
+  const panelHeight = Math.max(8, rootHeight - headerReservedHeight - composerReservedHeight - paletteReservedHeight - footerReservedHeight);
+  const transcriptWidth = Math.max(42, terminalColumns - 38);
+  const scrollStep = Math.max(4, Math.floor(panelHeight * 0.8));
   const appendLine = useCallback((line: Omit<LogLine, "id">) => {
     setLines((currentLines) => [
       ...currentLines.slice(-maxTranscriptLines),
@@ -204,7 +211,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       const details = await readOllamaHostDetails(verifiedHost, true).catch(() => ({
         host: verifiedHost,
         models: [] as string[],
-        runningModels: [] as string[],
+        runningModels: [],
         fetchedAt: Date.now()
       }));
 
@@ -255,6 +262,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       options: {
         deviceName?: string;
         currentModel?: string;
+        ollamaUrl?: string;
       } = {}
     ): Promise<void> => {
       setTelemetry(null);
@@ -267,7 +275,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       }));
 
       try {
-        const models = await loadAvailableModels(provider, settings.ollamaUrl, setModelOptions, true);
+        const models = await loadAvailableModels(provider, options.ollamaUrl ?? settings.ollamaUrl, setModelOptions, true);
         if (models.length === 0) {
           appendLine({
             tone: "warning",
@@ -277,7 +285,9 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
                 ? "No Ollama models found on that host."
                 : provider === "gemini"
                   ? "No Gemini models listed. Check the API key."
-                  : "No Codex OAuth models listed."
+                  : provider === "openrouter"
+                    ? "No OpenRouter models listed. Check the API key."
+                    : "No Codex OAuth models listed."
           });
           return;
         }
@@ -324,6 +334,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         return;
       case "host":
       case "gemini-key":
+      case "openrouter-key":
       case "codex-login":
         setOnboarding({
           step: "entry"
@@ -393,7 +404,8 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           }
 
           await openModelSelection("ollama", {
-            deviceName: details.host.deviceName
+            deviceName: details.host.deviceName,
+            ollamaUrl: details.host.url
           });
           return;
         }
@@ -416,6 +428,14 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         if (selection === "gemini") {
           setOnboarding({
             step: "gemini-key"
+          });
+          setOnboardingInput("");
+          return;
+        }
+
+        if (selection === "openrouter") {
+          setOnboarding({
+            step: "openrouter-key"
           });
           setOnboardingInput("");
           return;
@@ -466,7 +486,8 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         }
 
         await openModelSelection("ollama", {
-          deviceName: details.host.deviceName
+          deviceName: details.host.deviceName,
+          ollamaUrl: details.host.url
         });
         return;
       }
@@ -492,7 +513,8 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         }
 
         await openModelSelection("ollama", {
-          deviceName: details.host.deviceName
+          deviceName: details.host.deviceName,
+          ollamaUrl: details.host.url
         });
         return;
       }
@@ -521,6 +543,34 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         });
         await openModelSelection("gemini", {
           currentModel: defaultGeminiModel
+        });
+        return;
+      }
+
+      if (onboarding.step === "openrouter-key") {
+        const apiKey = value.trim();
+        if (!apiKey) {
+          appendLine({
+            tone: "warning",
+            label: "onboarding",
+            text: "OpenRouter API key cannot be empty."
+          });
+          return;
+        }
+
+        process.env.OPENROUTER_API_KEY = apiKey;
+        savePatchPilotEnvValues({
+          PATCHPILOT_PROVIDER: "openrouter",
+          PATCHPILOT_MODEL: defaultOpenRouterModel,
+          OPENROUTER_API_KEY: apiKey
+        });
+        appendLine({
+          tone: "success",
+          label: "onboarding",
+          text: "OpenRouter API key saved to PatchPilot config."
+        });
+        await openModelSelection("openrouter", {
+          currentModel: defaultOpenRouterModel
         });
         return;
       }
@@ -560,16 +610,25 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       savePatchPilotEnvValues({
         PATCHPILOT_PROVIDER: onboarding.provider,
         PATCHPILOT_MODEL: selectedModel,
-        ...(onboarding.provider === "ollama" ? { PATCHPILOT_OLLAMA_URL: settings.ollamaUrl } : {})
+        PATCHPILOT_ONBOARDING_COMPLETE: "1",
+        ...(onboarding.provider === "ollama" ? { PATCHPILOT_OLLAMA_URL: activeHost?.host.url ?? settings.ollamaUrl } : {})
       });
       appendLine({
         tone: "success",
         label: "onboarding",
         text: `ready: ${onboarding.provider} using ${selectedModel}`
       });
+      if (onboarding.provider === "openrouter" && isOpenRouterFreeModel(selectedModel)) {
+        appendLine({
+          tone: "warning",
+          label: "openrouter",
+          text: "Free OpenRouter models are rate-limited.",
+          detail: "OpenRouter documents 20 requests/minute for :free models, plus daily limits depending on account credits."
+        });
+      }
       closeOnboarding();
     },
-    [appendLine, closeOnboarding, connectToHost, loadHostSuggestions, onboarding, onboardingIndex, openModelSelection, settings.ollamaUrl]
+    [activeHost?.host.url, appendLine, closeOnboarding, connectToHost, loadHostSuggestions, onboarding, onboardingIndex, openModelSelection, settings.ollamaUrl]
   );
 
   const runTask = useCallback(
@@ -596,6 +655,9 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         const taskRunner = new AgentRunner(runnableSettings);
         for await (const event of taskRunner.run(task)) {
           if (event.type === "metrics") {
+            if (runnableSettings.provider === "ollama") {
+              usedOllamaModelsRef.current.add(`${runnableSettings.ollamaUrl}|${runnableSettings.model}`);
+            }
             setTelemetry(event.metrics);
             setSessionTelemetry((currentSession) => addTelemetryToSession(currentSession, event.metrics));
             continue;
@@ -670,11 +732,11 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           return;
         case "provider": {
           const nextProvider = args[0]?.toLowerCase();
-          if (nextProvider !== "ollama" && nextProvider !== "gemini" && nextProvider !== "codex") {
+          if (nextProvider !== "ollama" && nextProvider !== "gemini" && nextProvider !== "codex" && nextProvider !== "openrouter") {
             appendLine({
               tone: "accent",
               label: "provider",
-              text: `current ${settings.provider}. Use /provider ollama, /provider gemini, or /provider codex.`
+              text: `current ${settings.provider}. Use /provider ollama, /provider gemini, /provider codex, or /provider openrouter.`
             });
             return;
           }
@@ -717,6 +779,29 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
             tone: "success",
             label: "agents",
             text: `planner/reviewer subagents ${subagentsEnabled ? "enabled" : "disabled"}`
+          });
+          return;
+        }
+        case "think":
+        case "thinking": {
+          const nextMode = args[0]?.toLowerCase();
+          if (nextMode !== "fixed" && nextMode !== "adaptive") {
+            appendLine({
+              tone: "accent",
+              label: "think",
+              text: `current ${settings.thinkingMode}. Use /think fixed or /think adaptive.`
+            });
+            return;
+          }
+
+          setSettings((currentSettings) => ({
+            ...currentSettings,
+            thinkingMode: nextMode
+          }));
+          appendLine({
+            tone: "success",
+            label: "think",
+            text: `thinking mode ${nextMode}`
           });
           return;
         }
@@ -918,7 +1003,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         case "exit":
         case "quit":
         case "q":
-          exit();
+          void unloadUsedOllamaModels(usedOllamaModelsRef.current).finally(exit);
           return;
         default:
           appendLine({
@@ -995,7 +1080,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   }, [hostOptions, input, modelOptions, onboarding, settings.model, settings.provider]);
 
   useEffect(() => {
-    if (didOpenDefaultOnboarding.current || props.initialTask || onboarding) {
+    if (didOpenDefaultOnboarding.current || props.initialTask || onboarding || process.env.PATCHPILOT_ONBOARDING_COMPLETE === "1") {
       return;
     }
 
@@ -1026,10 +1111,10 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         return;
       }
 
-      const details = await readOllamaHostDetails(verifiedHost).catch(() => ({
+        const details = await readOllamaHostDetails(verifiedHost).catch(() => ({
         host: verifiedHost,
         models: [] as string[],
-        runningModels: [] as string[],
+        runningModels: [],
         fetchedAt: Date.now()
       }));
 
@@ -1143,9 +1228,25 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
     }
 
     if (!isRunning && input.length === 0 && inputValue === "q") {
-      exit();
+      void unloadUsedOllamaModels(usedOllamaModelsRef.current).finally(exit);
     }
   });
+
+  useEffect(() => {
+    const unloadAndExit = (): void => {
+      void unloadUsedOllamaModels(usedOllamaModelsRef.current).finally(() => {
+        process.exit(0);
+      });
+    };
+
+    process.once("SIGINT", unloadAndExit);
+    process.once("SIGTERM", unloadAndExit);
+    return () => {
+      process.off("SIGINT", unloadAndExit);
+      process.off("SIGTERM", unloadAndExit);
+      void unloadUsedOllamaModels(usedOllamaModelsRef.current);
+    };
+  }, []);
 
   useEffect(() => {
     let previousSnapshot = readSystemStats().snapshot;
@@ -1182,7 +1283,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   }, []);
 
   return (
-    <Box flexDirection="column" paddingX={1}>
+    <Box flexDirection="column" paddingX={1} height={rootHeight} overflowY="hidden">
       <Header
         model={settings.model}
         provider={settings.provider}
@@ -1192,6 +1293,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         allowShell={settings.allowShell}
         agentMode={agentMode}
         subagents={settings.subagents}
+        thinkingMode={settings.thinkingMode}
         ollamaUrl={settings.ollamaUrl}
         telemetry={telemetry}
         sessionTelemetry={sessionTelemetry}
@@ -1212,7 +1314,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           onInputSubmit={(value) => void handleOnboardingSubmit(value)}
         />
       ) : (
-        <Box flexDirection="row">
+        <Box flexDirection="row" height={panelHeight + composerReservedHeight + paletteReservedHeight + footerReservedHeight} overflowY="hidden">
           <Sidebar
             workspace={settings.workspace}
             model={settings.model}
@@ -1231,7 +1333,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
             isActive={activeScrollPane === "session"}
             activeHost={activeHost}
           />
-          <Box flexDirection="column" flexGrow={1}>
+          <Box flexDirection="column" flexGrow={1} height={panelHeight + composerReservedHeight + paletteReservedHeight + footerReservedHeight} overflowY="hidden">
             <Transcript
               lines={lines}
               isRunning={isRunning}
@@ -1335,11 +1437,13 @@ async function switchModel(
       detail:
         installedModels.length > 0
           ? `Use /models and pick one of:\n${formatModelOptions(installedModels, currentModel)}`
-          : provider === "ollama"
-            ? "No models installed on the selected host."
-            : provider === "gemini"
-              ? "Check GEMINI_API_KEY in PatchPilot config."
-              : "Run codex login first."
+      : provider === "ollama"
+        ? "No models installed on the selected host."
+        : provider === "gemini"
+          ? "Check GEMINI_API_KEY in PatchPilot config."
+          : provider === "openrouter"
+            ? "Check OPENROUTER_API_KEY in PatchPilot config."
+            : "Run codex login first."
     });
     return;
   }
@@ -1358,6 +1462,14 @@ async function switchModel(
     label: "model",
     text: `switched to ${nextModel}`
   });
+  if (provider === "openrouter" && isOpenRouterFreeModel(nextModel)) {
+    appendLine({
+      tone: "warning",
+      label: "openrouter",
+      text: "Free OpenRouter models are rate-limited.",
+      detail: "OpenRouter documents 20 requests/minute for :free models, plus daily limits depending on account credits."
+    });
+  }
 }
 
 async function resolveRunnableSettings(
@@ -1395,7 +1507,9 @@ async function resolveRunnableSettings(
           ? "No models installed on the selected host."
           : settings.provider === "gemini"
             ? "No Gemini models listed. Check GEMINI_API_KEY in PatchPilot config."
-            : "Codex OAuth is not ready. Run codex login."
+            : settings.provider === "openrouter"
+              ? "No OpenRouter models listed. Check OPENROUTER_API_KEY in PatchPilot config."
+              : "Codex OAuth is not ready. Run codex login."
   });
   return null;
 }
@@ -1483,7 +1597,7 @@ function buildCommandSuggestionItems(options: {
 function getOnboardingOptionCount(onboarding: OnboardingState): number {
   switch (onboarding.step) {
     case "entry":
-      return 4;
+      return 5;
     case "host":
       return onboarding.hosts.length + 1;
     case "model":
@@ -1493,10 +1607,10 @@ function getOnboardingOptionCount(onboarding: OnboardingState): number {
   }
 }
 
-function readEntrySelection(value: string, selectedIndex: number): "local" | "host" | "gemini" | "codex" | null {
+function readEntrySelection(value: string, selectedIndex: number): "local" | "host" | "gemini" | "openrouter" | "codex" | null {
   const normalizedValue = value.trim().toLowerCase();
   if (!normalizedValue) {
-    return ["local", "host", "gemini", "codex"][selectedIndex] as "local" | "host" | "gemini" | "codex";
+    return ["local", "host", "gemini", "openrouter", "codex"][selectedIndex] as "local" | "host" | "gemini" | "openrouter" | "codex";
   }
 
   if (normalizedValue === "1" || normalizedValue === "local" || normalizedValue === "this device") {
@@ -1511,7 +1625,11 @@ function readEntrySelection(value: string, selectedIndex: number): "local" | "ho
     return "gemini";
   }
 
-  if (normalizedValue === "4" || normalizedValue === "codex") {
+  if (normalizedValue === "4" || normalizedValue === "openrouter" || normalizedValue === "open-router") {
+    return "openrouter";
+  }
+
+  if (normalizedValue === "5" || normalizedValue === "codex") {
     return "codex";
   }
 
@@ -1547,6 +1665,10 @@ function selectModelFromInput(value: string, models: string[], selectedIndex?: n
 }
 
 function defaultModelForProvider(provider: ModelProvider, currentModel: string): string {
+  if (provider === "openrouter") {
+    return currentModel.includes("/") ? currentModel : defaultOpenRouterModel;
+  }
+
   if (provider === "gemini") {
     return currentModel.startsWith("gemini-") ? currentModel : defaultGeminiModel;
   }
@@ -1555,7 +1677,22 @@ function defaultModelForProvider(provider: ModelProvider, currentModel: string):
     return currentModel.includes("codex") || currentModel === "codex-mini-latest" ? currentModel : defaultCodexModel;
   }
 
-  return currentModel.startsWith("gemini-") || currentModel.includes("codex") ? defaultOllamaModel : currentModel;
+  return currentModel.startsWith("gemini-") || currentModel.includes("codex") || currentModel.includes("/") ? defaultOllamaModel : currentModel;
+}
+
+async function unloadUsedOllamaModels(usedModels: Set<string>): Promise<void> {
+  const entries = [...usedModels];
+  usedModels.clear();
+  await Promise.allSettled(
+    entries.map(async (entry) => {
+      const [url, model] = entry.split("|");
+      if (!url || !model) {
+        return;
+      }
+
+      await new OllamaClient(url).unloadModel(model);
+    })
+  );
 }
 
 function upsertAdvisorNote(notes: AdvisorNote[], nextNote: AdvisorNote): AdvisorNote[] {

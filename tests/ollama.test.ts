@@ -62,6 +62,7 @@ describe("OllamaClient", () => {
     expect(result.telemetry).toEqual({
       promptTokens: 12,
       cachedPromptTokens: 0,
+      cacheWriteTokens: 0,
       responseTokens: 8,
       totalTokens: 20,
       evalTokensPerSecond: 20,
@@ -122,7 +123,11 @@ describe("OllamaClient", () => {
         JSON.stringify({
           models: [
             {
-              name: "qwen2.5-coder:7b"
+              name: "qwen2.5-coder:7b",
+              size_vram: 4_294_967_296,
+              details: {
+                context_length: 8192
+              }
             },
             {
               model: "deepseek-coder:6.7b"
@@ -139,7 +144,47 @@ describe("OllamaClient", () => {
     );
 
     const client = new OllamaClient("192.168.1.50");
-    await expect(client.listRunningModels()).resolves.toEqual(["deepseek-coder:6.7b", "qwen2.5-coder:7b"]);
+    await expect(client.listRunningModels()).resolves.toEqual([
+      {
+        name: "deepseek-coder:6.7b",
+        sizeBytes: null,
+        sizeVramBytes: null,
+        expiresAt: null,
+        contextLength: null
+      },
+      {
+        name: "qwen2.5-coder:7b",
+        sizeBytes: null,
+        sizeVramBytes: 4_294_967_296,
+        expiresAt: null,
+        contextLength: 8192
+      }
+    ]);
+  });
+
+  it("unloads a model with keep_alive 0", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response("{}", {
+        status: 200,
+        headers: {
+          "Content-Type": "application/json"
+        }
+      })
+    );
+
+    const client = new OllamaClient("local");
+    await client.unloadModel("qwen2.5-coder:7b");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://127.0.0.1:11434/api/generate",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          model: "qwen2.5-coder:7b",
+          keep_alive: 0
+        })
+      })
+    );
   });
 
   it("includes the model name when Ollama rejects a chat request", async () => {

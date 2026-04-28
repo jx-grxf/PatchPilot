@@ -9,6 +9,7 @@ import { defaultGeminiModel } from "./core/gemini.js";
 import { readModelProvider } from "./core/modelClient.js";
 import { runDoctor } from "./core/doctor.js";
 import { defaultOllamaModel, resolveOllamaBaseUrl } from "./core/ollama.js";
+import { defaultOpenRouterModel } from "./core/openrouter.js";
 import { App } from "./tui/App.js";
 
 loadPatchPilotEnv();
@@ -17,7 +18,13 @@ const defaultOllamaUrl = resolveOllamaBaseUrl();
 const defaultProvider = readModelProvider();
 const defaultModel =
   process.env.PATCHPILOT_MODEL ??
-  (defaultProvider === "gemini" ? defaultGeminiModel : defaultProvider === "codex" ? defaultCodexModel : defaultOllamaModel);
+  (defaultProvider === "gemini"
+    ? defaultGeminiModel
+    : defaultProvider === "openrouter"
+      ? defaultOpenRouterModel
+      : defaultProvider === "codex"
+        ? defaultCodexModel
+        : defaultOllamaModel);
 
 const program = new Command();
 
@@ -29,7 +36,7 @@ program
 program
   .command("doctor")
   .description("Check local PatchPilot requirements.")
-  .option("--provider <name>", "Model provider: ollama, gemini, or codex.", defaultProvider)
+  .option("--provider <name>", "Model provider: ollama, gemini, openrouter, or codex.", defaultProvider)
   .option("--check-url <url>", "Ollama base URL to verify", defaultOllamaUrl)
   .option("--ollama-url <url>", "Alias for --check-url.")
   .option("--check-model <name>", "Model name to verify", defaultModel)
@@ -47,10 +54,11 @@ program
 program
   .argument("[task...]", "Task for the local coding agent.")
   .option("--workspace <path>", "Workspace root", process.cwd())
-  .option("--provider <name>", "Model provider: ollama, gemini, or codex.", defaultProvider)
+  .option("--provider <name>", "Model provider: ollama, gemini, openrouter, or codex.", defaultProvider)
   .option("--model <name>", "Model name", defaultModel)
   .option("--ollama-url <url>", "Ollama base URL", defaultOllamaUrl)
   .option("--steps <count>", "Maximum agent steps", "8")
+  .option("--thinking <mode>", "Thinking budget mode: fixed or adaptive.", process.env.PATCHPILOT_THINKING_MODE ?? "fixed")
   .option("--apply", "Allow file writes inside the workspace.", false)
   .option("--allow-shell", "Allow shell commands inside the workspace.", false)
   .option("--no-subagents", "Disable planner and reviewer subagents for faster local runs.")
@@ -68,6 +76,7 @@ program
         allowWrite={Boolean(options.apply)}
         allowShell={Boolean(options.allowShell)}
         maxSteps={Number.isFinite(maxSteps) ? maxSteps : 8}
+        thinkingMode={String(options.thinking) === "adaptive" ? "adaptive" : "fixed"}
         subagents={options.subagents !== false}
       />
     );

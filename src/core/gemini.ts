@@ -202,6 +202,7 @@ function toTelemetry(payload: GeminiGenerateContentResponse, durationMs: number,
     {
       promptTokens,
       cachedPromptTokens: 0,
+      cacheWriteTokens: 0,
       responseTokens,
       totalTokens,
       evalTokensPerSecond: responseTokens > 0 && durationMs > 0 ? responseTokens / (durationMs / 1000) : null,

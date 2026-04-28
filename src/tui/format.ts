@@ -41,7 +41,10 @@ export function formatTokens(telemetry: ModelTelemetry | null): string {
     return "-";
   }
 
-  const cacheSuffix = telemetry.cachedPromptTokens > 0 ? `/${telemetry.cachedPromptTokens} cached` : "";
+  const cacheSuffix =
+    telemetry.cachedPromptTokens > 0 && telemetry.promptTokens > 0
+      ? `/${telemetry.cachedPromptTokens} cached ${formatCacheHitRate(telemetry.cachedPromptTokens, telemetry.promptTokens)}`
+      : "";
   const sourceSuffix = telemetry.tokenSource === "estimated" ? " est" : "";
   return `${telemetry.promptTokens} in${cacheSuffix}/${telemetry.responseTokens} out/${telemetry.totalTokens} total${sourceSuffix}`;
 }
@@ -51,8 +54,15 @@ export function formatSessionTokens(session: SessionTelemetry): string {
     return "-";
   }
 
-  const cacheSuffix = session.cachedPromptTokens > 0 ? `/${session.cachedPromptTokens} cached` : "";
+  const cacheSuffix =
+    session.cachedPromptTokens > 0 && session.promptTokens > 0
+      ? `/${session.cachedPromptTokens} cached ${formatCacheHitRate(session.cachedPromptTokens, session.promptTokens)}`
+      : "";
   return `${session.requests} req ${session.promptTokens} in${cacheSuffix}/${session.responseTokens} out`;
+}
+
+function formatCacheHitRate(cachedTokens: number, promptTokens: number): string {
+  return `${Math.round((cachedTokens / promptTokens) * 100)}%`;
 }
 
 export function formatCost(value: number | null): string {

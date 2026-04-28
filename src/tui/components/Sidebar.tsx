@@ -72,7 +72,7 @@ function buildSidebarRows(props: {
   const hostNetwork = props.activeHost?.host.kind ?? (props.provider === "ollama" ? "local" : "cloud");
   const hostVersion = props.activeHost?.host.version ?? "-";
   const hostModels = props.activeHost ? `${props.activeHost.models.length} available` : "-";
-  const hostLoaded = props.activeHost?.runningModels.length ? props.activeHost.runningModels.join(", ") : "idle";
+  const hostLoaded = props.activeHost?.runningModels.length ? props.activeHost.runningModels.map((model) => formatRunningModel(model)).join(", ") : "idle";
   const rows: SidebarLine[] = [
     section("Session"),
     row("provider", props.provider, props.provider === "ollama" ? "green" : "cyan"),
@@ -147,6 +147,11 @@ function spacer(): SidebarLine {
 
 function wrapSidebarText(value: string): SidebarLine[] {
   return wrapText(value, 28).map(muted);
+}
+
+function formatRunningModel(model: OllamaHostDetails["runningModels"][number]): string {
+  const vram = model.sizeVramBytes ? ` ${Math.round((model.sizeVramBytes / 1024 ** 3) * 10) / 10}G vram` : "";
+  return `${model.name}${vram}`;
 }
 
 function clampScrollOffset(offset: number, rowCount: number, visibleRowCount: number): number {

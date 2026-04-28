@@ -40,6 +40,7 @@ export async function runSubagentAdvisors(options: {
   model: string;
   task: string;
   workspaceRoot: string;
+  workspaceSummary?: string;
 }): Promise<SubagentAdvice[]> {
   const workspaceHint = await buildWorkspaceHint(options.workspaceRoot);
   const userMessage = [
@@ -47,7 +48,8 @@ export async function runSubagentAdvisors(options: {
     `Workspace: ${path.basename(options.workspaceRoot) || "workspace"}`,
     "",
     "Workspace hint:",
-    workspaceHint
+    workspaceHint,
+    options.workspaceSummary ? `\nWorkspace context:\n${options.workspaceSummary}` : ""
   ].join("\n");
 
   const results = await Promise.allSettled(

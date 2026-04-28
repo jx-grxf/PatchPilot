@@ -13,6 +13,7 @@ export type AgentRunnerOptions = {
   allowWrite: boolean;
   allowShell: boolean;
   maxSteps: number;
+  thinkingMode: "fixed" | "adaptive";
   subagents: boolean;
 };
 
@@ -36,6 +37,8 @@ export class AgentRunner {
   }
 
   async *run(task: string): AsyncGenerator<AgentEvent> {
+    const workspaceSummary = await buildWorkspaceSummary(this.tools.root);
+    const maxSteps = resolveMaxSteps(task, this.options.maxSteps, this.options.thinkingMode);
     let subagentContext = "";
     if (this.options.subagents && shouldUseSubagents(task)) {
       yield {
@@ -47,7 +50,8 @@ export class AgentRunner {
         client: this.client,
         model: this.options.model,
         task,
-        workspaceRoot: this.tools.root
+        workspaceRoot: this.tools.root,
+        workspaceSummary
       });
       subagentContext = formatSubagentContext(advice);
 
@@ -64,7 +68,7 @@ export class AgentRunner {
     const messages: ChatMessage[] = [
       {
         role: "system",
-        content: buildSystemPrompt(this.tools.root, subagentContext)
+        content: buildSystemPrompt(this.tools.root, subagentContext, workspaceSummary)
       },
       {
         role: "user",
@@ -72,10 +76,10 @@ export class AgentRunner {
       }
     ];
 
-    for (let stepIndex = 0; stepIndex < this.options.maxSteps; stepIndex += 1) {
+    for (let stepIndex = 0; stepIndex < maxSteps; stepIndex += 1) {
       yield {
         type: "status",
-        message: `thinking step ${stepIndex + 1}/${this.options.maxSteps}`
+        message: `thinking step ${stepIndex + 1}/${maxSteps}${this.options.thinkingMode === "adaptive" ? " adaptive" : ""}`
       };
 
       const modelResponse = await this.client.chat({
@@ -152,7 +156,7 @@ export class AgentRunner {
 
     yield {
       type: "final",
-      message: "Stopped after the configured max step count. Increase --steps if the task needs more context."
+      message: "Stopped after the configured thinking budget. Increase --steps or use /think adaptive for larger tasks."
     };
   }
 }
@@ -163,17 +167,18 @@ function shouldUseSubagents(task: string): boolean {
     return false;
   }
 
-  return /\b(repo|repository|code|file|test|build|fix|debug|implement|refactor|review|analyze|analyse|analysiere|erklär|erklaer|such|find|install|commit|diff|patch|src|readme|typescript|swift|c)\b/.test(
+  return /\b(repo|repository|projekt|project|code|file|datei|test|build|fix|debug|implement|refactor|review|analyze|analyse|analysiere|prüf|pruef|bewerte|architektur|erklär|erklaer|such|find|install|commit|diff|patch|src|readme|sprache|programmiersprache|stack|framework|dependencies|abhängigkeiten|abhaengigkeiten|typescript|javascript|node|swift|python|c)\b/.test(
     normalizedTask
   );
 }
 
-function buildSystemPrompt(workspaceRoot: string, subagentContext: string): string {
+function buildSystemPrompt(workspaceRoot: string, subagentContext: string, workspaceSummary: string): string {
   return [
     "You are PatchPilot, a local coding agent running inside a terminal TUI.",
     "You help inspect, edit, test, and explain code inside one workspace.",
-    "Only use tools for explicit coding, repository, file, test, shell, or debugging tasks.",
-    "For greetings, small talk, or ambiguous requests, return a final clarification question without tool calls.",
+    "Treat short questions about this project, its language, stack, quality, architecture, dependencies, tests, or files as workspace questions.",
+    "For greetings, small talk, or clearly non-workspace chat, answer normally without tool calls.",
+    "For ambiguous pronouns like this project or it, assume the current workspace unless the user points elsewhere.",
     "If you ask the user a question, use a final response and do not call tools.",
     "Do not invent repository facts. If you have not read a file, say you have not verified it.",
     "Never pass placeholder examples like relative/path, path/to/file, or <path> as tool arguments.",
@@ -181,6 +186,7 @@ function buildSystemPrompt(workspaceRoot: string, subagentContext: string): stri
     "For implementation tasks, first inspect the narrowest relevant files, then edit only what is needed.",
     "When diagnosing a failure, form a concrete hypothesis, gather targeted evidence with tools, then fix the smallest cause.",
     `Workspace label: ${path.basename(workspaceRoot) || "workspace"}`,
+    workspaceSummary ? ["", "Workspace context:", workspaceSummary].join("\n") : "",
     subagentContext
       ? [
           "",
@@ -265,10 +271,49 @@ function formatToolResultsForPrompt(
       [
         `${index + 1}. ${toolResult.tool} (${toolResult.ok ? "ok" : "error"})`,
         `summary: ${toolResult.summary}`,
-        `content: ${clipPromptValue(toolResult.content, 1200)}`
+        `content: ${clipPromptValue(toolResult.content, toolResult.tool === "read_file" ? 12_000 : 6000)}`
       ].join("\n")
     )
   ].join("\n\n");
+}
+
+async function buildWorkspaceSummary(workspaceRoot: string): Promise<string> {
+  const [packageJson, tsconfig, readme] = await Promise.all([
+    readWorkspaceFile(workspaceRoot, "package.json", 4000),
+    readWorkspaceFile(workspaceRoot, "tsconfig.json", 1600),
+    readWorkspaceFile(workspaceRoot, "README.md", 3000)
+  ]);
+
+  return [
+    packageJson ? `package.json:\n${packageJson}` : "",
+    tsconfig ? `tsconfig.json:\n${tsconfig}` : "",
+    readme ? `README excerpt:\n${readme}` : ""
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+async function readWorkspaceFile(workspaceRoot: string, relativePath: string, maxLength: number): Promise<string> {
+  const { readFile } = await import("node:fs/promises");
+  const normalizedRoot = path.resolve(workspaceRoot);
+  const normalizedFile = path.resolve(workspaceRoot, relativePath);
+  if (!normalizedFile.startsWith(`${normalizedRoot}${path.sep}`)) {
+    return "";
+  }
+
+  const content = await readFile(normalizedFile, "utf8").catch(() => "");
+  return clipPromptValue(content.trim(), maxLength);
+}
+
+function resolveMaxSteps(task: string, configuredMaxSteps: number, thinkingMode: AgentRunnerOptions["thinkingMode"]): number {
+  if (thinkingMode !== "adaptive") {
+    return configuredMaxSteps;
+  }
+
+  const words = task.trim().split(/\s+/).filter(Boolean).length;
+  const looksComplex = shouldUseSubagents(task) || words > 18 || /\b(implement|refactor|debug|fix|review|architektur|performance|pipeline|context|memory|provider)\b/i.test(task);
+  const adaptiveSteps = looksComplex ? Math.max(configuredMaxSteps, 12) : Math.min(configuredMaxSteps, 5);
+  return Math.max(3, Math.min(20, adaptiveSteps));
 }
 
 function clipPromptValue(value: string, maxLength: number): string {

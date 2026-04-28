@@ -80,6 +80,7 @@ describe("GeminiClient", () => {
     expect(result.telemetry).toEqual({
       promptTokens: 10,
       cachedPromptTokens: 0,
+      cacheWriteTokens: 0,
       responseTokens: 5,
       totalTokens: 15,
       evalTokensPerSecond: 10,

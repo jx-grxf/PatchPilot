@@ -19,6 +19,9 @@ export type OnboardingState =
       step: "gemini-key";
     }
   | {
+      step: "openrouter-key";
+    }
+  | {
       step: "codex-login";
     }
   | {
@@ -42,6 +45,10 @@ const entryOptions = [
     description: "Use the Google Gemini API key from PatchPilot config"
   },
   {
+    label: "OpenRouter",
+    description: "Use OpenRouter models, including auto and free variants"
+  },
+  {
     label: "Codex",
     description: "Use the ChatGPT login through Codex CLI"
   }
@@ -61,13 +68,13 @@ export function OnboardingPanel(props: {
       ? 0
       : props.state.step === "host" || props.state.step === "host-input"
         ? 1
-        : props.state.step === "gemini-key" || props.state.step === "codex-login"
+        : props.state.step === "gemini-key" || props.state.step === "openrouter-key" || props.state.step === "codex-login"
           ? 2
           : 3;
   const selectedModel = props.state.step === "model" ? props.state.models[props.selectedIndex] ?? null : null;
 
   return (
-    <Box borderStyle="round" borderColor="cyan" flexDirection="column" paddingX={2} height={Math.max(18, props.height + 4)}>
+    <Box borderStyle="round" borderColor="cyan" flexDirection="column" paddingX={2} height={props.height} overflowY="hidden">
       <Text color="cyan" bold>
         PatchPilot Setup
       </Text>
@@ -123,6 +130,17 @@ export function OnboardingPanel(props: {
       {props.state.step === "gemini-key" ? (
         <InputStep
           title="Enter your Gemini API key"
+          description="It will be stored in PatchPilot's config directory, not in the repository."
+          prompt="key  > "
+          value={props.input}
+          onChange={props.onInputChange}
+          onSubmit={props.onInputSubmit}
+          mask="*"
+        />
+      ) : null}
+      {props.state.step === "openrouter-key" ? (
+        <InputStep
+          title="Enter your OpenRouter API key"
           description="It will be stored in PatchPilot's config directory, not in the repository."
           prompt="key  > "
           value={props.input}

@@ -5,7 +5,7 @@ export type ChatMessage = {
   content: string;
 };
 
-export type ModelProvider = "ollama" | "gemini" | "codex";
+export type ModelProvider = "ollama" | "gemini" | "codex" | "openrouter";
 
 export type ModelChatOptions = {
   model: string;
@@ -92,6 +92,7 @@ export type ToolResult = {
 export type ModelTelemetry = {
   promptTokens: number;
   cachedPromptTokens: number;
+  cacheWriteTokens: number;
   responseTokens: number;
   totalTokens: number;
   evalTokensPerSecond: number | null;
@@ -107,6 +108,7 @@ export type SessionTelemetry = {
   requests: number;
   promptTokens: number;
   cachedPromptTokens: number;
+  cacheWriteTokens: number;
   responseTokens: number;
   totalTokens: number;
   estimatedCostUsd: number | null;

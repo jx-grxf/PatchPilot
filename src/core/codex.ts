@@ -189,6 +189,7 @@ function toTelemetryFromUsage(usage: CodexUsage, durationMs: number, model: stri
     {
       promptTokens: usage.input_tokens,
       cachedPromptTokens: usage.cached_input_tokens ?? 0,
+      cacheWriteTokens: 0,
       responseTokens: usage.output_tokens,
       totalTokens: usage.input_tokens + usage.output_tokens,
       evalTokensPerSecond: usage.output_tokens > 0 && durationMs > 0 ? usage.output_tokens / (durationMs / 1000) : null,
@@ -210,6 +211,7 @@ function estimateTelemetry(prompt: string, content: string, durationMs: number, 
     {
       promptTokens,
       cachedPromptTokens: 0,
+      cacheWriteTokens: 0,
       responseTokens,
       totalTokens: promptTokens + responseTokens,
       evalTokensPerSecond: responseTokens > 0 && durationMs > 0 ? responseTokens / (durationMs / 1000) : null,

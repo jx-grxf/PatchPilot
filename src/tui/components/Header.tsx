@@ -35,6 +35,7 @@ export function Header(props: {
   allowShell: boolean;
   agentMode: AgentMode;
   subagents: boolean;
+  thinkingMode: "fixed" | "adaptive";
   ollamaUrl: string;
   telemetry: ModelTelemetry | null;
   sessionTelemetry: SessionTelemetry;
@@ -44,15 +45,16 @@ export function Header(props: {
   activeHost: OllamaHostDetails | null;
 }): React.ReactElement {
   const computeTarget =
-    props.provider === "gemini" || props.provider === "codex" ? { kind: "cloud" } : describeComputeTarget(props.ollamaUrl);
+    props.provider === "gemini" || props.provider === "codex" || props.provider === "openrouter" ? { kind: "cloud" } : describeComputeTarget(props.ollamaUrl);
   const memoryColor = usageColor(props.systemStats.memoryPercent);
   const modelHint = getModelHint(props.model);
   const hostLabel =
-    props.provider === "ollama" ? props.activeHost?.host.deviceName ?? formatOllamaHost(props.ollamaUrl) : `${props.provider} oauth`;
-  const hostRoute = props.provider === "ollama" ? shortenMiddle(props.activeHost?.host.url ?? props.ollamaUrl, 28) : `${props.provider} oauth`;
+    props.provider === "ollama" ? props.activeHost?.host.deviceName ?? formatOllamaHost(props.ollamaUrl) : `${props.provider} api`;
+  const hostRoute = props.provider === "ollama" ? shortenMiddle(props.activeHost?.host.url ?? props.ollamaUrl, 28) : `${props.provider} api`;
   const hostVersion = props.activeHost?.host.version ? `v${props.activeHost.host.version}` : "-";
   const hostModels = props.activeHost ? `${props.activeHost.models.length} available` : "-";
-  const hostLoaded = props.activeHost?.runningModels.length ? props.activeHost.runningModels.join(", ") : "idle";
+  const hostLoaded = props.activeHost?.runningModels.length ? props.activeHost.runningModels.map((model) => model.name).join(", ") : "idle";
+  const hostVramGb = props.activeHost ? formatRunningVram(props.activeHost.runningModels) : "-";
   const remoteHostMetrics =
     props.provider === "ollama" && computeTarget.kind === "remote" && props.activeHost ? (
       <HeaderMetricLine
@@ -62,6 +64,7 @@ export function Header(props: {
           ["network", props.activeHost.host.kind, "green"],
           ["version", hostVersion, "cyan"],
           ["models", hostModels, "green"],
+          ["vram", hostVramGb, hostVramGb === "-" ? "gray" : "yellow"],
           ["loaded", shortenMiddle(hostLoaded, 24), props.activeHost.runningModels.length > 0 ? "yellow" : "gray"]
         ]}
       />
@@ -92,6 +95,7 @@ export function Header(props: {
             ["compute", computeTarget.kind, computeTarget.kind === "remote" ? "yellow" : "green"],
             ["mode", props.agentMode, props.agentMode === "build" ? "yellow" : "green"],
             ["advisors", props.subagents ? "on" : "off", props.subagents ? "cyan" : "gray"],
+            ["think", props.thinkingMode, props.thinkingMode === "adaptive" ? "yellow" : "gray"],
             ["write", props.allowWrite ? "on" : "off", props.allowWrite ? "green" : "red"],
             ["shell", props.allowShell ? "on" : "off", props.allowShell ? "green" : "red"]
           ]}
@@ -124,6 +128,15 @@ export function Header(props: {
       </Text>
     </Box>
   );
+}
+
+function formatRunningVram(models: OllamaHostDetails["runningModels"]): string {
+  const totalBytes = models.reduce((sum, model) => sum + (model.sizeVramBytes ?? 0), 0);
+  if (totalBytes <= 0) {
+    return "-";
+  }
+
+  return `${Math.round((totalBytes / 1024 ** 3) * 10) / 10}G`;
 }
 
 function HeaderMetricLine(props: { items: Array<[label: string, value: string, color: StatusColor]> }): React.ReactElement {

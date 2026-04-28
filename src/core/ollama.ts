@@ -28,7 +28,21 @@ type OllamaPsResponse = {
   models?: Array<{
     name?: string;
     model?: string;
+    size?: number;
+    size_vram?: number;
+    expires_at?: string;
+    details?: {
+      context_length?: number;
+    };
   }>;
+};
+
+export type OllamaRunningModel = {
+  name: string;
+  sizeBytes: number | null;
+  sizeVramBytes: number | null;
+  expiresAt: string | null;
+  contextLength: number | null;
 };
 
 type OllamaRuntimeOptions = {
@@ -94,7 +108,7 @@ export class OllamaClient {
     return payload.models?.map((model) => model.name).sort() ?? [];
   }
 
-  async listRunningModels(): Promise<string[]> {
+  async listRunningModels(): Promise<OllamaRunningModel[]> {
     const response = await this.fetchOllama("/api/ps");
     if (!response.ok) {
       throw new Error(`Ollama ps failed with HTTP ${response.status}.`);
@@ -103,10 +117,43 @@ export class OllamaClient {
     const payload = (await response.json()) as OllamaPsResponse;
     return (
       payload.models
-        ?.map((model) => model.name?.trim() || model.model?.trim() || "")
-        .filter((model) => model.length > 0)
-        .sort() ?? []
+        ?.map((model): OllamaRunningModel | null => {
+          const name = model.name?.trim() || model.model?.trim() || "";
+          return name
+            ? {
+                name,
+                sizeBytes: readNullableFiniteNumber(model.size),
+                sizeVramBytes: readNullableFiniteNumber(model.size_vram),
+                expiresAt: typeof model.expires_at === "string" ? model.expires_at : null,
+                contextLength: readNullableFiniteNumber(model.details?.context_length)
+              }
+            : null;
+        })
+        .filter((model): model is OllamaRunningModel => model !== null)
+        .sort((left, right) => left.name.localeCompare(right.name)) ?? []
     );
+  }
+
+  async unloadModel(model: string): Promise<void> {
+    const trimmedModel = model.trim();
+    if (!trimmedModel) {
+      return;
+    }
+
+    const response = await this.fetchOllama("/api/generate", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model: trimmedModel,
+        keep_alive: 0
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error(`Ollama unload failed for model "${trimmedModel}" at ${this.baseUrl}: HTTP ${response.status}.`);
+    }
   }
 
   private async fetchOllama(path: string, init?: RequestInit): Promise<Response> {
@@ -174,6 +221,10 @@ function readTemperature(value: string | undefined, fallback: number): number {
   return Number.isFinite(parsedValue) && parsedValue >= 0 ? parsedValue : fallback;
 }
 
+function readNullableFiniteNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
 function formatOllamaConnectionError(baseUrl: string, error: unknown): string {
   const suffix = error instanceof Error ? ` ${error.message}` : "";
   return `Cannot reach Ollama at ${baseUrl}. Start Ollama, or run "ollama serve", then try /doctor.${suffix}`;
@@ -188,6 +239,7 @@ function toTelemetry(payload: OllamaChatResponse, model: string): ModelTelemetry
     {
       promptTokens,
       cachedPromptTokens: 0,
+      cacheWriteTokens: 0,
       responseTokens,
       totalTokens: promptTokens + responseTokens,
       evalTokensPerSecond:

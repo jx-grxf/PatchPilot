@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { networkInterfaces } from "node:os";
 import { promisify } from "node:util";
-import { OllamaClient, defaultOllamaPort, defaultOllamaUrl, normalizeOllamaBaseUrl } from "../core/ollama.js";
+import { OllamaClient, defaultOllamaPort, defaultOllamaUrl, normalizeOllamaBaseUrl, type OllamaRunningModel } from "../core/ollama.js";
 
 const execFileAsync = promisify(execFile);
 const hostDiscoveryCacheTtlMs = 20_000;
@@ -38,7 +38,7 @@ export type OllamaHost = {
 export type OllamaHostDetails = {
   host: OllamaHost;
   models: string[];
-  runningModels: string[];
+  runningModels: OllamaRunningModel[];
   fetchedAt: number;
 };
 

@@ -1,6 +1,7 @@
 import { CodexCliClient } from "./codex.js";
 import { GeminiClient } from "./gemini.js";
 import { OllamaClient } from "./ollama.js";
+import { OpenRouterClient } from "./openrouter.js";
 import type { ModelClient, ModelProvider } from "./types.js";
 
 export function createModelClient(options: {
@@ -18,6 +19,10 @@ export function createModelClient(options: {
     });
   }
 
+  if (options.provider === "openrouter") {
+    return new OpenRouterClient();
+  }
+
   return new OllamaClient(options.ollamaUrl);
 }
 
@@ -33,6 +38,10 @@ export function normalizeModelProvider(value: string): ModelProvider {
 
   if (normalizedValue === "codex" || normalizedValue === "openai" || normalizedValue === "openai-codex") {
     return "codex";
+  }
+
+  if (normalizedValue === "openrouter" || normalizedValue === "open-router") {
+    return "openrouter";
   }
 
   return "ollama";
