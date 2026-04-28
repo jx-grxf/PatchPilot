@@ -5,6 +5,7 @@ const toolNameSchema = z.enum([
   "list_files",
   "read_file",
   "search_text",
+  "inspect_document",
   "write_file",
   "run_shell"
 ]);

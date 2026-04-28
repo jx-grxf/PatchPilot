@@ -2,7 +2,9 @@ import { spawn } from "node:child_process";
 import { describeComputeTarget } from "./compute.js";
 import { codexOAuthModels, hasCodexCliOAuth } from "./codex.js";
 import { GeminiClient, readGeminiApiKey } from "./gemini.js";
+import { NvidiaClient, readNvidiaApiKey } from "./nvidia.js";
 import { OllamaClient } from "./ollama.js";
+import { OpenRouterClient, readOpenRouterApiKey } from "./openrouter.js";
 import type { ModelProvider } from "./types.js";
 
 export type DoctorResult = {
@@ -24,6 +26,16 @@ export async function runDoctor(provider: ModelProvider, ollamaUrl: string, mode
 
   if (provider === "codex") {
     results.push(...(await checkCodex(model)));
+    return results;
+  }
+
+  if (provider === "openrouter") {
+    results.push(...(await checkOpenRouter(model)));
+    return results;
+  }
+
+  if (provider === "nvidia") {
+    results.push(...(await checkNvidia(model)));
     return results;
   }
 
@@ -63,6 +75,82 @@ export async function runDoctor(provider: ModelProvider, ollamaUrl: string, mode
   } catch (error) {
     results.push({
       name: "ollama",
+      ok: false,
+      details: error instanceof Error ? error.message : String(error)
+    });
+  }
+
+  return results;
+}
+
+async function checkOpenRouter(model?: string): Promise<DoctorResult[]> {
+  const results: DoctorResult[] = [
+    {
+      name: "openrouter-key",
+      ok: Boolean(readOpenRouterApiKey()),
+      details: readOpenRouterApiKey() ? "OPENROUTER_API_KEY is configured" : "missing. Add OPENROUTER_API_KEY to PatchPilot config"
+    }
+  ];
+
+  if (!readOpenRouterApiKey()) {
+    return results;
+  }
+
+  try {
+    const models = await new OpenRouterClient().listModels();
+    results.push({
+      name: "openrouter",
+      ok: true,
+      details: models.length > 0 ? `available models: ${models.slice(0, 12).join(", ")}` : "API reachable, no models listed"
+    });
+    if (model) {
+      results.push({
+        name: "openrouter-model",
+        ok: models.includes(model),
+        details: models.includes(model) ? `${model} is available` : `${model} is not listed by OpenRouter models API`
+      });
+    }
+  } catch (error) {
+    results.push({
+      name: "openrouter",
+      ok: false,
+      details: error instanceof Error ? error.message : String(error)
+    });
+  }
+
+  return results;
+}
+
+async function checkNvidia(model?: string): Promise<DoctorResult[]> {
+  const results: DoctorResult[] = [
+    {
+      name: "nvidia-key",
+      ok: Boolean(readNvidiaApiKey()),
+      details: readNvidiaApiKey() ? "NVIDIA_API_KEY is configured" : "missing. Add NVIDIA_API_KEY to PatchPilot config"
+    }
+  ];
+
+  if (!readNvidiaApiKey()) {
+    return results;
+  }
+
+  try {
+    const models = await new NvidiaClient().listModels();
+    results.push({
+      name: "nvidia",
+      ok: true,
+      details: models.length > 0 ? `available models: ${models.slice(0, 12).join(", ")}` : "API reachable, no models listed"
+    });
+    if (model) {
+      results.push({
+        name: "nvidia-model",
+        ok: models.includes(model),
+        details: models.includes(model) ? `${model} is available` : `${model} is not listed by NVIDIA models API`
+      });
+    }
+  } catch (error) {
+    results.push({
+      name: "nvidia",
       ok: false,
       details: error instanceof Error ? error.message : String(error)
     });

@@ -44,7 +44,8 @@ export class CodexCliClient {
         workspace: this.workspace,
         prompt,
         outputPath,
-        timeoutMs: this.timeoutMs
+        timeoutMs: this.timeoutMs,
+        signal: options.signal
       });
       const content = (await readFile(outputPath, "utf8")).trim();
       if (!content) {
@@ -118,6 +119,7 @@ function runCodexExec(options: {
   prompt: string;
   outputPath: string;
   timeoutMs: number;
+  signal?: AbortSignal;
 }): Promise<CodexUsage | null> {
   return new Promise((resolve, reject) => {
     const child = spawn(
@@ -139,6 +141,7 @@ function runCodexExec(options: {
       {
         cwd: options.workspace,
         stdio: ["pipe", "pipe", "pipe"],
+        signal: options.signal,
         windowsHide: true
       }
     );
@@ -156,9 +159,13 @@ function runCodexExec(options: {
     child.stderr.on("data", (chunk: Buffer) => {
       stderr += chunk.toString("utf8");
     });
-    child.on("error", (error) => {
+    child.on("error", (error: NodeJS.ErrnoException) => {
       clearTimeout(timeout);
-      reject(new Error(`Cannot run Codex CLI. Install it and run codex login. ${error.message}`));
+      reject(
+        error.name === "AbortError"
+          ? new Error("Codex CLI run aborted.")
+          : new Error(`Cannot run Codex CLI. Install it and run codex login. ${error.message}`)
+      );
     });
     child.on("close", (exitCode) => {
       clearTimeout(timeout);

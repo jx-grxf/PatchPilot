@@ -5,16 +5,17 @@ import { defaultCodexModel, hasCodexCliOAuth } from "../core/codex.js";
 import { describeComputeTarget } from "../core/compute.js";
 import { runDoctor } from "../core/doctor.js";
 import { savePatchPilotEnvValues } from "../core/env.js";
-import { defaultGeminiModel } from "../core/gemini.js";
+import { defaultGeminiModel, readGeminiApiKey } from "../core/gemini.js";
 import { createModelClient } from "../core/modelClient.js";
+import { defaultNvidiaModel, readNvidiaApiKey } from "../core/nvidia.js";
 import { defaultOllamaModel, OllamaClient } from "../core/ollama.js";
-import { defaultOpenRouterModel, isOpenRouterFreeModel } from "../core/openrouter.js";
+import { defaultOpenRouterModel, isOpenRouterFreeModel, readOpenRouterApiKey } from "../core/openrouter.js";
 import { addTelemetryToSession, emptySessionTelemetry, estimateTokens } from "../core/tokenAccounting.js";
 import type { AgentEvent, ModelProvider, ModelTelemetry, SessionTelemetry } from "../core/types.js";
 import { CommandSuggestions, type CommandSuggestionItem } from "./components/CommandSuggestions.js";
 import { Composer, FooterHints } from "./components/Composer.js";
 import { Header } from "./components/Header.js";
-import { OnboardingPanel, type OnboardingState } from "./components/OnboardingPanel.js";
+import { OnboardingPanel, type ApiKeyProvider, type OnboardingState } from "./components/OnboardingPanel.js";
 import { Sidebar } from "./components/Sidebar.js";
 import { Transcript } from "./components/Transcript.js";
 import { filterSlashCommands, formatCommandDetail, formatCommandHelp } from "./commands.js";
@@ -41,6 +42,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   const [input, setInput] = useState(props.initialTask ?? "");
   const didRunInitialTask = useRef(false);
   const didOpenDefaultOnboarding = useRef(false);
+  const abortControllerRef = useRef<AbortController | null>(null);
   const usedOllamaModelsRef = useRef(new Set<string>());
   const [lines, setLines] = useState<LogLine[]>([]);
   const [advisorNotes, setAdvisorNotes] = useState<AdvisorNote[]>([]);
@@ -334,8 +336,10 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         setOnboarding(null);
         return;
       case "host":
+      case "api-key-choice":
       case "gemini-key":
       case "openrouter-key":
+      case "nvidia-key":
       case "codex-login":
         setOnboarding({
           step: "entry"
@@ -357,9 +361,17 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         }
 
         if (onboarding.provider === "gemini") {
-          setOnboarding({
-            step: "gemini-key"
-          });
+          openApiKeyChoice("gemini", setOnboarding, setOnboardingIndex);
+          return;
+        }
+
+        if (onboarding.provider === "nvidia") {
+          openApiKeyChoice("nvidia", setOnboarding, setOnboardingIndex);
+          return;
+        }
+
+        if (onboarding.provider === "openrouter") {
+          openApiKeyChoice("openrouter", setOnboarding, setOnboardingIndex);
           return;
         }
 
@@ -426,19 +438,8 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           return;
         }
 
-        if (selection === "gemini") {
-          setOnboarding({
-            step: "gemini-key"
-          });
-          setOnboardingInput("");
-          return;
-        }
-
-        if (selection === "openrouter") {
-          setOnboarding({
-            step: "openrouter-key"
-          });
-          setOnboardingInput("");
+        if (selection === "gemini" || selection === "openrouter" || selection === "nvidia") {
+          openApiKeyChoice(selection, setOnboarding, setOnboardingIndex);
           return;
         }
 
@@ -520,6 +521,27 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         return;
       }
 
+      if (onboarding.step === "api-key-choice") {
+        const choice = readIndexedSelection(value, onboardingIndex);
+        if (choice === null) {
+          return;
+        }
+
+        if (choice === 0 && onboarding.hasExistingKey) {
+          await openModelSelection(onboarding.provider, {
+            currentModel: defaultModelForProvider(onboarding.provider, settings.model)
+          });
+          return;
+        }
+
+        setOnboarding({
+          step: `${onboarding.provider}-key` as "gemini-key" | "openrouter-key" | "nvidia-key"
+        });
+        setOnboardingInput("");
+        setOnboardingIndex(0);
+        return;
+      }
+
       if (onboarding.step === "gemini-key") {
         const apiKey = value.trim();
         if (!apiKey) {
@@ -572,6 +594,34 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         });
         await openModelSelection("openrouter", {
           currentModel: defaultOpenRouterModel
+        });
+        return;
+      }
+
+      if (onboarding.step === "nvidia-key") {
+        const apiKey = value.trim();
+        if (!apiKey) {
+          appendLine({
+            tone: "warning",
+            label: "onboarding",
+            text: "NVIDIA API key cannot be empty."
+          });
+          return;
+        }
+
+        process.env.NVIDIA_API_KEY = apiKey;
+        savePatchPilotEnvValues({
+          PATCHPILOT_PROVIDER: "nvidia",
+          PATCHPILOT_MODEL: defaultNvidiaModel,
+          NVIDIA_API_KEY: apiKey
+        });
+        appendLine({
+          tone: "success",
+          label: "onboarding",
+          text: "NVIDIA API key saved to PatchPilot config."
+        });
+        await openModelSelection("nvidia", {
+          currentModel: defaultNvidiaModel
         });
         return;
       }
@@ -654,7 +704,12 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           return;
         }
 
-        const taskRunner = new AgentRunner(runnableSettings);
+      const abortController = new AbortController();
+      abortControllerRef.current = abortController;
+      const taskRunner = new AgentRunner({
+        ...runnableSettings,
+        signal: abortController.signal
+      });
         for await (const event of taskRunner.run(task)) {
           if (event.type === "metrics") {
             if (runnableSettings.provider === "ollama") {
@@ -686,6 +741,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           text: error instanceof Error ? error.message : String(error)
         });
       } finally {
+        abortControllerRef.current = null;
         setStatus("idle");
         setIsRunning(false);
       }
@@ -738,11 +794,11 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           return;
         case "provider": {
           const nextProvider = args[0]?.toLowerCase();
-          if (nextProvider !== "ollama" && nextProvider !== "gemini" && nextProvider !== "codex" && nextProvider !== "openrouter") {
+          if (nextProvider !== "ollama" && nextProvider !== "gemini" && nextProvider !== "codex" && nextProvider !== "openrouter" && nextProvider !== "nvidia") {
             appendLine({
               tone: "accent",
               label: "provider",
-              text: `current ${settings.provider}. Use /provider ollama, /provider gemini, /provider codex, or /provider openrouter.`
+              text: `current ${settings.provider}. Use /provider ollama, gemini, openrouter, nvidia, or codex.`
             });
             return;
           }
@@ -759,10 +815,16 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
             PATCHPILOT_PROVIDER: nextProvider,
             PATCHPILOT_MODEL: nextModel
           });
+          if (needsApiKey(nextProvider) && !hasApiKey(nextProvider)) {
+            openApiKeyChoice(nextProvider, setOnboarding, setOnboardingIndex);
+          }
           appendLine({
-            tone: "success",
+            tone: needsApiKey(nextProvider) && !hasApiKey(nextProvider) ? "warning" : "success",
             label: "provider",
-            text: `switched to ${nextProvider} using ${nextModel}`
+            text:
+              needsApiKey(nextProvider) && !hasApiKey(nextProvider)
+                ? `${nextProvider} needs an API key. Setup opened.`
+                : `switched to ${nextProvider} using ${nextModel}`
           });
           return;
         }
@@ -1192,7 +1254,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       });
       if (!verifiedHost) {
         if (!cancelled) {
-          setActiveHost(null);
+          setActiveHost((currentHost) => (currentHost?.host.url === settings.ollamaUrl ? currentHost : null));
         }
         return;
       }
@@ -1215,8 +1277,12 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
     }
 
     void syncActiveHost();
+    const timer = setInterval(() => {
+      void syncActiveHost();
+    }, 5000);
     return () => {
       cancelled = true;
+      clearInterval(timer);
     };
   }, [settings.ollamaUrl, settings.provider]);
 
@@ -1280,11 +1346,22 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       return;
     }
 
-    if (paletteItems.length > 0) {
+      if (paletteItems.length > 0) {
       if (key.upArrow) {
         setPaletteIndex((currentIndex) => (currentIndex - 1 + paletteItems.length) % paletteItems.length);
         return;
       }
+
+    if (isRunning && key.escape) {
+      abortControllerRef.current?.abort();
+      appendLine({
+        tone: "warning",
+        label: "stop",
+        text: "Stopping current task..."
+      });
+      setStatus("stopping");
+      return;
+    }
 
       if (key.downArrow) {
         setPaletteIndex((currentIndex) => (currentIndex + 1) % paletteItems.length);
@@ -1699,9 +1776,11 @@ function buildCommandSuggestionItems(options: {
 function getOnboardingOptionCount(onboarding: OnboardingState): number {
   switch (onboarding.step) {
     case "entry":
-      return 5;
+      return 6;
     case "host":
       return onboarding.hosts.length + 1;
+    case "api-key-choice":
+      return 2;
     case "model":
       return onboarding.models.length;
     default:
@@ -1709,10 +1788,10 @@ function getOnboardingOptionCount(onboarding: OnboardingState): number {
   }
 }
 
-function readEntrySelection(value: string, selectedIndex: number): "local" | "host" | "gemini" | "openrouter" | "codex" | null {
+function readEntrySelection(value: string, selectedIndex: number): "local" | "host" | "gemini" | "openrouter" | "nvidia" | "codex" | null {
   const normalizedValue = value.trim().toLowerCase();
   if (!normalizedValue) {
-    return ["local", "host", "gemini", "openrouter", "codex"][selectedIndex] as "local" | "host" | "gemini" | "openrouter" | "codex";
+    return ["local", "host", "gemini", "openrouter", "nvidia", "codex"][selectedIndex] as "local" | "host" | "gemini" | "openrouter" | "nvidia" | "codex";
   }
 
   if (normalizedValue === "1" || normalizedValue === "local" || normalizedValue === "this device") {
@@ -1731,7 +1810,11 @@ function readEntrySelection(value: string, selectedIndex: number): "local" | "ho
     return "openrouter";
   }
 
-  if (normalizedValue === "5" || normalizedValue === "codex") {
+  if (normalizedValue === "5" || normalizedValue === "nvidia" || normalizedValue === "nim") {
+    return "nvidia";
+  }
+
+  if (normalizedValue === "6" || normalizedValue === "codex") {
     return "codex";
   }
 
@@ -1806,6 +1889,10 @@ function scoreModelMatch(model: string, query: string): number | null {
 }
 
 function defaultModelForProvider(provider: ModelProvider, currentModel: string): string {
+  if (provider === "nvidia") {
+    return currentModel.includes("/") && !currentModel.startsWith("openrouter/") ? currentModel : defaultNvidiaModel;
+  }
+
   if (provider === "openrouter") {
     return currentModel.includes("/") ? currentModel : defaultOpenRouterModel;
   }
@@ -1819,6 +1906,35 @@ function defaultModelForProvider(provider: ModelProvider, currentModel: string):
   }
 
   return currentModel.startsWith("gemini-") || currentModel.includes("codex") || currentModel.includes("/") ? defaultOllamaModel : currentModel;
+}
+
+function openApiKeyChoice(
+  provider: ApiKeyProvider,
+  setOnboarding: React.Dispatch<React.SetStateAction<OnboardingState | null>>,
+  setOnboardingIndex: React.Dispatch<React.SetStateAction<number>>
+): void {
+  setOnboarding({
+    step: "api-key-choice",
+    provider,
+    hasExistingKey: hasApiKey(provider)
+  });
+  setOnboardingIndex(0);
+}
+
+function needsApiKey(provider: ModelProvider): provider is ApiKeyProvider {
+  return provider === "gemini" || provider === "openrouter" || provider === "nvidia";
+}
+
+function hasApiKey(provider: ApiKeyProvider): boolean {
+  if (provider === "gemini") {
+    return Boolean(readGeminiApiKey());
+  }
+
+  if (provider === "openrouter") {
+    return Boolean(readOpenRouterApiKey());
+  }
+
+  return Boolean(readNvidiaApiKey());
 }
 
 async function unloadUsedOllamaModels(usedModels: Set<string>): Promise<void> {

@@ -46,7 +46,7 @@ export function Header(props: {
   activeHost: OllamaHostDetails | null;
 }): React.ReactElement {
   const computeTarget =
-    props.provider === "gemini" || props.provider === "codex" || props.provider === "openrouter" ? { kind: "cloud" } : describeComputeTarget(props.ollamaUrl);
+    props.provider === "gemini" || props.provider === "codex" || props.provider === "openrouter" || props.provider === "nvidia" ? { kind: "cloud" } : describeComputeTarget(props.ollamaUrl);
   const memoryColor = usageColor(props.systemStats.memoryPercent);
   const modelHint = getModelHint(props.model);
   const hostLabel =

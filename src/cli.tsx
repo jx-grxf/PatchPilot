@@ -6,7 +6,8 @@ import { Command } from "commander";
 import { defaultCodexModel } from "./core/codex.js";
 import { loadPatchPilotEnv } from "./core/env.js";
 import { defaultGeminiModel } from "./core/gemini.js";
-import { readModelProvider } from "./core/modelClient.js";
+import { normalizeModelProvider, readModelProvider } from "./core/modelClient.js";
+import { defaultNvidiaModel } from "./core/nvidia.js";
 import { runDoctor } from "./core/doctor.js";
 import { defaultOllamaModel, resolveOllamaBaseUrl } from "./core/ollama.js";
 import { defaultOpenRouterModel } from "./core/openrouter.js";
@@ -22,27 +23,36 @@ const defaultModel =
     ? defaultGeminiModel
     : defaultProvider === "openrouter"
       ? defaultOpenRouterModel
+      : defaultProvider === "nvidia"
+        ? defaultNvidiaModel
       : defaultProvider === "codex"
         ? defaultCodexModel
         : defaultOllamaModel);
 
 const program = new Command();
+program.enablePositionalOptions();
 
 program
   .name("patchpilot")
-  .description("Local-first coding agent TUI powered by Ollama.")
+  .description("Local-first coding agent TUI powered by Ollama and OpenAI-compatible providers.")
   .version("0.1.0");
 
 program
   .command("doctor")
   .description("Check local PatchPilot requirements.")
-  .option("--provider <name>", "Model provider: ollama, gemini, openrouter, or codex.", defaultProvider)
+  .option("--provider <name>", "Model provider: ollama, gemini, openrouter, nvidia, or codex.", defaultProvider)
   .option("--check-url <url>", "Ollama base URL to verify", defaultOllamaUrl)
   .option("--ollama-url <url>", "Alias for --check-url.")
   .option("--check-model <name>", "Model name to verify", defaultModel)
   .option("--model <name>", "Alias for --check-model.")
-  .action(async (options: { provider: string; checkUrl: string; ollamaUrl?: string; checkModel: string; model?: string }) => {
-    const results = await runDoctor(readModelProvider({ PATCHPILOT_PROVIDER: options.provider }), options.ollamaUrl ?? options.checkUrl, options.model ?? options.checkModel);
+  .action(async (options: {
+      provider: string;
+      checkUrl: string;
+      ollamaUrl?: string;
+      checkModel: string;
+      model?: string;
+    }) => {
+    const results = await runDoctor(normalizeModelProvider(options.provider), options.ollamaUrl ?? options.checkUrl, options.model ?? options.checkModel);
     for (const result of results) {
       const marker = result.ok ? "ok" : "fail";
       console.log(`${marker.padEnd(5)} ${result.name}: ${result.details}`);
@@ -54,7 +64,7 @@ program
 program
   .argument("[task...]", "Task for the local coding agent.")
   .option("--workspace <path>", "Workspace root", process.cwd())
-  .option("--provider <name>", "Model provider: ollama, gemini, openrouter, or codex.", defaultProvider)
+  .option("--provider <name>", "Model provider: ollama, gemini, openrouter, nvidia, or codex.", defaultProvider)
   .option("--model <name>", "Model name", defaultModel)
   .option("--ollama-url <url>", "Ollama base URL", defaultOllamaUrl)
   .option("--steps <count>", "Maximum agent steps", "8")

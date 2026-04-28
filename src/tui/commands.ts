@@ -26,17 +26,17 @@ export const slashCommands: SlashCommand[] = [
   {
     name: "agents",
     usage: "/agents on|off",
-    description: "Enable or disable planner/reviewer subagents.",
+    description: "Enable or disable explorer/planner/reviewer subagents.",
     category: "session",
     aliases: ["subagents"],
-    detail: "Advisor subagents add a short planner/reviewer brief before complex workspace tasks. Turn them off with /agents off when you want less noise or lower latency."
+    detail: "Advisor subagents add short explorer/planner/reviewer briefs before larger workspace tasks. Turn them off with /agents off when you want less noise or lower latency."
   },
   {
     name: "provider",
-    usage: "/provider ollama|gemini|openrouter|codex",
-    description: "Switch between Ollama, Gemini, OpenRouter, and Codex inference.",
+    usage: "/provider ollama|gemini|openrouter|nvidia|codex",
+    description: "Switch between Ollama, Gemini, OpenRouter, NVIDIA, and Codex inference.",
     category: "model",
-    detail: "Provider controls where inference runs. Ollama can be local or remote. Gemini, OpenRouter, and Codex are cloud providers."
+    detail: "Provider controls where inference runs. Ollama can be local or remote. Gemini, OpenRouter, NVIDIA, and Codex are cloud providers."
   },
   {
     name: "think",

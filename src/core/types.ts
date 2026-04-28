@@ -5,7 +5,7 @@ export type ChatMessage = {
   content: string;
 };
 
-export type ModelProvider = "ollama" | "gemini" | "codex" | "openrouter";
+export type ModelProvider = "ollama" | "gemini" | "codex" | "openrouter" | "nvidia";
 export type ReasoningEffort = "low" | "medium" | "high" | "xhigh";
 
 export type ModelChatOptions = {
@@ -30,6 +30,7 @@ export type AgentToolName =
   | "list_files"
   | "read_file"
   | "search_text"
+  | "inspect_document"
   | "write_file"
   | "run_shell";
 
@@ -49,7 +50,7 @@ export type AgentResponse =
       message: string;
     };
 
-export type SubagentRole = "planner" | "reviewer";
+export type SubagentRole = "planner" | "reviewer" | "explorer";
 
 export type AgentEvent =
   | {

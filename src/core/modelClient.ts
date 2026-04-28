@@ -1,5 +1,6 @@
 import { CodexCliClient } from "./codex.js";
 import { GeminiClient } from "./gemini.js";
+import { NvidiaClient } from "./nvidia.js";
 import { OllamaClient } from "./ollama.js";
 import { OpenRouterClient } from "./openrouter.js";
 import type { ModelClient, ModelProvider } from "./types.js";
@@ -23,6 +24,10 @@ export function createModelClient(options: {
     return new OpenRouterClient();
   }
 
+  if (options.provider === "nvidia") {
+    return new NvidiaClient();
+  }
+
   return new OllamaClient(options.ollamaUrl);
 }
 
@@ -42,6 +47,10 @@ export function normalizeModelProvider(value: string): ModelProvider {
 
   if (normalizedValue === "openrouter" || normalizedValue === "open-router") {
     return "openrouter";
+  }
+
+  if (normalizedValue === "nvidia" || normalizedValue === "nim") {
+    return "nvidia";
   }
 
   return "ollama";
