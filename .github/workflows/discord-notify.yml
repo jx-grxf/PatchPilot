@@ -21,6 +21,13 @@ on:
       - reopened
       - ready_for_review
   workflow_run:
+    workflows:
+      - CI
+      - Build
+      - Test
+      - Tests
+      - Release
+      - Publish
     types:
       - completed
 
@@ -36,7 +43,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Build and send Discord embed
-        uses: actions/github-script@v8
+        uses: actions/github-script@v7
         env:
           DISCORD_ACTIVITY_WEBHOOK: ${{ secrets.DISCORD_ACTIVITY_WEBHOOK }}
           DISCORD_BUILDS_WEBHOOK: ${{ secrets.DISCORD_BUILDS_WEBHOOK }}
