@@ -1,0 +1,189 @@
+name: Discord notifications
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  release:
+    types:
+      - published
+      - prereleased
+  issues:
+    types:
+      - opened
+      - closed
+      - reopened
+  pull_request:
+    types:
+      - opened
+      - closed
+      - reopened
+      - ready_for_review
+  workflow_run:
+    types:
+      - completed
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: read
+  issues: read
+
+jobs:
+  notify-discord:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.name != 'Discord notifications'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Build and send Discord embed
+        uses: actions/github-script@v8
+        env:
+          DISCORD_ACTIVITY_WEBHOOK: ${{ secrets.DISCORD_ACTIVITY_WEBHOOK }}
+          DISCORD_BUILDS_WEBHOOK: ${{ secrets.DISCORD_BUILDS_WEBHOOK }}
+          DISCORD_COMMITS_WEBHOOK: ${{ secrets.DISCORD_COMMITS_WEBHOOK }}
+          DISCORD_RELEASES_WEBHOOK: ${{ secrets.DISCORD_RELEASES_WEBHOOK }}
+        with:
+          script: |
+            const eventName = context.eventName;
+            const payload = context.payload;
+            const repo = context.repo;
+            const repoUrl = `https://github.com/${repo.owner}/${repo.repo}`;
+            const now = new Date().toISOString();
+
+            const colors = {
+              activity: 0x2f81f7,
+              builds: 0xf0883e,
+              commits: 0x8957e5,
+              releases: 0x3fb950,
+              failure: 0xda3633,
+            };
+
+            function truncate(value, max = 1024) {
+              if (!value) return "None";
+              return value.length > max ? `${value.slice(0, max - 1)}…` : value;
+            }
+
+            function field(name, value, inline = false) {
+              return { name, value: truncate(String(value), 1024), inline };
+            }
+
+            function commitLines(commits = []) {
+              return commits.slice(0, 8).map((commit) => {
+                const message = commit.message.split("\n")[0];
+                const sha = commit.id.slice(0, 7);
+                return `[\`${sha}\`](${commit.url}) ${message}`;
+              }).join("\n");
+            }
+
+            function pickMessage() {
+              if (eventName === "release") {
+                const release = payload.release;
+                return {
+                  channel: "releases",
+                  username: "github[releases]",
+                  embed: {
+                    title: `${repo.repo} ${release.tag_name}`,
+                    url: release.html_url,
+                    description: truncate(release.body || release.name || "Release published.", 4096),
+                    color: release.prerelease ? colors.builds : colors.releases,
+                    fields: [
+                      field("Version", release.tag_name, true),
+                      field("Author", release.author?.login ?? "unknown", true),
+                      field("Draft", release.draft ? "Yes" : "No", true),
+                    ],
+                    timestamp: release.published_at || now,
+                  },
+                };
+              }
+
+              if (eventName === "push") {
+                const commits = payload.commits ?? [];
+                return {
+                  channel: "commits",
+                  username: "github[commits]",
+                  embed: {
+                    title: `${repo.repo}: ${commits.length} commit${commits.length === 1 ? "" : "s"} pushed`,
+                    url: payload.compare || repoUrl,
+                    description: commitLines(commits) || "Push received.",
+                    color: colors.commits,
+                    fields: [
+                      field("Branch", String(payload.ref || "").replace("refs/heads/", ""), true),
+                      field("Pusher", payload.pusher?.name ?? "unknown", true),
+                    ],
+                    timestamp: now,
+                  },
+                };
+              }
+
+              if (eventName === "workflow_run") {
+                const run = payload.workflow_run;
+                const success = run.conclusion === "success";
+                return {
+                  channel: "builds",
+                  username: "github[builds]",
+                  embed: {
+                    title: `${repo.repo}: ${run.name} ${run.conclusion ?? run.status}`,
+                    url: run.html_url,
+                    description: truncate(run.display_title || "Workflow completed.", 4096),
+                    color: success ? colors.releases : colors.failure,
+                    fields: [
+                      field("Branch", run.head_branch ?? "unknown", true),
+                      field("Status", run.status ?? "unknown", true),
+                      field("Conclusion", run.conclusion ?? "unknown", true),
+                    ],
+                    timestamp: run.updated_at || now,
+                  },
+                };
+              }
+
+              const subject = payload.issue ?? payload.pull_request;
+              const title = subject?.title ?? `${eventName} ${payload.action ?? "activity"}`;
+              const url = subject?.html_url ?? repoUrl;
+
+              return {
+                channel: "activity",
+                username: "github[activity]",
+                embed: {
+                  title: `${repo.repo}: ${title}`,
+                  url,
+                  description: truncate(subject?.body ?? `${eventName}.${payload.action ?? "received"}`, 4096),
+                  color: colors.activity,
+                  fields: [
+                    field("Event", eventName, true),
+                    field("Action", payload.action ?? "received", true),
+                    field("Actor", context.actor, true),
+                  ],
+                  timestamp: now,
+                },
+              };
+            }
+
+            const message = pickMessage();
+            const webhook = process.env[`DISCORD_${message.channel.toUpperCase()}_WEBHOOK`];
+
+            if (!webhook) {
+              core.info(`No webhook configured for ${message.channel}; skipping.`);
+              return;
+            }
+
+            const response = await fetch(webhook, {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({
+                username: message.username,
+                embeds: [{
+                  ...message.embed,
+                  author: {
+                    name: `${repo.owner}/${repo.repo}`,
+                    url: repoUrl,
+                  },
+                  footer: {
+                    text: `GitHub ${eventName}`,
+                  },
+                }],
+              }),
+            });
+
+            if (!response.ok) {
+              throw new Error(`Discord webhook failed with HTTP ${response.status}: ${await response.text()}`);
+            }
