@@ -57,7 +57,7 @@ PatchPilot is a terminal interface for running coding-agent tasks inside a repos
 | Workspace boundary | File tools are constrained to the selected project root and block common secret files. |
 | Slash-command palette | Type `/` for browsable commands, provider switching, modes, models, diagnostics, and host selection. |
 | Advisor subagents | Planner and reviewer calls can brief the main agent before it edits. |
-| Multi-provider support | Ollama, Gemini API, and Codex CLI OAuth are supported behind one TUI. |
+| Multi-provider support | Ollama, Google Gemini, and OpenAI Codex CLI routes are supported behind one TUI. |
 | CI-ready TypeScript | Strict TypeScript, Vitest, GitHub Actions, and package verification are included. |
 
 ## Why This Exists
@@ -121,7 +121,7 @@ patchpilot doctor [options]
 | Option | Description |
 |---|---|
 | `--workspace <path>` | Project root the agent may inspect. Defaults to the current directory. |
-| `--provider <name>` | Model provider: `ollama`, `gemini`, or `codex`. |
+| `--provider <name>` | Model provider route. Supports `ollama`, `gemini`/`google`, and `codex`/`openai`/`openai-codex`. |
 | `--model <name>` | Model name for the selected provider. |
 | `--ollama-url <url>` | Ollama base URL. Defaults to `http://127.0.0.1:11434`. |
 | `--steps <count>` | Maximum agent loop steps before stopping. |
@@ -140,7 +140,7 @@ Useful slash commands inside the TUI:
 | `/write on\|off` | Enable or disable workspace writes. |
 | `/shell on\|off` | Enable or disable shell commands. |
 | `/agents on\|off` | Enable or disable advisor subagents. |
-| `/provider ollama\|gemini\|codex` | Switch inference provider. |
+| `/provider ollama\|gemini\|codex` | Switch inference provider. CLI/env aliases also support `google`, `openai`, and `openai-codex`. |
 | `/model <name>` | Switch model for the current provider. |
 | `/models` | Refresh and browse models. |
 | `/connect` | Scan LAN/Tailscale for reachable Ollama hosts. |
@@ -154,12 +154,12 @@ The transcript and sidebar have internal scroll areas. With an empty prompt, use
 
 ## Providers
 
-| Provider | Best for | Setup |
-|---|---|---|
-| Ollama | Private local coding work and offline experiments. | Install Ollama, pull a model, run `patchpilot`. |
-| Remote Ollama | Laptop editing with a stronger desktop/server GPU. | Expose Ollama on the host, then use `/connect` or `--ollama-url`. |
-| Gemini | Fast cloud inference through a Gemini API key. | Store `GEMINI_API_KEY` in `~/.patchpilot/config.env` or use onboarding. |
-| Codex | Using an existing Codex CLI OAuth login. | Run `codex login`, then `patchpilot --provider codex`. |
+| Provider route | Accepted values | Best for | Setup |
+|---|---|---|---|
+| Ollama local | `ollama` | Private local coding work and offline experiments. | Install Ollama, pull a model, run `patchpilot`. |
+| Ollama remote | `ollama` with `--ollama-url` or `/connect` | Laptop editing with a stronger desktop/server GPU. | Expose Ollama on the host, then use `/connect` or `--ollama-url`. |
+| Google Gemini | `gemini`, `google` | Fast cloud inference through a Gemini API key. | Store `GEMINI_API_KEY` in `~/.patchpilot/config.env` or use onboarding. |
+| OpenAI Codex CLI | `codex`, `openai`, `openai-codex` | Using an existing Codex CLI OAuth login. | Run `codex login`, then `patchpilot --provider codex`. |
 
 Examples:
 
@@ -167,6 +167,8 @@ Examples:
 patchpilot --provider ollama --model qwen2.5-coder:7b
 patchpilot --provider gemini --model gemini-2.5-flash
 patchpilot --provider codex --model gpt-5.4
+patchpilot --provider google --model gemini-2.5-flash
+patchpilot --provider openai --model gpt-5.4
 ```
 
 Provider diagnostics:
