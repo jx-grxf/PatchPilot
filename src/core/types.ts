@@ -5,12 +5,14 @@ export type ChatMessage = {
   content: string;
 };
 
-export type ModelProvider = "ollama" | "gemini" | "codex";
+export type ModelProvider = "ollama" | "gemini" | "codex" | "openrouter" | "nvidia";
+export type ReasoningEffort = "low" | "medium" | "high" | "xhigh";
 
 export type ModelChatOptions = {
   model: string;
   messages: ChatMessage[];
   formatJson?: boolean;
+  reasoningEffort?: ReasoningEffort;
   signal?: AbortSignal;
 };
 
@@ -28,6 +30,7 @@ export type AgentToolName =
   | "list_files"
   | "read_file"
   | "search_text"
+  | "inspect_document"
   | "write_file"
   | "run_shell";
 
@@ -47,7 +50,7 @@ export type AgentResponse =
       message: string;
     };
 
-export type SubagentRole = "planner" | "reviewer";
+export type SubagentRole = "planner" | "reviewer" | "explorer";
 
 export type AgentEvent =
   | {
@@ -92,6 +95,7 @@ export type ToolResult = {
 export type ModelTelemetry = {
   promptTokens: number;
   cachedPromptTokens: number;
+  cacheWriteTokens: number;
   responseTokens: number;
   totalTokens: number;
   evalTokensPerSecond: number | null;
@@ -107,6 +111,7 @@ export type SessionTelemetry = {
   requests: number;
   promptTokens: number;
   cachedPromptTokens: number;
+  cacheWriteTokens: number;
   responseTokens: number;
   totalTokens: number;
   estimatedCostUsd: number | null;

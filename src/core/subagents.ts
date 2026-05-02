@@ -15,22 +15,31 @@ type AdvisorSpec = {
 
 const advisorSpecs: AdvisorSpec[] = [
   {
+    role: "explorer",
+    system: [
+      "You are PatchPilot's explorer subagent.",
+      "Map likely files, commands, and repo shape for the primary agent.",
+      "Stay factual and brief. Do not warn unless a risk blocks progress.",
+      "Use at most 4 short bullet lines."
+    ].join("\n")
+  },
+  {
     role: "planner",
     system: [
       "You are PatchPilot's planner subagent.",
-      "Give the primary agent concise tactical guidance before it edits code.",
-      "Focus on likely files, order of work, and verification.",
+      "Give the primary agent a direct tactical path before it edits code.",
+      "Focus on likely files, next actions, and fast verification.",
       "Do not claim you inspected files beyond the provided workspace hint.",
-      "Use at most 5 short bullet lines."
+      "Use at most 4 short bullet lines."
     ].join("\n")
   },
   {
     role: "reviewer",
     system: [
       "You are PatchPilot's reviewer subagent.",
-      "Point out risks, missing tests, permission hazards, and platform pitfalls.",
-      "Be concrete and conservative.",
-      "Use at most 5 short bullet lines."
+      "Call out only concrete blockers or easy checks the primary agent should not miss.",
+      "Do not produce generic warnings about permissions, overwrites, or tests for simple explicit file edits.",
+      "Use at most 3 short bullet lines."
     ].join("\n")
   }
 ];
@@ -40,6 +49,7 @@ export async function runSubagentAdvisors(options: {
   model: string;
   task: string;
   workspaceRoot: string;
+  workspaceSummary?: string;
 }): Promise<SubagentAdvice[]> {
   const workspaceHint = await buildWorkspaceHint(options.workspaceRoot);
   const userMessage = [
@@ -47,7 +57,8 @@ export async function runSubagentAdvisors(options: {
     `Workspace: ${path.basename(options.workspaceRoot) || "workspace"}`,
     "",
     "Workspace hint:",
-    workspaceHint
+    workspaceHint,
+    options.workspaceSummary ? `\nWorkspace context:\n${options.workspaceSummary}` : ""
   ].join("\n");
 
   const results = await Promise.allSettled(

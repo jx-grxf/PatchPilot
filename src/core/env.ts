@@ -51,7 +51,7 @@ export function getPatchPilotConfigDir(env: NodeJS.ProcessEnv = process.env): st
 }
 
 export function getPatchPilotEnvPath(env: NodeJS.ProcessEnv = process.env): string {
-  return path.join(getPatchPilotConfigDir(env), "config.env");
+  return path.join(getPatchPilotConfigDir(env), ".env");
 }
 
 export function loadPatchPilotEnv(env: NodeJS.ProcessEnv = process.env): void {

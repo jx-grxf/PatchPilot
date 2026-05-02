@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { networkInterfaces } from "node:os";
 import { promisify } from "node:util";
-import { OllamaClient, defaultOllamaPort, defaultOllamaUrl, normalizeOllamaBaseUrl } from "../core/ollama.js";
+import { OllamaClient, defaultOllamaPort, defaultOllamaUrl, normalizeOllamaBaseUrl, type OllamaRunningModel } from "../core/ollama.js";
 
 const execFileAsync = promisify(execFile);
 const hostDiscoveryCacheTtlMs = 20_000;
@@ -38,7 +38,7 @@ export type OllamaHost = {
 export type OllamaHostDetails = {
   host: OllamaHost;
   models: string[];
-  runningModels: string[];
+  runningModels: OllamaRunningModel[];
   fetchedAt: number;
 };
 
@@ -159,6 +159,34 @@ export async function checkOllamaHost(
   }
 }
 
+export async function startLocalOllamaAppAndWait(options: { timeoutMs?: number } = {}): Promise<OllamaHost | null> {
+  if (process.platform !== "darwin") {
+    return null;
+  }
+
+  await execFileAsync("open", ["-a", "Ollama"], {
+    timeout: 1200,
+    windowsHide: true
+  }).catch(() => undefined);
+
+  const deadline = Date.now() + (options.timeoutMs ?? 5000);
+  while (Date.now() < deadline) {
+    const host = await checkOllamaHost("local", {
+      label: "local",
+      source: "default",
+      kind: "local",
+      timeoutMs: 500
+    });
+    if (host) {
+      return host;
+    }
+
+    await delay(350);
+  }
+
+  return null;
+}
+
 export async function readOllamaHostDetails(host: OllamaHost, refresh = false): Promise<OllamaHostDetails> {
   const cacheKey = host.url;
   const cachedEntry = hostDetailsCache.get(cacheKey);
@@ -183,6 +211,12 @@ export async function readOllamaHostDetails(host: OllamaHost, refresh = false): 
     details
   });
   return details;
+}
+
+function delay(durationMs: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, durationMs);
+  });
 }
 
 export function classifyOllamaHost(value: string): OllamaHostKind {

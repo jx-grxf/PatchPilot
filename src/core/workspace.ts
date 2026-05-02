@@ -1,9 +1,13 @@
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { constants } from "node:fs";
 import { access, lstat, mkdir, readdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
 import { platform } from "node:os";
 import path from "node:path";
+import { promisify } from "node:util";
+import { inflateRawSync } from "node:zlib";
 import type { AgentToolCall, ToolResult } from "./types.js";
+
+const execFileAsync = promisify(execFile);
 
 const ignoredDirectories = new Set([
   ".git",
@@ -37,6 +41,20 @@ const textFileExtensions = new Set([
   ".ts",
   ".tsx",
   ".txt",
+  ".java",
+  ".kt",
+  ".go",
+  ".rs",
+  ".php",
+  ".rb",
+  ".sh",
+  ".bash",
+  ".zsh",
+  ".xml",
+  ".toml",
+  ".ini",
+  ".csv",
+  ".tsv",
   ".yml",
   ".yaml"
 ]);
@@ -60,6 +78,7 @@ export type WorkspaceToolsOptions = {
   allowWrite: boolean;
   allowShell: boolean;
   timeoutMs?: number;
+  signal?: AbortSignal;
 };
 
 export class WorkspaceTools {
@@ -68,6 +87,7 @@ export class WorkspaceTools {
   private readonly allowWrite: boolean;
   private readonly allowShell: boolean;
   private readonly timeoutMs: number;
+  private readonly signal?: AbortSignal;
 
   constructor(options: WorkspaceToolsOptions) {
     this.root = path.resolve(options.root);
@@ -75,6 +95,7 @@ export class WorkspaceTools {
     this.allowWrite = options.allowWrite;
     this.allowShell = options.allowShell;
     this.timeoutMs = options.timeoutMs ?? 60_000;
+    this.signal = options.signal;
   }
 
   async execute(call: AgentToolCall): Promise<ToolResult> {
@@ -86,6 +107,8 @@ export class WorkspaceTools {
           return await this.readFile(readString(call.arguments.path, ""));
         case "search_text":
           return await this.searchText(readString(call.arguments.query, ""));
+        case "inspect_document":
+          return await this.inspectDocument(readString(call.arguments.path, ""));
         case "write_file":
           return await this.writeFile(readString(call.arguments.path, ""), readString(call.arguments.content, ""));
         case "run_shell":
@@ -99,7 +122,8 @@ export class WorkspaceTools {
   }
 
   resolveInsideWorkspace(requestedPath: string): string {
-    const absolutePath = path.resolve(this.root, requestedPath);
+    const workspaceRelativePath = this.normalizeWorkspaceRelativePath(requestedPath);
+    const absolutePath = path.resolve(this.root, workspaceRelativePath);
     const relativePath = path.relative(this.root, absolutePath);
 
     if (relativePath.startsWith("..") || path.isAbsolute(relativePath)) {
@@ -107,6 +131,38 @@ export class WorkspaceTools {
     }
 
     return absolutePath;
+  }
+
+  normalizeWorkspaceRelativePath(requestedPath: string): string {
+    const trimmedPath = requestedPath.trim();
+    if (!trimmedPath || trimmedPath === ".") {
+      return ".";
+    }
+
+    const normalizedRequestedPath = trimmedPath.replaceAll("\\", "/");
+    const normalizedRoot = this.root.replaceAll("\\", "/");
+    if (path.isAbsolute(trimmedPath)) {
+      const relativePath = path.relative(this.root, trimmedPath);
+      if (relativePath.startsWith("..") || path.isAbsolute(relativePath)) {
+        throw new Error(`Path escapes workspace: ${requestedPath}`);
+      }
+
+      return normalizeSlashPath(relativePath || ".");
+    }
+
+    const workspaceLabel = path.basename(this.root);
+    if (
+      workspaceLabel &&
+      (normalizedRequestedPath === workspaceLabel || normalizedRequestedPath.startsWith(`${workspaceLabel}/`))
+    ) {
+      return normalizedRequestedPath.slice(workspaceLabel.length).replace(/^\/+/, "") || ".";
+    }
+
+    if (normalizedRequestedPath.startsWith(`${normalizedRoot}/`)) {
+      return normalizedRequestedPath.slice(normalizedRoot.length).replace(/^\/+/, "") || ".";
+    }
+
+    return normalizedRequestedPath;
   }
 
   private async listFiles(requestedPath: string): Promise<ToolResult> {
@@ -133,6 +189,10 @@ export class WorkspaceTools {
     }
 
     const absolutePath = await this.resolveReadPath(requestedPath);
+    if (!isLikelyTextFile(absolutePath)) {
+      return denied(`read_file supports text/code files. Use inspect_document for ${path.extname(absolutePath) || "this file"} files.`);
+    }
+
     const content = await readFile(absolutePath, "utf8").catch((error: unknown) => {
       throw new Error(`file not found or unreadable: ${requestedPath} (${error instanceof Error ? error.message : String(error)})`);
     });
@@ -142,6 +202,36 @@ export class WorkspaceTools {
       summary: `read ${path.relative(this.root, absolutePath)}`,
       content: clippedContent
     };
+  }
+
+  private async inspectDocument(requestedPath: string): Promise<ToolResult> {
+    if (!requestedPath) {
+      return denied("inspect_document requires a path.");
+    }
+
+    if (isPlaceholderPath(requestedPath)) {
+      return denied(`inspect_document denied placeholder path: ${requestedPath}`);
+    }
+
+    if (isSensitivePath(requestedPath)) {
+      return denied(`inspect_document denied sensitive path: ${requestedPath}`);
+    }
+
+    const absolutePath = await this.resolveReadPath(requestedPath);
+    const extension = path.extname(absolutePath).toLowerCase();
+    if (isLikelyTextFile(absolutePath)) {
+      return await this.readFile(requestedPath);
+    }
+
+    if (extension === ".pdf") {
+      return await extractPdfText(absolutePath, this.timeoutMs, this.signal);
+    }
+
+    if (extension === ".docx") {
+      return await extractDocxText(absolutePath);
+    }
+
+    return denied(`inspect_document does not support ${extension || "this file type"} yet.`);
   }
 
   private async searchText(query: string): Promise<ToolResult> {
@@ -226,7 +316,7 @@ export class WorkspaceTools {
       return denied(`run_shell denied. ${shellSafetyError}`);
     }
 
-    const output = await runCommand(command, this.root, this.timeoutMs);
+    const output = await runCommand(command, this.root, this.timeoutMs, this.signal);
     return {
       ok: output.exitCode === 0,
       summary: `command exited ${output.exitCode}`,
@@ -416,7 +506,7 @@ async function findNearestExistingParent(absolutePath: string): Promise<string> 
   }
 }
 
-function runCommand(command: string, cwd: string, timeoutMs: number): Promise<{ exitCode: number | null; output: string }> {
+function runCommand(command: string, cwd: string, timeoutMs: number, signal?: AbortSignal): Promise<{ exitCode: number | null; output: string }> {
   const isWindows = platform() === "win32";
   const shellExecutable = isWindows ? "powershell.exe" : "bash";
   const shellArgs = isWindows ? ["-NoProfile", "-Command", command] : ["-lc", command];
@@ -424,6 +514,7 @@ function runCommand(command: string, cwd: string, timeoutMs: number): Promise<{ 
   return new Promise((resolve) => {
     const child = spawn(shellExecutable, shellArgs, {
       cwd,
+      signal,
       windowsHide: true
     });
 
@@ -439,6 +530,14 @@ function runCommand(command: string, cwd: string, timeoutMs: number): Promise<{ 
 
     child.stderr.on("data", (chunk: Buffer) => {
       output += chunk.toString("utf8");
+    });
+
+    child.on("error", (error: NodeJS.ErrnoException) => {
+      clearTimeout(timeout);
+      resolve({
+        exitCode: error.name === "AbortError" ? null : 1,
+        output: error.name === "AbortError" ? "Command aborted." : error.message
+      });
     });
 
     child.on("close", (exitCode: number | null) => {
@@ -477,8 +576,117 @@ function isLikelyTextFile(filePath: string): boolean {
   return textFileExtensions.has(path.extname(filePath).toLowerCase());
 }
 
+async function extractPdfText(filePath: string, timeoutMs: number, signal?: AbortSignal): Promise<ToolResult> {
+  try {
+    const { stdout } = await execFileAsync("pdftotext", ["-layout", filePath, "-"], {
+      timeout: timeoutMs,
+      maxBuffer: 2_000_000,
+      signal,
+      windowsHide: true
+    });
+    return {
+      ok: true,
+      summary: `extracted text from ${path.basename(filePath)}`,
+      content: clip(stdout.trim() || "No extractable PDF text found.", 20_000)
+    };
+  } catch (error) {
+    return denied(`PDF text extraction needs pdftotext on PATH or a text-based PDF. ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+async function extractDocxText(filePath: string): Promise<ToolResult> {
+  try {
+    const archive = await readFile(filePath);
+    const xml = readZipEntryText(archive, "word/document.xml");
+    const text = wordXmlToText(xml);
+    return {
+      ok: true,
+      summary: `extracted text from ${path.basename(filePath)}`,
+      content: clip(text || "No extractable DOCX text found.", 20_000)
+    };
+  } catch (error) {
+    return denied(`DOCX text extraction needs unzip on PATH and a valid .docx file. ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+function readZipEntryText(archive: Buffer, entryName: string): string {
+  const endOfCentralDirectoryOffset = findEndOfCentralDirectory(archive);
+  if (endOfCentralDirectoryOffset < 0) {
+    throw new Error("invalid zip archive");
+  }
+
+  const centralDirectoryOffset = archive.readUInt32LE(endOfCentralDirectoryOffset + 16);
+  const centralDirectoryEntries = archive.readUInt16LE(endOfCentralDirectoryOffset + 10);
+  let offset = centralDirectoryOffset;
+
+  for (let index = 0; index < centralDirectoryEntries; index += 1) {
+    if (archive.readUInt32LE(offset) !== 0x02014b50) {
+      throw new Error("invalid zip central directory");
+    }
+
+    const compressionMethod = archive.readUInt16LE(offset + 10);
+    const compressedSize = archive.readUInt32LE(offset + 20);
+    const fileNameLength = archive.readUInt16LE(offset + 28);
+    const extraLength = archive.readUInt16LE(offset + 30);
+    const commentLength = archive.readUInt16LE(offset + 32);
+    const localHeaderOffset = archive.readUInt32LE(offset + 42);
+    const fileName = archive.subarray(offset + 46, offset + 46 + fileNameLength).toString("utf8");
+
+    if (fileName === entryName) {
+      if (archive.readUInt32LE(localHeaderOffset) !== 0x04034b50) {
+        throw new Error("invalid zip local header");
+      }
+
+      const localFileNameLength = archive.readUInt16LE(localHeaderOffset + 26);
+      const localExtraLength = archive.readUInt16LE(localHeaderOffset + 28);
+      const dataStart = localHeaderOffset + 30 + localFileNameLength + localExtraLength;
+      const compressedData = archive.subarray(dataStart, dataStart + compressedSize);
+      if (compressionMethod === 0) {
+        return compressedData.toString("utf8");
+      }
+
+      if (compressionMethod === 8) {
+        return inflateRawSync(compressedData).toString("utf8");
+      }
+
+      throw new Error(`unsupported zip compression method ${compressionMethod}`);
+    }
+
+    offset += 46 + fileNameLength + extraLength + commentLength;
+  }
+
+  throw new Error(`${entryName} not found`);
+}
+
+function findEndOfCentralDirectory(archive: Buffer): number {
+  for (let offset = archive.length - 22; offset >= Math.max(0, archive.length - 65_557); offset -= 1) {
+    if (archive.readUInt32LE(offset) === 0x06054b50) {
+      return offset;
+    }
+  }
+
+  return -1;
+}
+
+function wordXmlToText(xml: string): string {
+  return xml
+    .replace(/<w:tab\/>/g, "\t")
+    .replace(/<\/w:p>/g, "\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, "\"")
+    .replace(/&apos;/g, "'")
+    .trim();
+}
+
 function normalizeRelative(root: string, filePath: string): string {
   return path.relative(root, filePath).split(path.sep).join("/");
+}
+
+function normalizeSlashPath(value: string): string {
+  return value.split(path.sep).join("/");
 }
 
 function clip(content: string, maxLength: number): string {

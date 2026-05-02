@@ -1,4 +1,5 @@
 import type { ModelProvider, ModelTelemetry, SessionTelemetry } from "./types.js";
+import type { OpenRouterTokenRates } from "./openrouter.js";
 
 type TokenCostRate = {
   inputPerMillion: number;
@@ -57,13 +58,51 @@ export function estimateTokens(value: string): number {
 export function attachTokenCost(
   telemetry: Omit<ModelTelemetry, "estimatedCostUsd" | "costSource">,
   provider: ModelProvider,
-  model: string
+  model: string,
+  openRouterRates?: OpenRouterTokenRates | null,
+  providerCostUsd?: number | null
 ): ModelTelemetry {
   if (provider === "ollama") {
     return {
       ...telemetry,
       estimatedCostUsd: 0,
       costSource: "local"
+    };
+  }
+
+  if (provider === "openrouter") {
+    if (providerCostUsd !== undefined && providerCostUsd !== null) {
+      return {
+        ...telemetry,
+        cachedPromptTokens: Math.min(telemetry.cachedPromptTokens, telemetry.promptTokens),
+        estimatedCostUsd: providerCostUsd,
+        costSource: "api-pricing"
+      };
+    }
+
+    if (!openRouterRates) {
+      return {
+        ...telemetry,
+        cachedPromptTokens: Math.min(telemetry.cachedPromptTokens, telemetry.promptTokens),
+        estimatedCostUsd: null,
+        costSource: "unknown"
+      };
+    }
+
+    const cachedPromptTokens = Math.min(telemetry.cachedPromptTokens, telemetry.promptTokens);
+    const cacheWriteTokens = Math.min(telemetry.cacheWriteTokens, Math.max(0, telemetry.promptTokens - cachedPromptTokens));
+    const uncachedPromptTokens = Math.max(0, telemetry.promptTokens - cachedPromptTokens - cacheWriteTokens);
+    const estimatedCostUsd =
+      uncachedPromptTokens * openRouterRates.inputPerToken +
+      cachedPromptTokens * openRouterRates.cachedInputPerToken +
+      cacheWriteTokens * openRouterRates.cacheWritePerToken +
+      telemetry.responseTokens * openRouterRates.outputPerToken;
+
+    return {
+      ...telemetry,
+      cachedPromptTokens,
+      estimatedCostUsd,
+      costSource: "api-pricing"
     };
   }
 
@@ -97,6 +136,7 @@ export function emptySessionTelemetry(): SessionTelemetry {
     requests: 0,
     promptTokens: 0,
     cachedPromptTokens: 0,
+    cacheWriteTokens: 0,
     responseTokens: 0,
     totalTokens: 0,
     estimatedCostUsd: null
@@ -115,6 +155,7 @@ export function addTelemetryToSession(session: SessionTelemetry, telemetry: Mode
     requests: session.requests + 1,
     promptTokens: session.promptTokens + telemetry.promptTokens,
     cachedPromptTokens: session.cachedPromptTokens + telemetry.cachedPromptTokens,
+    cacheWriteTokens: session.cacheWriteTokens + telemetry.cacheWriteTokens,
     responseTokens: session.responseTokens + telemetry.responseTokens,
     totalTokens: session.totalTokens + telemetry.totalTokens,
     estimatedCostUsd

@@ -67,12 +67,12 @@ function buildSidebarRows(props: {
   advisors: AdvisorNote[];
   activeHost: OllamaHostDetails | null;
 }): SidebarLine[] {
-  const hostDeviceName = props.activeHost?.host.deviceName ?? (props.provider === "ollama" ? formatOllamaHost(props.ollamaUrl) : `${props.provider} oauth`);
-  const hostRoute = props.activeHost?.host.url ?? props.ollamaUrl;
-  const hostNetwork = props.activeHost?.host.kind ?? (props.provider === "ollama" ? "local" : "cloud");
+  const hostDeviceName = props.provider === "ollama" ? props.activeHost?.host.deviceName ?? formatOllamaHost(props.ollamaUrl) : `${props.provider} api`;
+  const hostRoute = props.provider === "ollama" ? props.activeHost?.host.url ?? props.ollamaUrl : `${props.provider} cloud`;
+  const hostNetwork = props.provider === "ollama" ? props.activeHost?.host.kind ?? "local" : "cloud";
   const hostVersion = props.activeHost?.host.version ?? "-";
   const hostModels = props.activeHost ? `${props.activeHost.models.length} available` : "-";
-  const hostLoaded = props.activeHost?.runningModels.length ? props.activeHost.runningModels.join(", ") : "idle";
+  const hostLoaded = props.activeHost?.runningModels.length ? props.activeHost.runningModels.map((model) => formatRunningModel(model)).join(", ") : "idle";
   const rows: SidebarLine[] = [
     section("Session"),
     row("provider", props.provider, props.provider === "ollama" ? "green" : "cyan"),
@@ -112,7 +112,7 @@ function buildSidebarRows(props: {
       text: advisor.role,
       color: "yellow"
     });
-    rows.push(...wrapSidebarText(advisor.message));
+    rows.push(...summarizeAdvisorText(advisor.message));
     rows.push(spacer());
   }
 
@@ -147,6 +147,23 @@ function spacer(): SidebarLine {
 
 function wrapSidebarText(value: string): SidebarLine[] {
   return wrapText(value, 28).map(muted);
+}
+
+function summarizeAdvisorText(value: string): SidebarLine[] {
+  const summary = value
+    .replace(/\*\*/g, "")
+    .split(/\r?\n/)
+    .map((line) => line.replace(/^[-*]\s*/, "").trim())
+    .filter(Boolean)
+    .slice(0, 3)
+    .join(" ");
+  const rows = wrapText(summary || "Advisor brief available in transcript.", 28).slice(0, 4);
+  return rows.map(muted);
+}
+
+function formatRunningModel(model: OllamaHostDetails["runningModels"][number]): string {
+  const vram = model.sizeVramBytes ? ` ${Math.round((model.sizeVramBytes / 1024 ** 3) * 10) / 10}G vram` : "";
+  return `${model.name}${vram}`;
 }
 
 function clampScrollOffset(offset: number, rowCount: number, visibleRowCount: number): number {

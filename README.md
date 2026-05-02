@@ -2,7 +2,7 @@
 
 # PatchPilot
 
-**A local-first coding-agent TUI that makes repo changes visible, permissioned, and easy to review.**
+**A local-first coding-agent TUI that makes repo changes visible, permissioned, and easy to review across local, remote, and cloud model routes.**
 
 [![CI](https://github.com/jx-grxf/PatchPilot/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/jx-grxf/PatchPilot/actions/workflows/ci.yml)
 ![Status](https://img.shields.io/badge/status-public%20preview-0ea5e9)
@@ -13,7 +13,7 @@
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 <p>
-  <strong>Visible tools.</strong> Explicit permissions. Local-first model support. Remote GPU friendly.
+  <strong>Visible tools.</strong> Explicit permissions. Local Ollama. Remote Ollama. Gemini. OpenRouter. NVIDIA. Codex.
 </p>
 
 </div>
@@ -26,7 +26,7 @@
   <img src="docs/showcase/patchpilot-showcase.svg" alt="PatchPilot terminal interface overview" width="920">
 </p>
 
-PatchPilot is a terminal interface for running coding-agent tasks inside a repository. It shows what the agent is doing, keeps risky actions behind explicit permissions, and supports local Ollama, remote Ollama, Gemini, and Codex CLI OAuth backends.
+PatchPilot is a terminal interface for running coding-agent tasks inside a repository. It shows what the agent is doing, keeps risky actions behind explicit permissions, and supports local Ollama, remote Ollama, Google Gemini, OpenRouter, NVIDIA NIM-compatible endpoints, and Codex CLI OAuth.
 
 ---
 
@@ -49,20 +49,21 @@ PatchPilot is a terminal interface for running coding-agent tasks inside a repos
 
 | Feature | What it means |
 |---|---|
-| Local-first by default | Uses Ollama on your own machine unless you choose another provider. |
+| Local-first by default | Uses Ollama on your own machine unless you choose another route. |
 | Remote GPU workflow | Connect your laptop TUI to an Ollama host on a desktop, LAN, or Tailscale machine. |
-| Guided onboarding | First-run setup walks through provider, auth, host discovery, and model choice. |
-| Observable agent loop | Transcript, tool calls, telemetry, token counts, cache hits, latency, and cost estimates are visible. |
+| Cloud provider routes | Gemini, OpenRouter, NVIDIA, and Codex CLI OAuth are available from one TUI. |
+| Guided onboarding | First-run setup walks through local/remote mode, provider auth, host discovery, and model choice. |
+| Observable agent loop | Transcript, tool calls, telemetry, token counts, provider cache hits, latency, and cost estimates are visible. |
 | Explicit permissions | File writes require `--apply`; shell commands require `--allow-shell`. |
 | Workspace boundary | File tools are constrained to the selected project root and block common secret files. |
 | Slash-command palette | Type `/` for browsable commands, provider switching, modes, models, diagnostics, and host selection. |
-| Advisor subagents | Planner and reviewer calls can brief the main agent before it edits. |
-| Multi-provider support | Ollama, Google Gemini, and OpenAI Codex CLI routes are supported behind one TUI. |
+| Advisor subagents | Explorer, planner, and reviewer advisor calls can brief the main agent before it edits. |
+| Ollama eject | `/eject` unloads the active Ollama model; `/eject all` clears models PatchPilot used in the session. |
 | CI-ready TypeScript | Strict TypeScript, Vitest, GitHub Actions, and package verification are included. |
 
 ## Why This Exists
 
-Most local coding-agent experiments fall into one of two traps: they are either raw scripts that feel painful to use, or polished tools that hide too much of what is happening. PatchPilot aims for the middle: a practical TUI where every file read, search, proposed write, command, and model route stays visible.
+Most local coding-agent experiments fall into one of two traps: they are either raw scripts that feel painful to use, or polished tools that hide too much of what is happening. PatchPilot aims for the middle: a practical TUI where every file read, search, proposed write, command, model route, and token/cost signal stays visible.
 
 The core workflow is intentionally simple:
 
@@ -111,6 +112,8 @@ Use build permissions only when you intentionally want PatchPilot to modify file
 patchpilot "add tests for the parser" --apply --allow-shell
 ```
 
+API keys are stored by onboarding in `~/.patchpilot/.env`.
+
 ## Usage
 
 ```bash
@@ -121,30 +124,36 @@ patchpilot doctor [options]
 | Option | Description |
 |---|---|
 | `--workspace <path>` | Project root the agent may inspect. Defaults to the current directory. |
-| `--provider <name>` | Model provider route. Supports `ollama`, `gemini`/`google`, and `codex`/`openai`/`openai-codex`. |
+| `--provider <name>` | Model provider route. Supports `ollama`, `gemini`/`google`, `openrouter`/`open-router`, `nvidia`/`nim`, and `codex`/`openai`/`openai-codex`. |
 | `--model <name>` | Model name for the selected provider. |
 | `--ollama-url <url>` | Ollama base URL. Defaults to `http://127.0.0.1:11434`. |
 | `--steps <count>` | Maximum agent loop steps before stopping. |
+| `--thinking <mode>` | Step-budget mode: `fixed` or `adaptive`. |
+| `--reasoning <effort>` | Provider reasoning effort: `low`, `medium`, `high`, `xhigh`, or `adaptive`. |
 | `--apply` | Allows file writes inside the workspace. |
 | `--allow-shell` | Allows shell commands inside the workspace. |
-| `--no-subagents` | Disables planner/reviewer advisor calls for faster runs. |
+| `--no-subagents` | Disables explorer/planner/reviewer advisor calls for faster runs. |
 
 Useful slash commands inside the TUI:
 
 | Command | Description |
 |---|---|
 | `/help` | Show available commands. |
+| `/help <command>` | Explain one command, for example `/help think` or `/help model`. |
 | `/onboarding` | Open guided provider/auth/model setup. |
 | `/mode plan` | Read-only planning mode. |
 | `/mode build` | Implementation mode; writes and shell can still be toggled separately. |
+| `/think fixed\|adaptive` | Switch between fixed and adaptive step budgets. |
+| `/reasoning low\|medium\|high\|xhigh\|adaptive` | Set provider reasoning effort where supported. |
 | `/write on\|off` | Enable or disable workspace writes. |
 | `/shell on\|off` | Enable or disable shell commands. |
 | `/agents on\|off` | Enable or disable advisor subagents. |
-| `/provider ollama\|gemini\|codex` | Switch inference provider. CLI/env aliases also support `google`, `openai`, and `openai-codex`. |
-| `/model <name>` | Switch model for the current provider. |
-| `/models` | Refresh and browse models. |
+| `/provider ollama\|gemini\|openrouter\|nvidia\|codex` | Switch inference provider. |
+| `/model <query>` | Search and switch the model for the current provider. |
+| `/models [query\|number]` | Refresh, search, browse, or select provider models. |
 | `/connect` | Scan LAN/Tailscale for reachable Ollama hosts. |
 | `/connect <url>` | Connect to a specific Ollama host. |
+| `/eject [model\|all]` | Unload Ollama model(s) from the active host. |
 | `/hosts` | Re-scan reachable Ollama hosts. |
 | `/doctor` | Run provider diagnostics from inside the TUI. |
 | `/clear` | Clear the current transcript. |
@@ -154,20 +163,25 @@ The transcript and sidebar have internal scroll areas. With an empty prompt, use
 
 ## Providers
 
-| Provider route | Accepted values | Best for | Setup |
-|---|---|---|---|
-| Ollama local | `ollama` | Private local coding work and offline experiments. | Install Ollama, pull a model, run `patchpilot`. |
-| Ollama remote | `ollama` with `--ollama-url` or `/connect` | Laptop editing with a stronger desktop/server GPU. | Expose Ollama on the host, then use `/connect` or `--ollama-url`. |
-| Google Gemini | `gemini`, `google` | Fast cloud inference through a Gemini API key. | Store `GEMINI_API_KEY` in `~/.patchpilot/config.env` or use onboarding. |
-| OpenAI Codex CLI | `codex`, `openai`, `openai-codex` | Using an existing Codex CLI OAuth login. | Run `codex login`, then `patchpilot --provider codex`. |
+| Provider route | Accepted values | Default model | Best for | Setup |
+|---|---|---|---|---|
+| Ollama local | `ollama` | `qwen2.5-coder:7b` | Private local coding work and offline experiments. | Install Ollama, pull a model, run `patchpilot`. |
+| Ollama remote | `ollama` with `--ollama-url` or `/connect` | Host model inventory | Laptop editing with a stronger desktop/server GPU. | Expose Ollama on the host, then use `/connect` or `--ollama-url`. |
+| Google Gemini | `gemini`, `google` | `gemini-2.5-flash` | Fast cloud inference through a Gemini API key. | Store `GEMINI_API_KEY` in `~/.patchpilot/.env` or use onboarding. |
+| OpenRouter | `openrouter`, `open-router` | `openrouter/auto` | Broad model routing, auto model selection, and free variants. | Store `OPENROUTER_API_KEY` in `~/.patchpilot/.env` or use onboarding. |
+| NVIDIA | `nvidia`, `nim` | `nvidia/usdcode-llama-3.1-70b-instruct` | NVIDIA NIM OpenAI-compatible endpoints. | Store `NVIDIA_API_KEY` in `~/.patchpilot/.env` or use onboarding. |
+| Codex CLI | `codex`, `openai`, `openai-codex` | `gpt-5.4` | Using an existing Codex CLI OAuth login. | Run `codex login`, then `patchpilot --provider codex`. |
 
 Examples:
 
 ```bash
 patchpilot --provider ollama --model qwen2.5-coder:7b
 patchpilot --provider gemini --model gemini-2.5-flash
+patchpilot --provider openrouter --model openrouter/auto
+patchpilot --provider nvidia --model nvidia/usdcode-llama-3.1-70b-instruct
 patchpilot --provider codex --model gpt-5.4
 patchpilot --provider google --model gemini-2.5-flash
+patchpilot --provider nim --model nvidia/usdcode-llama-3.1-70b-instruct
 patchpilot --provider openai --model gpt-5.4
 ```
 
@@ -176,8 +190,16 @@ Provider diagnostics:
 ```bash
 patchpilot doctor --provider ollama
 patchpilot doctor --provider gemini
+patchpilot doctor --provider openrouter
+patchpilot doctor --provider nvidia
 patchpilot doctor --provider codex
 ```
+
+PatchPilot caches model discovery for a short TTL inside the running TUI, so normal prompts do not re-query providers every time. Run `/models` again when you intentionally want to refresh the visible list.
+
+PatchPilot reads provider cache telemetry when the provider reports it, for example Codex cached input tokens or OpenRouter `prompt_tokens_details.cached_tokens`, then displays cache hit rate as `cached / input`.
+
+OpenRouter `:free` models are rate-limited by OpenRouter. PatchPilot warns when a selected model ID ends in `:free`.
 
 ## Remote Ollama
 
@@ -222,7 +244,7 @@ PatchPilot is designed to keep powerful actions boring and reviewable:
 - Writes are disabled unless `--apply` is set.
 - Shell commands are disabled unless `--allow-shell` is set.
 - Shell execution uses a restricted single-command runner.
-- Provider config is stored in `~/.patchpilot/config.env`, not in the current repository by default.
+- Provider config is stored in `~/.patchpilot/.env`, not in the current repository by default.
 - Tool output is shown in the transcript and fed back into the agent in clipped form.
 - Cloud providers may process prompts and context remotely under their own terms.
 
@@ -236,7 +258,7 @@ This is still experimental agent tooling. Review diffs, avoid sensitive reposito
 | Runtime | Node.js 22+ |
 | TUI | Ink, React, ink-text-input |
 | Agent protocol | JSON command envelope validated with Zod |
-| Providers | Ollama chat API, Gemini generateContent API, Codex CLI OAuth backend |
+| Providers | Ollama chat API, Gemini generateContent API, OpenRouter OpenAI-compatible API, NVIDIA OpenAI-compatible API, Codex CLI OAuth backend |
 | Tests | Vitest |
 | CI | GitHub Actions |
 

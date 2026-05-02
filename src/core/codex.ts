@@ -1,14 +1,18 @@
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
-import type { ModelChatOptions, ModelChatResult, ModelTelemetry } from "./types.js";
+import { promisify } from "node:util";
+import type { ModelChatOptions, ModelChatResult, ModelTelemetry, ReasoningEffort } from "./types.js";
 import { attachTokenCost, estimateTokens } from "./tokenAccounting.js";
 
-export const defaultCodexModel = "gpt-5.4";
+const execFileAsync = promisify(execFile);
+
+export const defaultCodexModel = "gpt-5.5";
 
 export const codexOAuthModels = [
+  "gpt-5.5",
   "gpt-5.4",
   "gpt-5.2-codex",
   "gpt-5.1-codex-max",
@@ -36,10 +40,12 @@ export class CodexCliClient {
       const prompt = buildCodexPrompt(options);
       const usage = await runCodexExec({
         model: options.model,
+        reasoningEffort: options.reasoningEffort,
         workspace: this.workspace,
         prompt,
         outputPath,
-        timeoutMs: this.timeoutMs
+        timeoutMs: this.timeoutMs,
+        signal: options.signal
       });
       const content = (await readFile(outputPath, "utf8")).trim();
       if (!content) {
@@ -62,6 +68,25 @@ export class CodexCliClient {
   }
 
   async listModels(): Promise<string[]> {
+    return listCodexModels();
+  }
+}
+
+export async function listCodexModels(): Promise<string[]> {
+  try {
+    const { stdout } = await execFileAsync("codex", ["debug", "models", "--bundled"], {
+      timeout: 2500,
+      maxBuffer: 4_000_000,
+      windowsHide: true
+    });
+    const catalog = JSON.parse(stdout) as { models?: Array<{ slug?: unknown; visibility?: unknown }> };
+    const models =
+      catalog.models
+        ?.filter((model) => model.visibility === "list" && typeof model.slug === "string")
+        .map((model) => String(model.slug))
+        .filter(Boolean) ?? [];
+    return models.length > 0 ? models : codexOAuthModels;
+  } catch {
     return codexOAuthModels;
   }
 }
@@ -89,10 +114,12 @@ function buildCodexPrompt(options: ModelChatOptions): string {
 
 function runCodexExec(options: {
   model: string;
+  reasoningEffort?: ReasoningEffort;
   workspace: string;
   prompt: string;
   outputPath: string;
   timeoutMs: number;
+  signal?: AbortSignal;
 }): Promise<CodexUsage | null> {
   return new Promise((resolve, reject) => {
     const child = spawn(
@@ -102,6 +129,7 @@ function runCodexExec(options: {
         "--json",
         "--model",
         options.model,
+        ...(options.reasoningEffort ? ["-c", `model_reasoning_effort="${options.reasoningEffort}"`] : []),
         "--sandbox",
         "read-only",
         "--cd",
@@ -113,6 +141,7 @@ function runCodexExec(options: {
       {
         cwd: options.workspace,
         stdio: ["pipe", "pipe", "pipe"],
+        signal: options.signal,
         windowsHide: true
       }
     );
@@ -130,9 +159,13 @@ function runCodexExec(options: {
     child.stderr.on("data", (chunk: Buffer) => {
       stderr += chunk.toString("utf8");
     });
-    child.on("error", (error) => {
+    child.on("error", (error: NodeJS.ErrnoException) => {
       clearTimeout(timeout);
-      reject(new Error(`Cannot run Codex CLI. Install it and run codex login. ${error.message}`));
+      reject(
+        error.name === "AbortError"
+          ? new Error("Codex CLI run aborted.")
+          : new Error(`Cannot run Codex CLI. Install it and run codex login. ${error.message}`)
+      );
     });
     child.on("close", (exitCode) => {
       clearTimeout(timeout);
@@ -189,6 +222,7 @@ function toTelemetryFromUsage(usage: CodexUsage, durationMs: number, model: stri
     {
       promptTokens: usage.input_tokens,
       cachedPromptTokens: usage.cached_input_tokens ?? 0,
+      cacheWriteTokens: 0,
       responseTokens: usage.output_tokens,
       totalTokens: usage.input_tokens + usage.output_tokens,
       evalTokensPerSecond: usage.output_tokens > 0 && durationMs > 0 ? usage.output_tokens / (durationMs / 1000) : null,
@@ -210,6 +244,7 @@ function estimateTelemetry(prompt: string, content: string, durationMs: number, 
     {
       promptTokens,
       cachedPromptTokens: 0,
+      cacheWriteTokens: 0,
       responseTokens,
       totalTokens: promptTokens + responseTokens,
       evalTokensPerSecond: responseTokens > 0 && durationMs > 0 ? responseTokens / (durationMs / 1000) : null,

@@ -4,6 +4,8 @@ import TextInput from "ink-text-input";
 import type { ModelProvider } from "../../core/types.js";
 import type { OllamaHost } from "../hosts.js";
 
+export type ApiKeyProvider = "gemini" | "openrouter" | "nvidia";
+
 export type OnboardingState =
   | {
       step: "entry";
@@ -16,7 +18,18 @@ export type OnboardingState =
       step: "host-input";
     }
   | {
+      step: "api-key-choice";
+      provider: ApiKeyProvider;
+      hasExistingKey: boolean;
+    }
+  | {
       step: "gemini-key";
+    }
+  | {
+      step: "openrouter-key";
+    }
+  | {
+      step: "nvidia-key";
     }
   | {
       step: "codex-login";
@@ -42,6 +55,14 @@ const entryOptions = [
     description: "Use the Google Gemini API key from PatchPilot config"
   },
   {
+    label: "OpenRouter",
+    description: "Use OpenRouter models, including auto and free variants"
+  },
+  {
+    label: "NVIDIA",
+    description: "Use NVIDIA NIM OpenAI-compatible endpoints"
+  },
+  {
     label: "Codex",
     description: "Use the ChatGPT login through Codex CLI"
   }
@@ -61,13 +82,14 @@ export function OnboardingPanel(props: {
       ? 0
       : props.state.step === "host" || props.state.step === "host-input"
         ? 1
-        : props.state.step === "gemini-key" || props.state.step === "codex-login"
+        : props.state.step === "api-key-choice" || props.state.step === "gemini-key" || props.state.step === "openrouter-key" || props.state.step === "nvidia-key" || props.state.step === "codex-login"
           ? 2
           : 3;
-  const selectedModel = props.state.step === "model" ? props.state.models[props.selectedIndex] ?? null : null;
+  const visibleModels = props.state.step === "model" ? filterModelRows(props.input, props.state.models) : [];
+  const selectedModel = props.state.step === "model" ? visibleModels[props.selectedIndex] ?? null : null;
 
   return (
-    <Box borderStyle="round" borderColor="cyan" flexDirection="column" paddingX={2} height={Math.max(18, props.height + 4)}>
+    <Box borderStyle="round" borderColor="cyan" flexDirection="column" paddingX={2} height={props.height} overflowY="hidden">
       <Text color="cyan" bold>
         PatchPilot Setup
       </Text>
@@ -120,9 +142,48 @@ export function OnboardingPanel(props: {
           onSubmit={props.onInputSubmit}
         />
       ) : null}
+      {props.state.step === "api-key-choice" ? (
+        <SelectionList
+          title={`${providerLabel(props.state.provider)} API key`}
+          subtitle="Use up/down and Enter. Existing keys stay in PatchPilot config."
+          rows={[
+            {
+              label: props.state.hasExistingKey ? "Use Existing Key" : "Enter New Key",
+              description: props.state.hasExistingKey ? "Continue with the saved key" : "No saved key found"
+            },
+            {
+              label: "Enter New Key",
+              description: "Replace or add the key in PatchPilot config"
+            }
+          ]}
+          selectedIndex={props.selectedIndex}
+        />
+      ) : null}
       {props.state.step === "gemini-key" ? (
         <InputStep
           title="Enter your Gemini API key"
+          description="It will be stored in PatchPilot's config directory, not in the repository."
+          prompt="key  > "
+          value={props.input}
+          onChange={props.onInputChange}
+          onSubmit={props.onInputSubmit}
+          mask="*"
+        />
+      ) : null}
+      {props.state.step === "openrouter-key" ? (
+        <InputStep
+          title="Enter your OpenRouter API key"
+          description="It will be stored in PatchPilot's config directory, not in the repository."
+          prompt="key  > "
+          value={props.input}
+          onChange={props.onInputChange}
+          onSubmit={props.onInputSubmit}
+          mask="*"
+        />
+      ) : null}
+      {props.state.step === "nvidia-key" ? (
+        <InputStep
+          title="Enter your NVIDIA API key"
           description="It will be stored in PatchPilot's config directory, not in the repository."
           prompt="key  > "
           value={props.input}
@@ -141,21 +202,44 @@ export function OnboardingPanel(props: {
         </Box>
       ) : null}
       {props.state.step === "model" ? (
-        <SelectionList
-          title={`Choose a ${props.state.provider} model${props.state.deviceName ? ` on ${props.state.deviceName}` : ""}`}
-          subtitle="Use up/down and Enter. Left arrow goes back."
-          rows={props.state.models.map((model) => ({
-            label: model,
-            description: model === selectedModel ? "selected" : "available"
-          }))}
-          selectedIndex={props.selectedIndex}
-        />
+        <>
+          <InputStep
+            title={`Choose a ${props.state.provider} model${props.state.deviceName ? ` on ${props.state.deviceName}` : ""}`}
+            description="Type to search. Use up/down and Enter. Left arrow goes back."
+            prompt="find > "
+            value={props.input}
+            onChange={props.onInputChange}
+            onSubmit={props.onInputSubmit}
+          />
+          <SelectionList
+            title=""
+            subtitle={`${visibleModels.length} matching model${visibleModels.length === 1 ? "" : "s"}`}
+            rows={visibleModels.map((model) => ({
+              label: model,
+              description: model === selectedModel ? "selected" : "available"
+            }))}
+            selectedIndex={props.selectedIndex}
+          />
+        </>
       ) : null}
       <Box marginTop={1}>
         <Text color="gray">Remote host mode keeps file reads, writes, shell, Git, and tests on this device. Only inference moves.</Text>
       </Box>
     </Box>
   );
+}
+
+function providerLabel(provider: ApiKeyProvider): string {
+  return provider === "openrouter" ? "OpenRouter" : provider === "nvidia" ? "NVIDIA" : "Gemini";
+}
+
+function filterModelRows(query: string, models: string[]): string[] {
+  const normalizedQuery = query.trim().toLowerCase();
+  if (!normalizedQuery) {
+    return models;
+  }
+
+  return models.filter((model) => normalizedQuery.split(/\s+/).every((token) => model.toLowerCase().includes(token)));
 }
 
 function InputStep(props: {
