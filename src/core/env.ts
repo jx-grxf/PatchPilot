@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 
@@ -43,7 +43,11 @@ export function saveDotEnvValues(values: Record<string, string>, cwd = process.c
     nextLines.push(`${key}=${quoteEnvValue(value)}`);
   }
 
-  writeFileSync(envPath, `${nextLines.join("\n").replace(/\n+$/, "")}\n`, "utf8");
+  writeFileSync(envPath, `${nextLines.join("\n").replace(/\n+$/, "")}\n`, {
+    encoding: "utf8",
+    mode: 0o600
+  });
+  tryChmod(envPath, 0o600);
 }
 
 export function getPatchPilotConfigDir(env: NodeJS.ProcessEnv = process.env): string {
@@ -65,8 +69,17 @@ export function loadPatchPilotEnv(env: NodeJS.ProcessEnv = process.env): void {
 
 export function savePatchPilotEnvValues(values: Record<string, string>, env: NodeJS.ProcessEnv = process.env): void {
   const configDir = getPatchPilotConfigDir(env);
-  mkdirSync(configDir, { recursive: true });
+  mkdirSync(configDir, { recursive: true, mode: 0o700 });
+  tryChmod(configDir, 0o700);
   saveDotEnvValues(values, configDir);
+}
+
+function tryChmod(filePath: string, mode: number): void {
+  try {
+    chmodSync(filePath, mode);
+  } catch {
+    // Best-effort hardening; chmod can be limited on some Windows filesystems.
+  }
 }
 
 function parseEnvLine(line: string): { key: string; value: string } | null {

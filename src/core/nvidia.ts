@@ -1,7 +1,7 @@
 import type { ModelChatOptions, ModelChatResult, ModelTelemetry } from "./types.js";
 import { attachTokenCost } from "./tokenAccounting.js";
 
-export const defaultNvidiaModel = "nvidia/usdcode-llama-3.1-70b-instruct";
+export const defaultNvidiaModel = "meta/llama-3.1-70b-instruct";
 export const defaultNvidiaBaseUrl = "https://integrate.api.nvidia.com/v1";
 
 type NvidiaModelsResponse = {
@@ -63,7 +63,7 @@ export class NvidiaClient {
         messages: options.messages,
         max_tokens: this.runtimeOptions.maxTokens,
         temperature: this.runtimeOptions.temperature,
-        response_format: options.formatJson ? { type: "json_object" } : undefined
+        response_format: options.formatJson ? agentResponseFormat : undefined
       }),
       signal: options.signal
     });
@@ -114,6 +114,54 @@ export class NvidiaClient {
     }
   }
 }
+
+const agentResponseFormat = {
+  type: "json_schema",
+  json_schema: {
+    name: "patchpilot_agent_response",
+    strict: true,
+    schema: {
+      anyOf: [
+        {
+          type: "object",
+          additionalProperties: false,
+          required: ["action", "message", "tool_calls"],
+          properties: {
+            action: { const: "tools" },
+            message: { type: "string" },
+            tool_calls: {
+              type: "array",
+              minItems: 1,
+              items: {
+                type: "object",
+                additionalProperties: false,
+                required: ["name", "arguments"],
+                properties: {
+                  name: {
+                    enum: ["list_files", "read_file", "search_text", "inspect_document", "write_file", "run_shell"]
+                  },
+                  arguments: {
+                    type: "object",
+                    additionalProperties: true
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          type: "object",
+          additionalProperties: false,
+          required: ["action", "message"],
+          properties: {
+            action: { const: "final" },
+            message: { type: "string" }
+          }
+        }
+      ]
+    }
+  }
+} as const;
 
 export function readNvidiaApiKey(env: NodeJS.ProcessEnv = process.env): string {
   return env.NVIDIA_API_KEY?.trim() || env.PATCHPILOT_NVIDIA_API_KEY?.trim() || "";

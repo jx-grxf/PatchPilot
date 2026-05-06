@@ -56,12 +56,15 @@ describe("GeminiClient", () => {
       ]
     });
 
-    expect(fetchMock).toHaveBeenCalledWith(
-      "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=test-key",
-      expect.objectContaining({
-        method: "POST"
-      })
-    );
+      expect(fetchMock).toHaveBeenCalledWith(
+        "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
+        expect.objectContaining({
+          method: "POST",
+          headers: expect.objectContaining({
+            "x-goog-api-key": "test-key"
+          })
+        })
+      );
     expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toMatchObject({
       systemInstruction: {
         parts: [

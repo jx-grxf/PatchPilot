@@ -6,9 +6,20 @@ export type InkColor = "gray" | "white" | "green" | "yellow" | "red" | "cyan";
 export type StatusColor = "gray" | "green" | "yellow" | "red" | "cyan";
 
 export function getModelHint(model: string): { text: string; color: "green" | "yellow" } {
-  if (/\bcoder\b|qwen.*coder|deepseek-coder|codestral|starcoder/i.test(model)) {
+  const normalizedModel = model.toLowerCase();
+  if (/\bcoder\b|qwen.*coder|deepseek-coder|codestral|starcoder|dracarys/i.test(normalizedModel)) {
     return {
       text: "coding model ready",
+      color: "green"
+    };
+  }
+
+  if (
+    /(llama-?3(\.\d+)?|nemotron|deepseek|qwen|mixtral|mistral|gemini|claude|gpt|o\d)/i.test(normalizedModel) &&
+    (/\b(49b|70b|72b|90b|120b|405b|large|pro|super|ultra|sonnet|opus|reason)\b/i.test(normalizedModel) || /gpt-[45]|claude|gemini-2\.5-pro|o\d/i.test(normalizedModel))
+  ) {
+    return {
+      text: "agent-capable model selected",
       color: "green"
     };
   }

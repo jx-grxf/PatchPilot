@@ -28,12 +28,13 @@ type OllamaPsResponse = {
   models?: Array<{
     name?: string;
     model?: string;
-    size?: number;
-    size_vram?: number;
-    expires_at?: string;
-    details?: {
+      size?: number;
+      size_vram?: number;
+      expires_at?: string;
       context_length?: number;
-    };
+      details?: {
+        context_length?: number;
+      };
   }>;
 };
 
@@ -125,7 +126,7 @@ export class OllamaClient {
                 sizeBytes: readNullableFiniteNumber(model.size),
                 sizeVramBytes: readNullableFiniteNumber(model.size_vram),
                 expiresAt: typeof model.expires_at === "string" ? model.expires_at : null,
-                contextLength: readNullableFiniteNumber(model.details?.context_length)
+                contextLength: readNullableFiniteNumber(model.context_length ?? model.details?.context_length)
               }
             : null;
         })

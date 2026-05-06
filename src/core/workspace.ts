@@ -413,11 +413,24 @@ async function searchTextWithRipgrep(workspaceRoot: string, query: string): Prom
     "!coverage/**",
     "!.next/**",
     "!.turbo/**",
-    "!.vite/**",
-    "!build/**",
-    "!out/**",
-    "!DerivedData/**"
-  ];
+      "!.vite/**",
+      "!build/**",
+      "!out/**",
+      "!DerivedData/**",
+      "!.env",
+      "!.env.*",
+      "!.npmrc",
+      "!.pypirc",
+      "!.netrc",
+      "!**/.env",
+      "!**/.env.*",
+      "!**/.npmrc",
+      "!**/.pypirc",
+      "!**/.netrc",
+      "!**/id_rsa",
+      "!**/id_ed25519",
+      "!**/known_hosts"
+    ];
 
   return new Promise((resolve) => {
     const child = spawn(

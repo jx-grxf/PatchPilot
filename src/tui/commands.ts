@@ -75,14 +75,14 @@ export const slashCommands: SlashCommand[] = [
   {
     name: "model",
     usage: "/model <name|uncensored|default>",
-    description: "Switch the Ollama model for this session.",
+    description: "Switch the active provider model for this session.",
     category: "model",
     detail: "Use /model to show cached provider models. Use /model <query> to search and select a unique model. OpenRouter supports IDs such as openrouter/auto and :free models."
   },
   {
     name: "models",
     usage: "/models [number|name]",
-    description: "List installed Ollama models or select one.",
+    description: "List active provider models or select one.",
     category: "model",
     detail: "Loads models from the active provider and shows them in the palette. Use /models free, /models llama, or /models 3 to search or select."
   },
@@ -134,7 +134,7 @@ export const slashCommands: SlashCommand[] = [
   {
     name: "doctor",
     usage: "/doctor",
-    description: "Check Node, Git, and the selected Ollama host.",
+    description: "Check Node, Git, and active provider diagnostics.",
     category: "utility"
   },
   {

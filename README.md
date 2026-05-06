@@ -75,7 +75,13 @@ The core workflow is intentionally simple:
 
 ## Quick Start
 
-PatchPilot is currently a public-preview source install. Clone it, install dependencies, build it, and link the local CLI:
+Install the public CLI globally:
+
+```bash
+npm install -g @jx-grxf/patchpilot
+```
+
+For source development, clone it, install dependencies, build it, and link the local CLI:
 
 ```bash
 git clone https://github.com/jx-grxf/PatchPilot.git
@@ -169,8 +175,8 @@ The transcript and sidebar have internal scroll areas. With an empty prompt, use
 | Ollama remote | `ollama` with `--ollama-url` or `/connect` | Host model inventory | Laptop editing with a stronger desktop/server GPU. | Expose Ollama on the host, then use `/connect` or `--ollama-url`. |
 | Google Gemini | `gemini`, `google` | `gemini-2.5-flash` | Fast cloud inference through a Gemini API key. | Store `GEMINI_API_KEY` in `~/.patchpilot/.env` or use onboarding. |
 | OpenRouter | `openrouter`, `open-router` | `openrouter/auto` | Broad model routing, auto model selection, and free variants. | Store `OPENROUTER_API_KEY` in `~/.patchpilot/.env` or use onboarding. |
-| NVIDIA | `nvidia`, `nim` | `nvidia/usdcode-llama-3.1-70b-instruct` | NVIDIA NIM OpenAI-compatible endpoints. | Store `NVIDIA_API_KEY` in `~/.patchpilot/.env` or use onboarding. |
-| Codex CLI | `codex`, `openai`, `openai-codex` | `gpt-5.4` | Using an existing Codex CLI OAuth login. | Run `codex login`, then `patchpilot --provider codex`. |
+| NVIDIA | `nvidia`, `nim` | `meta/llama-3.1-70b-instruct` | NVIDIA NIM OpenAI-compatible endpoints. | Store `NVIDIA_API_KEY` in `~/.patchpilot/.env` or use onboarding. |
+| Codex CLI | `codex`, `openai`, `openai-codex` | `gpt-5.5` | Using an existing Codex CLI OAuth login. | Run `codex login`, then `patchpilot --provider codex`. |
 
 Examples:
 
@@ -178,11 +184,11 @@ Examples:
 patchpilot --provider ollama --model qwen2.5-coder:7b
 patchpilot --provider gemini --model gemini-2.5-flash
 patchpilot --provider openrouter --model openrouter/auto
-patchpilot --provider nvidia --model nvidia/usdcode-llama-3.1-70b-instruct
-patchpilot --provider codex --model gpt-5.4
+patchpilot --provider nvidia --model meta/llama-3.1-70b-instruct
+patchpilot --provider codex --model gpt-5.5
 patchpilot --provider google --model gemini-2.5-flash
-patchpilot --provider nim --model nvidia/usdcode-llama-3.1-70b-instruct
-patchpilot --provider openai --model gpt-5.4
+patchpilot --provider nim --model meta/llama-3.1-70b-instruct
+patchpilot --provider openai --model gpt-5.5
 ```
 
 Provider diagnostics:
