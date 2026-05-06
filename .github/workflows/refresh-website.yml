@@ -1,0 +1,22 @@
+name: Refresh website on release
+
+on:
+  release:
+    types: [published, edited, deleted]
+  workflow_dispatch:
+
+jobs:
+  refresh-website:
+    name: Trigger johannesgrof.me rebuild
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Vercel deploy hook
+        env:
+          WEBSITE_DEPLOY_HOOK_URL: ${{ secrets.WEBSITE_DEPLOY_HOOK_URL }}
+        run: |
+          if [ -z "$WEBSITE_DEPLOY_HOOK_URL" ]; then
+            echo "WEBSITE_DEPLOY_HOOK_URL secret is missing."
+            exit 1
+          fi
+
+          curl --fail --silent --show-error --request POST "$WEBSITE_DEPLOY_HOOK_URL"
