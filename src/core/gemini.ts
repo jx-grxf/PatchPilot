@@ -105,7 +105,11 @@ export class GeminiClient {
 
   async listModels(): Promise<string[]> {
     this.assertConfigured();
-    const response = await this.fetchGemini("models");
+    const response = await this.fetchGemini("models", {
+      headers: {
+        "x-goog-api-key": this.apiKey
+      }
+    });
     const payload = (await readJsonSafely(response)) as GeminiModelsResponse;
 
     if (!response.ok || payload.error) {
