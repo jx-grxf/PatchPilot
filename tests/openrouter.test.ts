@@ -108,15 +108,13 @@ describe("OpenRouterClient", () => {
         })
       })
     );
-    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toMatchObject({
-      model: "openrouter/auto",
-      response_format: {
-        type: "json_object"
-      },
-      usage: {
-        include: true
-      }
-    });
+      expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toMatchObject({
+        model: "openrouter/auto",
+        response_format: {
+          type: "json_object"
+        }
+      });
+      expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).not.toHaveProperty("usage");
     expect(result.telemetry).toMatchObject({
       promptTokens: 1000,
       cachedPromptTokens: 800,

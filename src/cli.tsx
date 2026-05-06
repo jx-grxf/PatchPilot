@@ -35,7 +35,7 @@ program.enablePositionalOptions();
 program
   .name("patchpilot")
   .description("Local-first coding agent TUI powered by Ollama and OpenAI-compatible providers.")
-  .version("0.1.0");
+  .version("0.2.0");
 
 program
   .command("doctor")

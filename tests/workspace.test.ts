@@ -218,6 +218,33 @@ describe("WorkspaceTools", () => {
     });
   });
 
+  it("does not expose sensitive files through search_text", async () => {
+    await mkdir(path.join(tempRoot, "nested"));
+    await writeFile(path.join(tempRoot, ".env"), "GEMINI_API_KEY=secret-root\n");
+    await writeFile(path.join(tempRoot, ".npmrc"), "//registry.npmjs.org/:_authToken=secret-npm\n");
+    await writeFile(path.join(tempRoot, "nested", ".env.local"), "OPENROUTER_API_KEY=secret-nested\n");
+    await writeFile(path.join(tempRoot, "note.txt"), "ordinary secret word\n");
+
+    const tools = new WorkspaceTools({
+      root: tempRoot,
+      allowWrite: false,
+      allowShell: false
+    });
+
+    const result = await tools.execute({
+      name: "search_text",
+      arguments: {
+        query: "secret"
+      }
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.content).toContain("note.txt");
+    expect(result.content).not.toContain("secret-root");
+    expect(result.content).not.toContain("secret-npm");
+    expect(result.content).not.toContain("secret-nested");
+  });
+
   it("rejects writing through a symlinked directory outside the workspace", async () => {
     const outsideRoot = await mkdtemp(path.join(tmpdir(), "patchpilot-outside-"));
     await mkdir(path.join(tempRoot, "safe"));

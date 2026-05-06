@@ -77,12 +77,16 @@ describe("NvidiaClient", () => {
       ]
     });
 
-    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toMatchObject({
-      model: "a/model",
-      response_format: {
-        type: "json_object"
-      }
-    });
+      expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toMatchObject({
+        model: "a/model",
+        response_format: {
+          type: "json_schema",
+          json_schema: {
+            name: "patchpilot_agent_response",
+            strict: true
+          }
+        }
+      });
     expect(result.telemetry).toMatchObject({
       promptTokens: 10,
       responseTokens: 3,

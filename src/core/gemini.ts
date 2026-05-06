@@ -75,7 +75,8 @@ export class GeminiClient {
     const response = await this.fetchGemini(`${modelPath(options.model)}:generateContent`, {
       method: "POST",
       headers: {
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        "x-goog-api-key": this.apiKey
       },
       body: JSON.stringify(toGenerateContentRequest(options.model, options.messages, options.formatJson, this.runtimeOptions, options.reasoningEffort)),
       signal: options.signal
@@ -121,9 +122,8 @@ export class GeminiClient {
   }
 
   private async fetchGemini(path: string, init?: RequestInit): Promise<Response> {
-    const separator = path.includes("?") ? "&" : "?";
     try {
-      return await fetch(`${this.baseUrl}/${path}${separator}key=${encodeURIComponent(this.apiKey)}`, init);
+      return await fetch(`${this.baseUrl}/${path}`, init);
     } catch (error) {
       const suffix = error instanceof Error ? ` ${error.message}` : "";
       throw new Error(`Cannot reach Gemini API at ${this.baseUrl}.${suffix}`);

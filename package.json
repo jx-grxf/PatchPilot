@@ -1,15 +1,35 @@
 {
-  "name": "patchpilot",
-  "version": "0.1.0",
-  "private": true,
-  "description": "Local-first coding agent TUI powered by Ollama.",
+  "name": "@jx-grxf/patchpilot",
+  "version": "0.2.0",
+  "private": false,
+  "description": "Local-first coding agent TUI for visible, permissioned repo changes.",
   "type": "module",
   "bin": {
-    "patchpilot": "./dist/cli.js"
+    "patchpilot": "dist/cli.js"
   },
+  "files": [
+    "dist",
+    ".env.example",
+    "docs/showcase/patchpilot-showcase.svg",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jx-grxf/PatchPilot.git"
+  },
+  "bugs": {
+    "url": "https://github.com/jx-grxf/PatchPilot/issues"
+  },
+  "homepage": "https://github.com/jx-grxf/PatchPilot#readme",
   "scripts": {
     "dev": "tsx src/cli.tsx",
     "build": "tsc",
+    "prepack": "npm run build",
+    "prepublishOnly": "npm run typecheck && npm test && npm run build && npm audit --omit=dev --audit-level=moderate && npm pack --dry-run",
     "start": "node dist/cli.js",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"

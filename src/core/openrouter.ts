@@ -99,11 +99,8 @@ export class OpenRouterClient {
               exclude: true
             }
           : undefined,
-        response_format: options.formatJson ? { type: "json_object" } : undefined,
-        usage: {
-          include: true
-        }
-      }),
+          response_format: options.formatJson ? { type: "json_object" } : undefined
+        }),
       signal: options.signal
     });
     const durationMs = Date.now() - startedAt;

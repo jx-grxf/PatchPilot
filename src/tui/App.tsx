@@ -643,7 +643,9 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       }
 
       const selectableModels = filterModelOptions(onboardingInput, onboarding.models);
-      const selectedModel = selectModelFromInput(value, selectableModels, onboardingIndex);
+      const selectedModel = selectModelFromInput(value, selectableModels, onboardingIndex, {
+        allowManual: onboarding.provider !== "ollama"
+      });
       if (!selectedModel) {
         appendLine({
           tone: "warning",
@@ -955,7 +957,9 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
             if (!models) {
               return;
             }
-            const nextModel = selectModelFromInput(requestedModel, models);
+            const nextModel = selectModelFromInput(requestedModel, models, undefined, {
+              allowManual: settings.provider !== "ollama"
+            });
             if (!nextModel) {
               appendLine({
                 tone: "warning",
@@ -977,7 +981,9 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
               return;
             }
 
-            const nextModel = selectModelFromInput(requestedModel, installedModels);
+            const nextModel = selectModelFromInput(requestedModel, installedModels, undefined, {
+              allowManual: settings.provider !== "ollama"
+            });
             if (!nextModel) {
               appendLine({
                 tone: "warning",
@@ -1302,6 +1308,17 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   }, [hostOptions.length, input, isLoadingHosts, isLoadingModels, isRunning, loadHostSuggestions, loadProviderModels, modelOptions.length, onboarding, settings.provider]);
 
   useInput((inputValue, key) => {
+    if (isRunning && key.escape) {
+      abortControllerRef.current?.abort();
+      appendLine({
+        tone: "warning",
+        label: "stop",
+        text: "Stopping current task..."
+      });
+      setStatus("stopping");
+      return;
+    }
+
     if (onboarding) {
       if (key.escape || key.leftArrow) {
         goBackOnboarding();
@@ -1319,7 +1336,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         return;
       }
 
-      if (optionCount > 0 && key.return) {
+      if (optionCount > 0 && key.return && onboarding.step !== "model") {
         void handleOnboardingSubmit(String(onboardingIndex + 1));
         return;
       }
@@ -1329,39 +1346,14 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         return;
       }
 
-      if (onboarding.step === "model" && inputValue && !key.ctrl && !key.meta) {
-        if (key.backspace || key.delete) {
-          setOnboardingInput((currentValue) => currentValue.slice(0, -1));
-          setOnboardingIndex(0);
-          return;
-        }
-
-        if (/^[\w\s./:_-]$/.test(inputValue)) {
-          setOnboardingInput((currentValue) => `${currentValue}${inputValue}`);
-          setOnboardingIndex(0);
-          return;
-        }
-      }
-
       return;
     }
 
-      if (paletteItems.length > 0) {
+    if (paletteItems.length > 0) {
       if (key.upArrow) {
         setPaletteIndex((currentIndex) => (currentIndex - 1 + paletteItems.length) % paletteItems.length);
         return;
       }
-
-    if (isRunning && key.escape) {
-      abortControllerRef.current?.abort();
-      appendLine({
-        tone: "warning",
-        label: "stop",
-        text: "Stopping current task..."
-      });
-      setStatus("stopping");
-      return;
-    }
 
       if (key.downArrow) {
         setPaletteIndex((currentIndex) => (currentIndex + 1) % paletteItems.length);
@@ -1831,7 +1823,7 @@ function readIndexedSelection(value: string, selectedIndex: number): number | nu
   return Number.isInteger(parsedIndex) ? parsedIndex - 1 : null;
 }
 
-function selectModelFromInput(value: string, models: string[], selectedIndex?: number): string | null {
+function selectModelFromInput(value: string, models: string[], selectedIndex?: number, options: { allowManual?: boolean } = {}): string | null {
   const normalizedValue = normalizeModelAlias(value.trim());
   if (!normalizedValue && selectedIndex !== undefined) {
     return models[selectedIndex] ?? null;
@@ -1851,7 +1843,15 @@ function selectModelFromInput(value: string, models: string[], selectedIndex?: n
   }
 
   const matches = filterModelOptions(normalizedValue, models);
-  return matches.length === 1 ? matches[0] ?? null : null;
+  if (matches.length === 1) {
+    return matches[0] ?? null;
+  }
+
+  return options.allowManual && isPlausibleCloudModelId(normalizedValue) ? normalizedValue : null;
+}
+
+function isPlausibleCloudModelId(value: string): boolean {
+  return /^[A-Za-z0-9][A-Za-z0-9._:/+-]*$/.test(value) && value.length >= 3;
 }
 
 function filterModelOptions(query: string, models: string[]): string[] {
