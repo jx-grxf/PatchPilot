@@ -109,6 +109,10 @@ export class WorkspaceTools {
           return await this.searchText(readString(call.arguments.query, ""));
         case "inspect_document":
           return await this.inspectDocument(readString(call.arguments.path, ""));
+        case "git_status":
+          return await this.gitStatus();
+        case "list_scripts":
+          return await this.listScripts();
         case "write_file":
           return await this.writeFile(readString(call.arguments.path, ""), readString(call.arguments.content, ""));
         case "run_shell":
@@ -239,7 +243,7 @@ export class WorkspaceTools {
       return denied("search_text requires a non-empty query.");
     }
 
-    const ripgrepResult = await searchTextWithRipgrep(this.root, query);
+    const ripgrepResult = await searchTextWithRipgrep(this.root, query, this.timeoutMs, this.signal);
     if (ripgrepResult) {
       return ripgrepResult;
     }
@@ -299,6 +303,36 @@ export class WorkspaceTools {
       ok: true,
       summary: `wrote ${path.relative(this.root, absolutePath)}`,
       content: `Wrote ${content.length} characters.`
+    };
+  }
+
+  private async gitStatus(): Promise<ToolResult> {
+    const { stdout } = await execFileAsync("git", ["status", "--short", "--branch"], {
+      cwd: this.root,
+      timeout: Math.min(this.timeoutMs, 8000),
+      maxBuffer: 200_000,
+      signal: this.signal,
+      windowsHide: true
+    });
+
+    return {
+      ok: true,
+      summary: "read git status",
+      content: stdout.trim() || "No git status output."
+    };
+  }
+
+  private async listScripts(): Promise<ToolResult> {
+    const packageJsonPath = await this.resolveReadPath("package.json");
+    const packageJson = JSON.parse(await readFile(packageJsonPath, "utf8")) as { scripts?: Record<string, unknown> };
+    const scripts = Object.entries(packageJson.scripts ?? {})
+      .filter((entry): entry is [string, string] => typeof entry[1] === "string")
+      .sort(([left], [right]) => left.localeCompare(right));
+
+    return {
+      ok: true,
+      summary: `listed ${scripts.length} package scripts`,
+      content: scripts.map(([name, command]) => `${name}: ${command}`).join("\n") || "No package scripts found."
     };
   }
 
@@ -405,7 +439,7 @@ async function walkFiles(
   return results;
 }
 
-async function searchTextWithRipgrep(workspaceRoot: string, query: string): Promise<ToolResult | null> {
+async function searchTextWithRipgrep(workspaceRoot: string, query: string, timeoutMs: number, signal?: AbortSignal): Promise<ToolResult | null> {
   const ignoreGlobs = [
     "!.git/**",
     "!node_modules/**",
@@ -450,12 +484,21 @@ async function searchTextWithRipgrep(workspaceRoot: string, query: string): Prom
       {
         cwd: workspaceRoot,
         stdio: ["ignore", "pipe", "pipe"],
+        signal,
         windowsHide: true
       }
     );
 
     let stdout = "";
     let stderr = "";
+    const timeout = setTimeout(() => {
+      child.kill();
+      resolve({
+        ok: false,
+        summary: "ripgrep search timed out",
+        content: `Search timed out after ${timeoutMs}ms. Narrow the query or path.`
+      });
+    }, timeoutMs);
 
     child.stdout.on("data", (chunk: Buffer) => {
       stdout += chunk.toString("utf8");
@@ -465,11 +508,13 @@ async function searchTextWithRipgrep(workspaceRoot: string, query: string): Prom
       stderr += chunk.toString("utf8");
     });
 
-    child.on("error", () => {
-      resolve(null);
+    child.on("error", (error: NodeJS.ErrnoException) => {
+      clearTimeout(timeout);
+      resolve(error.name === "AbortError" ? denied("ripgrep search aborted.") : null);
     });
 
     child.on("close", (exitCode) => {
+      clearTimeout(timeout);
       if (exitCode === 0 || exitCode === 1) {
         const content = stdout.trim();
         const lines = content ? content.split(/\r?\n/).slice(0, 80) : [];
@@ -722,8 +767,21 @@ function validateShellCommand(command: string): string | null {
   }
 
   const executable = stripQuotes(tokens[0] ?? "").toLowerCase();
+  const subcommand = stripQuotes(tokens[1] ?? "").toLowerCase();
   if (["bash", "sh", "zsh", "fish", "pwsh", "powershell", "powershell.exe", "python", "python3", "node", "ruby", "perl"].includes(executable)) {
     return `executable "${executable}" is blocked.`;
+  }
+
+  if (["rm", "rmdir", "mv", "cp"].includes(executable) && tokens.some((token) => /^-.*[fRr]/.test(stripQuotes(token)))) {
+    return `destructive ${executable} flags are blocked.`;
+  }
+
+  if (executable === "git" && ["clean", "reset", "push", "checkout", "switch", "branch", "tag"].includes(subcommand)) {
+    return `git ${subcommand} is blocked in the shell tool.`;
+  }
+
+  if (executable === "npm" && ["publish", "unpublish", "dist-tag"].includes(subcommand)) {
+    return `npm ${subcommand} is blocked in the shell tool.`;
   }
 
   for (const token of tokens.slice(1)) {

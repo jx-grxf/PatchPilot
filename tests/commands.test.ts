@@ -19,7 +19,12 @@ describe("filterSlashCommands", () => {
   });
 
   it("includes subagent controls", () => {
-    expect(filterSlashCommands("/a").map((command) => command.name)).toEqual(["agents"]);
+    expect(filterSlashCommands("/a").map((command) => command.name)).toContain("agents");
+  });
+
+  it("matches aliases in the command palette", () => {
+    expect(filterSlashCommands("/perms").map((command) => command.name)).toEqual(["permissions"]);
+    expect(filterSlashCommands("/subagents").map((command) => command.name)).toEqual(["agents"]);
   });
 
   it("exposes visible categories for command palette grouping", () => {

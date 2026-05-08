@@ -37,7 +37,12 @@ describe("NvidiaClient", () => {
     );
 
     await expect(new NvidiaClient("test-key").listModels()).resolves.toEqual(["a/model", "z/model"]);
-    expect(fetchMock).toHaveBeenCalledWith("https://integrate.api.nvidia.com/v1/models", undefined);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://integrate.api.nvidia.com/v1/models",
+      expect.objectContaining({
+        signal: expect.any(AbortSignal)
+      })
+    );
   });
 
   it("sends chat requests and reads provider token telemetry", async () => {

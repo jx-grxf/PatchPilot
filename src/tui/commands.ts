@@ -163,8 +163,13 @@ export function filterSlashCommands(input: string): SlashCommand[] {
   }
 
   const prefixMatches = slashCommands.filter((command) => command.name.startsWith(commandPart));
+  const aliasPrefixMatches = slashCommands.filter((command) => command.aliases?.some((alias) => alias.startsWith(commandPart)));
   if (prefixMatches.length > 0) {
-    return prefixMatches;
+    return [...prefixMatches, ...aliasPrefixMatches.filter((command) => !prefixMatches.includes(command))];
+  }
+
+  if (aliasPrefixMatches.length > 0) {
+    return aliasPrefixMatches;
   }
 
   return slashCommands
@@ -207,7 +212,8 @@ function scoreSlashCommand(command: SlashCommand, query: string): number | null 
     command.usage,
     command.description,
     command.category,
-    command.shortcut ?? ""
+    command.shortcut ?? "",
+    ...(command.aliases ?? [])
   ].map((value) => value.toLowerCase());
 
   if (command.name.startsWith(query)) {

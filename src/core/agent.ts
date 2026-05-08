@@ -2,8 +2,9 @@ import { formatParseError, parseAgentResponse } from "./json.js";
 import path from "node:path";
 import { platform, release, type } from "node:os";
 import { createModelClient } from "./modelClient.js";
+import { resolveProviderReasoning } from "./reasoning.js";
 import { formatSubagentContext, runSubagentAdvisors } from "./subagents.js";
-import type { AgentEvent, ChatMessage, ModelClient, ModelProvider, ReasoningEffort } from "./types.js";
+import type { AgentEvent, ChatMessage, ModelClient, ModelProvider, ProviderReasoningEffort } from "./types.js";
 import { WorkspaceTools } from "./workspace.js";
 
 export type AgentRunnerOptions = {
@@ -15,7 +16,7 @@ export type AgentRunnerOptions = {
   allowShell: boolean;
   maxSteps: number;
   thinkingMode: "fixed" | "adaptive";
-  reasoningEffort: ReasoningEffort | "adaptive";
+  reasoningEffort: ProviderReasoningEffort | "adaptive";
   subagents: boolean;
   signal?: AbortSignal;
 };
@@ -43,7 +44,11 @@ export class AgentRunner {
   async *run(task: string): AsyncGenerator<AgentEvent> {
     const workspaceSummary = await buildWorkspaceSummary(this.tools.root);
     let maxSteps = resolveMaxSteps(task, this.options.maxSteps, this.options.thinkingMode);
-    const reasoningEffort = resolveReasoningEffort(task, this.options.reasoningEffort);
+    const reasoningEffort = resolveProviderReasoning({
+      provider: this.options.provider,
+      model: this.options.model,
+      requested: resolveReasoningEffort(task, this.options.reasoningEffort)
+    });
     let stepIndex = 0;
     let repairs = 0;
     let subagentContext = "";
@@ -258,6 +263,8 @@ function buildSystemPrompt(workspaceRoot: string, subagentContext: string, works
     "- read_file: {\"path\":\"src/index.ts\"}",
     "- search_text: {\"query\":\"functionName\"}",
     "- inspect_document: {\"path\":\"docs/spec.pdf\"} for pdf, docx, and text/code files",
+    "- git_status: {} for current branch and dirty files",
+    "- list_scripts: {} for package manager scripts from package.json",
     "- write_file: {\"path\":\"test2/test.txt\",\"content\":\"full file content\"}",
     "- run_shell: {\"command\":\"command to run in the workspace\"}",
     "",
@@ -399,7 +406,7 @@ function shouldExtendAdaptiveRun(
   return hasUsefulProgress || hasRecoverableFailure || shouldUseSubagents(task);
 }
 
-function resolveReasoningEffort(task: string, effort: AgentRunnerOptions["reasoningEffort"]): ReasoningEffort {
+function resolveReasoningEffort(task: string, effort: AgentRunnerOptions["reasoningEffort"]): ProviderReasoningEffort {
   if (effort !== "adaptive") {
     return effort;
   }

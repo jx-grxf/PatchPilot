@@ -1,4 +1,6 @@
 import type { ChatMessage, ModelChatOptions, ModelChatResult, ModelTelemetry } from "./types.js";
+import { fetchWithTimeout } from "./http.js";
+import { getGeminiThinkingConfig } from "./reasoning.js";
 import { attachTokenCost } from "./tokenAccounting.js";
 
 export const defaultGeminiModel = "gemini-2.5-flash";
@@ -127,7 +129,11 @@ export class GeminiClient {
 
   private async fetchGemini(path: string, init?: RequestInit): Promise<Response> {
     try {
-      return await fetch(`${this.baseUrl}/${path}`, init);
+      return await fetchWithTimeout(`${this.baseUrl}/${path}`, init, {
+        timeoutMs: init?.method === "POST" ? 90_000 : 8000,
+        retries: init?.method === "POST" ? 0 : 1,
+        label: `Gemini ${path}`
+      });
     } catch (error) {
       const suffix = error instanceof Error ? ` ${error.message}` : "";
       throw new Error(`Cannot reach Gemini API at ${this.baseUrl}.${suffix}`);
@@ -180,32 +186,9 @@ function toGenerateContentRequest(
       generationConfig: {
         maxOutputTokens: runtimeOptions.maxOutputTokens,
         temperature: runtimeOptions.temperature,
-        thinkingConfig: buildGeminiThinkingConfig(model, reasoningEffort),
+        thinkingConfig: getGeminiThinkingConfig(model, reasoningEffort),
         responseMimeType: formatJson ? "application/json" : undefined
       }
-  };
-}
-
-function buildGeminiThinkingConfig(model: string, reasoningEffort: ModelChatOptions["reasoningEffort"]): Record<string, unknown> | undefined {
-  if (!reasoningEffort) {
-    return undefined;
-  }
-
-  if (/gemini-2\.5/i.test(model)) {
-    return {
-      thinkingBudget:
-        reasoningEffort === "low"
-          ? 512
-          : reasoningEffort === "medium"
-            ? 2048
-            : reasoningEffort === "high"
-              ? 8192
-              : 12_288
-    };
-  }
-
-  return {
-    thinkingLevel: reasoningEffort === "xhigh" ? "high" : reasoningEffort
   };
 }
 

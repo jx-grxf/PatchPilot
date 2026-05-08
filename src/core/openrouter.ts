@@ -1,4 +1,6 @@
 import type { ChatMessage, ModelChatOptions, ModelChatResult, ModelTelemetry } from "./types.js";
+import { fetchWithTimeout } from "./http.js";
+import { getOpenRouterReasoningConfig } from "./reasoning.js";
 import { attachTokenCost } from "./tokenAccounting.js";
 
 export const defaultOpenRouterModel = "openrouter/auto";
@@ -93,12 +95,7 @@ export class OpenRouterClient {
         messages: options.messages,
         max_tokens: this.runtimeOptions.maxTokens,
         temperature: this.runtimeOptions.temperature,
-        reasoning: options.reasoningEffort
-          ? {
-              effort: options.reasoningEffort,
-              exclude: true
-            }
-          : undefined,
+        reasoning: getOpenRouterReasoningConfig(options.reasoningEffort),
           response_format: options.formatJson ? { type: "json_object" } : undefined
         }),
       signal: options.signal
@@ -129,7 +126,11 @@ export class OpenRouterClient {
 
   private async fetchOpenRouter(path: string, init?: RequestInit): Promise<Response> {
     try {
-      return await fetch(`${this.baseUrl}${path}`, init);
+      return await fetchWithTimeout(`${this.baseUrl}${path}`, init, {
+        timeoutMs: init?.method === "POST" ? 90_000 : 8000,
+        retries: init?.method === "POST" ? 0 : 1,
+        label: `OpenRouter ${path}`
+      });
     } catch (error) {
       const suffix = error instanceof Error ? ` ${error.message}` : "";
       throw new Error(`Cannot reach OpenRouter API at ${this.baseUrl}.${suffix}`);
@@ -190,7 +191,11 @@ async function readOpenRouterPricing(): Promise<Map<string, OpenRouterTokenRates
 }
 
 async function fetchOpenRouterModels(baseUrl: string): Promise<OpenRouterModel[]> {
-  const response = await fetch(`${baseUrl.replace(/\/$/, "")}/models`);
+  const response = await fetchWithTimeout(`${baseUrl.replace(/\/$/, "")}/models`, undefined, {
+    timeoutMs: 8000,
+    retries: 1,
+    label: "OpenRouter models"
+  });
   const payload = (await readJsonSafely(response)) as OpenRouterModelsResponse;
   if (!response.ok || payload.error) {
     const reason = payload.error?.message ? ` ${payload.error.message}` : "";

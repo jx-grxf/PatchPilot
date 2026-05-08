@@ -1,9 +1,13 @@
+import { execFile } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { promisify } from "node:util";
 import { deflateRawSync } from "node:zlib";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { WorkspaceTools } from "../src/core/workspace.js";
+
+const execFileAsync = promisify(execFile);
 
 let tempRoot = "";
 
@@ -162,6 +166,51 @@ describe("WorkspaceTools", () => {
     expect(result.summary).toContain("unknown tool");
   });
 
+  it("lists package scripts without enabling shell", async () => {
+    await writeFile(
+      path.join(tempRoot, "package.json"),
+      JSON.stringify({
+        scripts: {
+          test: "vitest run",
+          build: "tsc"
+        }
+      })
+    );
+    const tools = new WorkspaceTools({
+      root: tempRoot,
+      allowWrite: false,
+      allowShell: false
+    });
+
+    const result = await tools.execute({
+      name: "list_scripts",
+      arguments: {}
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.content).toContain("build: tsc");
+    expect(result.content).toContain("test: vitest run");
+  });
+
+  it("reads git status without enabling shell", async () => {
+    await execFileAsync("git", ["init"], {
+      cwd: tempRoot
+    });
+    const tools = new WorkspaceTools({
+      root: tempRoot,
+      allowWrite: false,
+      allowShell: false
+    });
+
+    const result = await tools.execute({
+      name: "git_status",
+      arguments: {}
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.content).toContain("##");
+  });
+
   it("skips symlinked directories when listing files", async () => {
     const outsideRoot = await mkdtemp(path.join(tmpdir(), "patchpilot-outside-"));
     await mkdir(path.join(tempRoot, "src"));
@@ -243,6 +292,32 @@ describe("WorkspaceTools", () => {
     expect(result.content).not.toContain("secret-root");
     expect(result.content).not.toContain("secret-npm");
     expect(result.content).not.toContain("secret-nested");
+  });
+
+  it("blocks destructive simple shell commands even when shell is enabled", async () => {
+    const tools = new WorkspaceTools({
+      root: tempRoot,
+      allowWrite: true,
+      allowShell: true
+    });
+
+    const rmResult = await tools.execute({
+      name: "run_shell",
+      arguments: {
+        command: "rm -rf src"
+      }
+    });
+    expect(rmResult.ok).toBe(false);
+    expect(rmResult.summary).toContain("destructive rm");
+
+    const gitResult = await tools.execute({
+      name: "run_shell",
+      arguments: {
+        command: "git clean"
+      }
+    });
+    expect(gitResult.ok).toBe(false);
+    expect(gitResult.summary).toContain("git clean");
   });
 
   it("rejects writing through a symlinked directory outside the workspace", async () => {
