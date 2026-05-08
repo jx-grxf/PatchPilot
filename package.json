@@ -10,8 +10,10 @@
   "files": [
     "dist",
     ".env.example",
+    "docs/releases",
     "docs/showcase/patchpilot-showcase.svg",
     "README.md",
+    "SECURITY.md",
     "LICENSE"
   ],
   "publishConfig": {

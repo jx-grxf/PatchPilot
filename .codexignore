@@ -16,6 +16,7 @@ DerivedData/
 *.so
 *.log
 *.tmp
+*.tgz
 *.zip
 *.tar.gz
 ollama-models/

@@ -6,5 +6,6 @@ coverage/
 !.env.example
 *.log
 *.tmp
+*.tgz
 .DS_Store
 Thumbs.db
