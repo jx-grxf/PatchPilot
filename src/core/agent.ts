@@ -3,9 +3,10 @@ import path from "node:path";
 import { platform, release, type } from "node:os";
 import { createModelClient } from "./modelClient.js";
 import { resolveProviderReasoning } from "./reasoning.js";
+import type { SessionStore } from "./session.js";
 import { formatSubagentContext, runSubagentAdvisors } from "./subagents.js";
-import type { AgentEvent, ChatMessage, ModelClient, ModelProvider, ProviderReasoningEffort } from "./types.js";
-import { WorkspaceTools } from "./workspace.js";
+import type { AgentEvent, AgentToolName, AgentWorkState, ApprovalRequest, ChatMessage, ModelClient, ModelProvider, PermissionDecision, ProviderReasoningEffort, ToolResult } from "./types.js";
+import { getToolSpec, WorkspaceTools } from "./workspace.js";
 
 export type AgentRunnerOptions = {
   provider: ModelProvider;
@@ -19,6 +20,8 @@ export type AgentRunnerOptions = {
   reasoningEffort: ProviderReasoningEffort | "adaptive";
   subagents: boolean;
   signal?: AbortSignal;
+  sessionStore?: SessionStore;
+  approvalHandler?: (request: ApprovalRequest) => Promise<PermissionDecision>;
 };
 
 export class AgentRunner {
@@ -37,11 +40,21 @@ export class AgentRunner {
       root: options.workspace,
       allowWrite: options.allowWrite,
       allowShell: options.allowShell,
-      signal: options.signal
+      signal: options.signal,
+      approvalHandler: options.approvalHandler
     });
   }
 
   async *run(task: string): AsyncGenerator<AgentEvent> {
+    const runId = createRunId();
+    await this.options.sessionStore?.append({
+      type: "run.started",
+      runId,
+      task,
+      provider: this.options.provider,
+      model: this.options.model,
+      startedAt: new Date().toISOString()
+    });
     const workspaceSummary = await buildWorkspaceSummary(this.tools.root);
     let maxSteps = resolveMaxSteps(task, this.options.maxSteps, this.options.thinkingMode);
     const reasoningEffort = resolveProviderReasoning({
@@ -55,7 +68,8 @@ export class AgentRunner {
     if (this.options.subagents && shouldUseSubagents(task)) {
       yield {
         type: "status",
-        message: "consulting planner and reviewer subagents"
+        message: "consulting planner and reviewer subagents",
+        workState: "planning"
       };
 
       const advice = await runSubagentAdvisors({
@@ -72,7 +86,8 @@ export class AgentRunner {
           type: "subagent",
           role: item.role,
           message: item.message,
-          metrics: item.telemetry
+          metrics: item.telemetry,
+          workState: "planning"
         };
       }
     }
@@ -92,15 +107,26 @@ export class AgentRunner {
       if (this.options.signal?.aborted) {
         yield {
           type: "final",
-          message: "Stopped."
+          message: "Stopped.",
+          workState: "done"
         };
         return;
       }
 
       yield {
         type: "status",
-        message: `thinking step ${stepIndex + 1}/${maxSteps}${this.options.thinkingMode === "adaptive" ? " adaptive" : ""}`
+        message: `thinking step ${stepIndex + 1}/${maxSteps}${this.options.thinkingMode === "adaptive" ? " adaptive" : ""}`,
+        workState: stepIndex === 0 ? "planning" : "inspecting"
       };
+      await this.options.sessionStore?.append({
+        type: "model.request",
+        runId,
+        workState: stepIndex === 0 ? "planning" : "inspecting",
+        provider: this.options.provider,
+        model: this.options.model,
+        step: stepIndex + 1,
+        createdAt: new Date().toISOString()
+      });
 
       const modelResponse = await this.client.chat({
         model: this.options.model,
@@ -113,7 +139,8 @@ export class AgentRunner {
 
       yield {
         type: "metrics",
-        metrics: modelResponse.telemetry
+        metrics: modelResponse.telemetry,
+        workState: "planning"
       };
 
       let parsedResponse;
@@ -123,7 +150,8 @@ export class AgentRunner {
         repairs += 1;
         yield {
           type: "status",
-          message: `repairing model protocol: ${formatParseError(error)}`
+          message: `repairing model protocol: ${formatParseError(error)}`,
+          workState: "planning"
         };
         messages.push({
           role: "assistant",
@@ -137,8 +165,15 @@ export class AgentRunner {
         if (repairs >= 3) {
           yield {
             type: "final",
-            message: "The model kept returning invalid tool protocol. Try a stronger coding model or switch advisors off for this task."
+            message: "The model kept returning invalid tool protocol. Try a stronger coding model or switch advisors off for this task.",
+            workState: "error"
           };
+          await this.options.sessionStore?.append({
+            type: "run.failed",
+            runId,
+            message: "The model kept returning invalid tool protocol.",
+            failedAt: new Date().toISOString()
+          });
           return;
         }
         continue;
@@ -148,36 +183,99 @@ export class AgentRunner {
       if (parsedResponse.action === "final") {
         yield {
           type: "final",
-          message: parsedResponse.message
+          message: parsedResponse.message,
+          workState: "done"
         };
+        await this.options.sessionStore?.append({
+          type: "run.completed",
+          runId,
+          message: parsedResponse.message,
+          completedAt: new Date().toISOString()
+        });
         return;
       }
 
       if (looksLikeClarification(parsedResponse.message)) {
         yield {
           type: "final",
-          message: parsedResponse.message
+          message: parsedResponse.message,
+          workState: "done"
         };
+        await this.options.sessionStore?.append({
+          type: "run.completed",
+          runId,
+          message: parsedResponse.message,
+          completedAt: new Date().toISOString()
+        });
         return;
       }
 
       yield {
         type: "assistant",
-        message: parsedResponse.message
+        message: parsedResponse.message,
+        workState: "planning"
       };
 
       const toolCalls = parsedResponse.tool_calls.map(normalizeToolCall);
+      const toolCallRecords = toolCalls.map((toolCall) => ({
+        id: createToolCallId(toolCall.name),
+        call: toolCall,
+        workState: workStateForTool(toolCall.name)
+      }));
+      for (const record of toolCallRecords) {
+        await this.options.sessionStore?.append({
+          type: "tool.requested",
+          runId,
+          toolCallId: record.id,
+          tool: record.call.name,
+          arguments: record.call.arguments,
+          workState: record.workState,
+          createdAt: new Date().toISOString()
+        });
+      }
       const toolResults = toolCalls.every(isReadOnlyToolCall)
-        ? await Promise.all(toolCalls.map((toolCall) => executeToolSafely(this.tools, toolCall)))
-        : await executeToolCallsSequentially(this.tools, toolCalls);
+        ? await Promise.all(toolCallRecords.map((record) => executeToolSafely(this.tools, record.call, record.id)))
+        : await executeToolCallsSequentially(this.tools, toolCallRecords);
 
       for (const toolResult of toolResults) {
+        if (toolResult.approval) {
+          yield {
+            type: "approval",
+            request: toolResult.approval.request,
+            decision: toolResult.approval.decision,
+            workState: "waiting_approval"
+          };
+          await this.options.sessionStore?.append({
+            type: "approval.requested",
+            runId,
+            request: toolResult.approval.request,
+            decision: toolResult.approval.decision,
+            createdAt: new Date().toISOString()
+          });
+        }
+
+        const workState = toolResult.ok ? toolResult.workState : "error";
         yield {
           type: "tool",
           name: toolResult.tool,
           summary: toolResult.summary,
-          ok: toolResult.ok
+          ok: toolResult.ok,
+          workState,
+          toolCallId: toolResult.toolCallId,
+          category: toolResult.category,
+          preview: toolResult.preview,
+          metadata: toolResult.metadata
         };
+        await this.options.sessionStore?.append({
+          type: "tool.completed",
+          runId,
+          toolCallId: toolResult.toolCallId,
+          tool: toolResult.tool,
+          ok: toolResult.ok,
+          summary: toolResult.summary,
+          workState,
+          createdAt: new Date().toISOString()
+        });
       }
 
       messages.push({
@@ -196,7 +294,8 @@ export class AgentRunner {
           maxSteps = nextMaxSteps;
           yield {
             type: "status",
-            message: `expanded adaptive thinking budget to ${maxSteps} steps`
+            message: `expanded adaptive thinking budget to ${maxSteps} steps`,
+            workState: "planning"
           };
         }
       }
@@ -204,8 +303,15 @@ export class AgentRunner {
 
     yield {
       type: "final",
-      message: "Stopped after the thinking budget. The task is not finished yet."
+      message: "Stopped after the thinking budget. The task is not finished yet.",
+      workState: "error"
     };
+    await this.options.sessionStore?.append({
+      type: "run.failed",
+      runId,
+      message: "Stopped after the thinking budget.",
+      failedAt: new Date().toISOString()
+    });
   }
 }
 
@@ -261,12 +367,19 @@ function buildSystemPrompt(workspaceRoot: string, subagentContext: string, works
     "Available tools:",
     "- list_files: {\"path\":\".\"}",
     "- read_file: {\"path\":\"src/index.ts\"}",
+    "- read_range: {\"path\":\"src/index.ts\",\"start\":1,\"end\":80}",
+    "- file_info: {\"path\":\"src/index.ts\"}",
     "- search_text: {\"query\":\"functionName\"}",
     "- inspect_document: {\"path\":\"docs/spec.pdf\"} for pdf, docx, and text/code files",
     "- git_status: {} for current branch and dirty files",
+    "- git_diff: {\"path\":\"src/index.ts\"} or {} for all current changes",
+    "- list_changed_files: {}",
     "- list_scripts: {} for package manager scripts from package.json",
     "- write_file: {\"path\":\"test2/test.txt\",\"content\":\"full file content\"}",
-    "- run_shell: {\"command\":\"command to run in the workspace\"}",
+    "- apply_patch: {\"patch\":\"unified git patch\"}",
+    "- run_script: {\"script\":\"test\"}",
+    "- run_tests: {}",
+    "- run_shell: {\"command\":\"single simple command to run in the workspace\"}",
     "",
     "Act like a coding agent. For simple create/edit/run requests, use tools directly instead of over-warning.",
     "Do not call search_text with an empty query. Use list_files {\"path\":\".\"} to inspect a directory.",
@@ -287,7 +400,7 @@ function looksLikeClarification(message: string): boolean {
 }
 
 function isReadOnlyToolCall(toolCall: { name: string }): boolean {
-  return toolCall.name === "list_files" || toolCall.name === "read_file" || toolCall.name === "search_text" || toolCall.name === "inspect_document";
+  return getToolSpec(toolCall.name as AgentToolName)?.sideEffects === "none";
 }
 
 function normalizeToolCall(toolCall: Parameters<WorkspaceTools["execute"]>[0]): Parameters<WorkspaceTools["execute"]>[0] {
@@ -306,33 +419,48 @@ function normalizeToolCall(toolCall: Parameters<WorkspaceTools["execute"]>[0]): 
   return toolCall;
 }
 
-async function executeToolCallsSequentially(tools: WorkspaceTools, toolCalls: Parameters<WorkspaceTools["execute"]>[0][]) {
+async function executeToolCallsSequentially(
+  tools: WorkspaceTools,
+  toolCalls: Array<{
+    id: string;
+    call: Parameters<WorkspaceTools["execute"]>[0];
+    workState: AgentWorkState;
+  }>
+) {
   const results = [];
   for (const toolCall of toolCalls) {
-    results.push(await executeToolSafely(tools, toolCall));
+    results.push(await executeToolSafely(tools, toolCall.call, toolCall.id));
   }
 
   return results;
 }
 
-async function executeToolSafely(tools: WorkspaceTools, toolCall: Parameters<WorkspaceTools["execute"]>[0]) {
-  const toolResult = await tools.execute(toolCall).catch((error: unknown) => ({
+async function executeToolSafely(tools: WorkspaceTools, toolCall: Parameters<WorkspaceTools["execute"]>[0], toolCallId: string) {
+  const toolResult: ToolResult = await tools.execute(toolCall).catch((error: unknown) => ({
     ok: false,
     summary: error instanceof Error ? error.message : String(error),
-    content: error instanceof Error ? error.stack ?? error.message : String(error)
+    content: error instanceof Error ? error.stack ?? error.message : String(error),
+    tool: toolCall.name,
+    category: getToolSpec(toolCall.name).category
   }));
 
   return {
     tool: toolCall.name,
     ok: toolResult.ok,
     summary: toolResult.summary,
-    content: toolResult.content
+    content: toolResult.content,
+    toolCallId,
+    category: toolResult.category ?? getToolSpec(toolCall.name).category,
+    preview: toolResult.preview,
+    approval: toolResult.approval,
+    metadata: toolResult.metadata,
+    workState: workStateForTool(toolCall.name)
   };
 }
 
 function formatToolResultsForPrompt(
   toolResults: Array<{
-    tool: string;
+    tool: AgentToolName;
     ok: boolean;
     summary: string;
     content: string;
@@ -348,6 +476,31 @@ function formatToolResultsForPrompt(
       ].join("\n")
     )
   ].join("\n\n");
+}
+
+function workStateForTool(tool: AgentToolName): AgentWorkState {
+  const category = getToolSpec(tool).category;
+  if (category === "write") {
+    return "editing";
+  }
+
+  if (category === "shell" || category === "test") {
+    return "verifying";
+  }
+
+  if (category === "read" || category === "document" || category === "search" || category === "git") {
+    return "reading";
+  }
+
+  return "inspecting";
+}
+
+function createRunId(): string {
+  return `run-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function createToolCallId(tool: AgentToolName): string {
+  return `${tool}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
 async function buildWorkspaceSummary(workspaceRoot: string): Promise<string> {

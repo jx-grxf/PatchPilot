@@ -56,7 +56,7 @@ PatchPilot is a terminal interface for running coding-agent tasks inside a repos
 | Cloud provider routes | Gemini, OpenRouter, NVIDIA, and Codex CLI OAuth are available from one TUI. |
 | Guided onboarding | First-run setup walks through local/remote mode, provider auth, host discovery, and model choice. |
 | Observable agent loop | Transcript, tool calls, telemetry, token counts, provider cache hits, latency, and cost estimates are visible. |
-| Explicit permissions | File writes require `--apply`; shell commands require `--allow-shell`. |
+| Explicit permissions | Risky tools request approval unless writes or shell commands are explicitly enabled. |
 | Workspace boundary | File tools are constrained to the selected project root and block common secret files. |
 | Slash-command palette | Type `/` for browsable commands, provider switching, modes, models, diagnostics, and host selection. |
 | Advisor subagents | Explorer, planner, and reviewer advisor calls can brief the main agent before it edits. |
@@ -72,8 +72,8 @@ The core workflow is intentionally simple:
 1. Open a repository.
 2. Pick local, remote, or cloud inference.
 3. Ask for a patch, review, summary, or refactor plan.
-4. Enable writes or shell commands only when the current task needs them.
-5. Review the diff before committing.
+4. Approve writes or shell commands only when the current task needs them.
+5. Review `/diff`, run tests, then commit manually.
 
 ## Requirements
 
@@ -145,6 +145,8 @@ On first launch, PatchPilot opens guided setup for provider choice, API-key stor
 ```bash
 patchpilot [task] [options]
 patchpilot doctor [options]
+patchpilot sessions [--workspace <path>]
+patchpilot resume [session-id] [--workspace <path>]
 ```
 
 | Option | Description |
@@ -182,6 +184,11 @@ Useful slash commands inside the TUI:
 | `/eject [model\|all]` | Unload Ollama model(s) from the active host. |
 | `/hosts` | Re-scan reachable Ollama hosts. |
 | `/doctor` | Run provider diagnostics from inside the TUI. |
+| `/sessions` | List recent sessions for the current workspace. |
+| `/resume [session-id]` | Load a previous session summary. |
+| `/diff` | Show the current Git diff. |
+| `/approve once\|session` | Approve a pending risky tool request. |
+| `/deny` | Deny a pending risky tool request. |
 | `/clear` | Clear the current transcript. |
 | `/exit` | Quit PatchPilot. |
 
@@ -269,14 +276,29 @@ PatchPilot is designed to keep powerful actions boring and reviewable:
 
 - File access is constrained to one workspace root.
 - Secret-like files such as `.env`, `.npmrc`, SSH keys, and `.netrc` are blocked from normal file tools.
-- Writes are disabled unless `--apply` is set.
-- Shell commands are disabled unless `--allow-shell` is set.
+- Writes are blocked by default; in the TUI, risky write tools request approval, and `--apply` keeps the legacy always-allow write path.
+- Shell commands are blocked by default; dedicated script/test tools request approval, and `--allow-shell` keeps the legacy always-allow shell path.
 - Shell execution uses a restricted single-command runner.
 - Provider config is stored in `~/.patchpilot/.env`, not in the current repository by default.
+- Session logs are stored as append-only JSONL in `.patchpilot/sessions/`; that folder is gitignored. A global index in `~/.patchpilot/session-index.json` powers `patchpilot sessions` and `/resume`.
 - Tool output is shown in the transcript and fed back into the agent in clipped form.
 - Cloud providers may process prompts and context remotely under their own terms.
 
 This is still experimental agent tooling. Review diffs, avoid sensitive repositories when using cloud providers, and do not enable write or shell permissions casually.
+
+Safe patch workflow:
+
+```text
+/mode plan
+ask PatchPilot to inspect and propose the change
+/mode build
+approve only the specific write/test requests you expect
+/diff
+run tests
+commit manually with git
+```
+
+PatchPilot now has approval prompts and a Git diff command, but it still does not replace human review. Inline rich diff review and commit/PR automation remain future work.
 
 ## Tech Stack
 
@@ -286,6 +308,7 @@ This is still experimental agent tooling. Review diffs, avoid sensitive reposito
 | Runtime | Node.js 22+ |
 | TUI | Ink, React, ink-text-input |
 | Agent protocol | JSON command envelope validated with Zod |
+| Sessions | Append-only JSONL in `.patchpilot/sessions` plus global index in `~/.patchpilot` |
 | Providers | Ollama chat API, Gemini generateContent API, OpenRouter OpenAI-compatible API, NVIDIA OpenAI-compatible API, Codex CLI OAuth backend |
 | Tests | Vitest |
 | CI | GitHub Actions |
@@ -315,9 +338,9 @@ If Vitest fails because a native optional dependency was installed incorrectly, 
 | Area | Planned work |
 |---|---|
 | Patch review | Rich diff preview before writes. |
-| Permissions | Interactive approve/deny prompts per risky tool call. |
+| Permissions | Per-tool approval exists; richer previews and persisted policies are next. |
 | Agents | Dedicated editor and test-runner roles with hard tool boundaries. |
-| Memory | Repository summaries and local task state. |
+| Memory | Deeper resume that restores full transcript context, not just session summaries. |
 | Model support | Native Ollama tool calling when model support is reliable. |
 | Distribution | Signed macOS and Windows desktop shell with the CLI as a sidecar. |
 | Efficiency | More token-cache-aware prompts and provider-specific cost reporting. |

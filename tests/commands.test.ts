@@ -22,6 +22,12 @@ describe("filterSlashCommands", () => {
     expect(filterSlashCommands("/a").map((command) => command.name)).toContain("agents");
   });
 
+  it("includes session and diff controls", () => {
+    expect(filterSlashCommands("/s").map((command) => command.name)).toContain("sessions");
+    expect(filterSlashCommands("/r").map((command) => command.name)).toContain("resume");
+    expect(filterSlashCommands("/d").map((command) => command.name)).toContain("diff");
+  });
+
   it("matches aliases in the command palette", () => {
     expect(filterSlashCommands("/perms").map((command) => command.name)).toEqual(["permissions"]);
     expect(filterSlashCommands("/subagents").map((command) => command.name)).toEqual(["agents"]);

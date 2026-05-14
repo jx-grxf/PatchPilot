@@ -132,6 +132,36 @@ export const slashCommands: SlashCommand[] = [
     category: "session"
   },
   {
+    name: "sessions",
+    usage: "/sessions",
+    description: "List recent PatchPilot sessions for this workspace.",
+    category: "session"
+  },
+  {
+    name: "resume",
+    usage: "/resume [session-id]",
+    description: "Load a previous session summary.",
+    category: "session"
+  },
+  {
+    name: "diff",
+    usage: "/diff",
+    description: "Show the current Git diff.",
+    category: "session"
+  },
+  {
+    name: "approve",
+    usage: "/approve once|session",
+    description: "Approve the pending risky tool request.",
+    category: "permissions"
+  },
+  {
+    name: "deny",
+    usage: "/deny",
+    description: "Deny the pending risky tool request.",
+    category: "permissions"
+  },
+  {
     name: "doctor",
     usage: "/doctor",
     description: "Check Node, Git, and active provider diagnostics.",

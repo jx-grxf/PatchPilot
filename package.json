@@ -28,8 +28,9 @@
   },
   "homepage": "https://github.com/jx-grxf/PatchPilot#readme",
   "scripts": {
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
     "dev": "tsx src/cli.tsx",
-    "build": "tsc",
+    "build": "npm run clean && tsc",
     "prepack": "npm run build",
     "prepublishOnly": "npm run typecheck && npm test && npm run build && npm audit --omit=dev --audit-level=moderate && npm pack --dry-run",
     "start": "node dist/cli.js",

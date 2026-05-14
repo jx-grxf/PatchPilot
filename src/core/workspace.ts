@@ -5,12 +5,13 @@ import { platform } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { inflateRawSync } from "node:zlib";
-import type { AgentToolCall, ToolResult } from "./types.js";
+import type { AgentToolCall, AgentToolName, ApprovalRequest, PermissionDecision, ToolCategory, ToolPermission, ToolResult, ToolRisk, ToolSpec } from "./types.js";
 
 const execFileAsync = promisify(execFile);
 
 const ignoredDirectories = new Set([
   ".git",
+  ".patchpilot",
   "node_modules",
   "dist",
   "coverage",
@@ -79,7 +80,135 @@ export type WorkspaceToolsOptions = {
   allowShell: boolean;
   timeoutMs?: number;
   signal?: AbortSignal;
+  approvalHandler?: (request: ApprovalRequest) => Promise<PermissionDecision>;
 };
+
+export const toolSpecs: Record<AgentToolName, ToolSpec> = {
+  list_files: {
+    name: "list_files",
+    description: "List workspace files under a directory.",
+    risk: "low",
+    sideEffects: "none",
+    permission: "none",
+    category: "read"
+  },
+  read_file: {
+    name: "read_file",
+    description: "Read a complete text/code file.",
+    risk: "low",
+    sideEffects: "none",
+    permission: "none",
+    category: "read"
+  },
+  read_range: {
+    name: "read_range",
+    description: "Read a bounded 1-based line range from a text/code file.",
+    risk: "low",
+    sideEffects: "none",
+    permission: "none",
+    category: "read"
+  },
+  file_info: {
+    name: "file_info",
+    description: "Inspect file metadata inside the workspace.",
+    risk: "low",
+    sideEffects: "none",
+    permission: "none",
+    category: "read"
+  },
+  search_text: {
+    name: "search_text",
+    description: "Search workspace text with ripgrep.",
+    risk: "low",
+    sideEffects: "none",
+    permission: "none",
+    category: "search"
+  },
+  inspect_document: {
+    name: "inspect_document",
+    description: "Extract text from supported documents.",
+    risk: "low",
+    sideEffects: "none",
+    permission: "none",
+    category: "document"
+  },
+  git_status: {
+    name: "git_status",
+    description: "Read the current Git branch and dirty state.",
+    risk: "low",
+    sideEffects: "none",
+    permission: "none",
+    category: "git"
+  },
+  git_diff: {
+    name: "git_diff",
+    description: "Read the current Git diff.",
+    risk: "low",
+    sideEffects: "none",
+    permission: "none",
+    category: "git"
+  },
+  list_changed_files: {
+    name: "list_changed_files",
+    description: "List changed files from Git porcelain status.",
+    risk: "low",
+    sideEffects: "none",
+    permission: "none",
+    category: "git"
+  },
+  list_scripts: {
+    name: "list_scripts",
+    description: "List package.json scripts.",
+    risk: "low",
+    sideEffects: "none",
+    permission: "none",
+    category: "read"
+  },
+  write_file: {
+    name: "write_file",
+    description: "Write a full file in the workspace.",
+    risk: "high",
+    sideEffects: "write",
+    permission: "write",
+    category: "write"
+  },
+  apply_patch: {
+    name: "apply_patch",
+    description: "Apply a unified Git patch inside the workspace.",
+    risk: "high",
+    sideEffects: "write",
+    permission: "write",
+    category: "write"
+  },
+  run_script: {
+    name: "run_script",
+    description: "Run a named package.json script.",
+    risk: "medium",
+    sideEffects: "shell",
+    permission: "shell",
+    category: "shell"
+  },
+  run_tests: {
+    name: "run_tests",
+    description: "Run the repository test script.",
+    risk: "medium",
+    sideEffects: "shell",
+    permission: "shell",
+    category: "test"
+  },
+  run_shell: {
+    name: "run_shell",
+    description: "Run a restricted one-line shell command.",
+    risk: "high",
+    sideEffects: "shell",
+    permission: "shell",
+    category: "shell"
+  }
+};
+
+export function getToolSpec(name: AgentToolName): ToolSpec {
+  return toolSpecs[name];
+}
 
 export class WorkspaceTools {
   readonly root: string;
@@ -88,6 +217,8 @@ export class WorkspaceTools {
   private readonly allowShell: boolean;
   private readonly timeoutMs: number;
   private readonly signal?: AbortSignal;
+  private readonly approvalHandler?: (request: ApprovalRequest) => Promise<PermissionDecision>;
+  private readonly sessionApprovals = new Set<ToolPermission>();
 
   constructor(options: WorkspaceToolsOptions) {
     this.root = path.resolve(options.root);
@@ -96,6 +227,7 @@ export class WorkspaceTools {
     this.allowShell = options.allowShell;
     this.timeoutMs = options.timeoutMs ?? 60_000;
     this.signal = options.signal;
+    this.approvalHandler = options.approvalHandler;
   }
 
   async execute(call: AgentToolCall): Promise<ToolResult> {
@@ -105,16 +237,34 @@ export class WorkspaceTools {
           return await this.listFiles(readString(call.arguments.path, "."));
         case "read_file":
           return await this.readFile(readString(call.arguments.path, ""));
+        case "read_range":
+          return await this.readRange(
+            readString(call.arguments.path, ""),
+            readNumber(call.arguments.start, 1),
+            readNumber(call.arguments.end, readNumber(call.arguments.start, 1) + 80)
+          );
+        case "file_info":
+          return await this.fileInfo(readString(call.arguments.path, ""));
         case "search_text":
           return await this.searchText(readString(call.arguments.query, ""));
         case "inspect_document":
           return await this.inspectDocument(readString(call.arguments.path, ""));
         case "git_status":
           return await this.gitStatus();
+        case "git_diff":
+          return await this.gitDiff(readString(call.arguments.path, ""));
+        case "list_changed_files":
+          return await this.listChangedFiles();
         case "list_scripts":
           return await this.listScripts();
         case "write_file":
           return await this.writeFile(readString(call.arguments.path, ""), readString(call.arguments.content, ""));
+        case "apply_patch":
+          return await this.applyPatch(readString(call.arguments.patch, ""));
+        case "run_script":
+          return await this.runScript(readString(call.arguments.script, ""));
+        case "run_tests":
+          return await this.runTests();
         case "run_shell":
           return await this.runShell(readString(call.arguments.command, ""));
         default:
@@ -175,7 +325,9 @@ export class WorkspaceTools {
     return {
       ok: true,
       summary: `listed ${entries.length} files`,
-      content: entries.join("\n")
+      content: entries.join("\n"),
+      tool: "list_files",
+      category: toolSpecs.list_files.category
     };
   }
 
@@ -204,7 +356,79 @@ export class WorkspaceTools {
     return {
       ok: true,
       summary: `read ${path.relative(this.root, absolutePath)}`,
-      content: clippedContent
+      content: clippedContent,
+      tool: "read_file",
+      category: toolSpecs.read_file.category
+    };
+  }
+
+  private async readRange(requestedPath: string, startLine: number, endLine: number): Promise<ToolResult> {
+    if (!requestedPath) {
+      return denied("read_range requires a path.", "read_range");
+    }
+
+    if (startLine < 1 || endLine < startLine) {
+      return denied("read_range requires 1-based start/end lines.", "read_range");
+    }
+
+    if (isPlaceholderPath(requestedPath)) {
+      return denied(`read_range denied placeholder path: ${requestedPath}`, "read_range");
+    }
+
+    if (isSensitivePath(requestedPath)) {
+      return denied(`read_range denied sensitive path: ${requestedPath}`, "read_range");
+    }
+
+    const absolutePath = await this.resolveReadPath(requestedPath);
+    if (!isLikelyTextFile(absolutePath)) {
+      return denied(`read_range supports text/code files. Use inspect_document for ${path.extname(absolutePath) || "this file"} files.`, "read_range");
+    }
+
+    const lines = (await readFile(absolutePath, "utf8")).split(/\r?\n/);
+    const selectedLines = lines.slice(startLine - 1, endLine);
+    const numberedLines = selectedLines.map((line, index) => `${startLine + index}: ${line}`).join("\n");
+    return {
+      ok: true,
+      summary: `read ${path.relative(this.root, absolutePath)}:${startLine}-${Math.min(endLine, lines.length)}`,
+      content: clip(numberedLines || "No lines in range.", 20_000),
+      tool: "read_range",
+      category: toolSpecs.read_range.category,
+      metadata: {
+        path: path.relative(this.root, absolutePath),
+        startLine,
+        endLine: Math.min(endLine, lines.length)
+      }
+    };
+  }
+
+  private async fileInfo(requestedPath: string): Promise<ToolResult> {
+    if (!requestedPath) {
+      return denied("file_info requires a path.", "file_info");
+    }
+
+    if (isSensitivePath(requestedPath)) {
+      return denied(`file_info denied sensitive path: ${requestedPath}`, "file_info");
+    }
+
+    const absolutePath = await this.resolveReadPath(requestedPath);
+    const fileStat = await stat(absolutePath);
+    const relativePath = path.relative(this.root, absolutePath);
+    return {
+      ok: true,
+      summary: `inspected ${relativePath}`,
+      content: [
+        `path: ${relativePath}`,
+        `type: ${fileStat.isDirectory() ? "directory" : fileStat.isFile() ? "file" : "other"}`,
+        `size: ${fileStat.size} bytes`,
+        `modified: ${fileStat.mtime.toISOString()}`
+      ].join("\n"),
+      tool: "file_info",
+      category: toolSpecs.file_info.category,
+      metadata: {
+        path: relativePath,
+        size: fileStat.size,
+        modifiedAt: fileStat.mtime.toISOString()
+      }
     };
   }
 
@@ -274,13 +498,21 @@ export class WorkspaceTools {
     return {
       ok: true,
       summary: `found ${matches.length} matches`,
-      content: matches.join("\n") || "No matches."
+      content: matches.join("\n") || "No matches.",
+      tool: "search_text",
+      category: toolSpecs.search_text.category
     };
   }
 
   private async writeFile(requestedPath: string, content: string): Promise<ToolResult> {
     if (!this.allowWrite) {
-      return denied("write_file denied. Restart with --apply to allow workspace writes.");
+      const approval = await this.requestApproval("write_file", "write", {
+        path: requestedPath,
+        contentLength: content.length
+      }, `Write ${requestedPath} (${content.length} characters).`);
+      if (approval.decision === "deny") {
+        return denied("write_file denied by permission policy. Restart with --apply or approve the request in build mode.", "write_file", approval);
+      }
     }
 
     if (!requestedPath) {
@@ -302,7 +534,10 @@ export class WorkspaceTools {
     return {
       ok: true,
       summary: `wrote ${path.relative(this.root, absolutePath)}`,
-      content: `Wrote ${content.length} characters.`
+      content: `Wrote ${content.length} characters.`,
+      tool: "write_file",
+      category: toolSpecs.write_file.category,
+      preview: `Write ${path.relative(this.root, absolutePath)}`
     };
   }
 
@@ -318,7 +553,56 @@ export class WorkspaceTools {
     return {
       ok: true,
       summary: "read git status",
-      content: stdout.trim() || "No git status output."
+      content: stdout.trim() || "No git status output.",
+      tool: "git_status",
+      category: toolSpecs.git_status.category
+    };
+  }
+
+  private async gitDiff(requestedPath: string): Promise<ToolResult> {
+    const args = ["diff", "--"];
+    if (requestedPath.trim()) {
+      const absolutePath = this.resolveInsideWorkspace(requestedPath);
+      args.push(path.relative(this.root, absolutePath));
+    }
+
+    const { stdout } = await execFileAsync("git", args, {
+      cwd: this.root,
+      timeout: Math.min(this.timeoutMs, 8000),
+      maxBuffer: 1_000_000,
+      signal: this.signal,
+      windowsHide: true
+    });
+
+    return {
+      ok: true,
+      summary: stdout.trim() ? "read git diff" : "no git diff",
+      content: clip(stdout.trim() || "No changes.", 20_000),
+      tool: "git_diff",
+      category: toolSpecs.git_diff.category
+    };
+  }
+
+  private async listChangedFiles(): Promise<ToolResult> {
+    const { stdout } = await execFileAsync("git", ["status", "--porcelain"], {
+      cwd: this.root,
+      timeout: Math.min(this.timeoutMs, 8000),
+      maxBuffer: 200_000,
+      signal: this.signal,
+      windowsHide: true
+    });
+
+    const files = stdout
+      .split(/\r?\n/)
+      .map((line) => line.trimEnd())
+      .filter(Boolean);
+
+    return {
+      ok: true,
+      summary: `listed ${files.length} changed file${files.length === 1 ? "" : "s"}`,
+      content: files.join("\n") || "No changed files.",
+      tool: "list_changed_files",
+      category: toolSpecs.list_changed_files.category
     };
   }
 
@@ -332,13 +616,106 @@ export class WorkspaceTools {
     return {
       ok: true,
       summary: `listed ${scripts.length} package scripts`,
-      content: scripts.map(([name, command]) => `${name}: ${command}`).join("\n") || "No package scripts found."
+      content: scripts.map(([name, command]) => `${name}: ${command}`).join("\n") || "No package scripts found.",
+      tool: "list_scripts",
+      category: toolSpecs.list_scripts.category
+    };
+  }
+
+  private async applyPatch(patchContent: string): Promise<ToolResult> {
+    if (!patchContent.trim()) {
+      return denied("apply_patch requires a unified patch.", "apply_patch");
+    }
+
+    if (!this.allowWrite) {
+      const approval = await this.requestApproval(
+        "apply_patch",
+        "write",
+        {
+          patch: clip(patchContent, 1200)
+        },
+        previewPatch(patchContent)
+      );
+      if (approval.decision === "deny") {
+        return denied("apply_patch denied by permission policy.", "apply_patch", approval);
+      }
+    }
+
+    const output = await runGitApply(patchContent, this.root, this.timeoutMs, this.signal);
+    return {
+      ok: output.exitCode === 0,
+      summary: output.exitCode === 0 ? "applied patch" : `git apply exited ${output.exitCode}`,
+      content: clip(output.output || (output.exitCode === 0 ? "Patch applied." : "Patch failed."), 20_000),
+      tool: "apply_patch",
+      category: toolSpecs.apply_patch.category,
+      preview: previewPatch(patchContent)
+    };
+  }
+
+  private async runScript(scriptName: string): Promise<ToolResult> {
+    const normalizedScript = scriptName.trim();
+    if (!/^[\w:.-]+$/.test(normalizedScript)) {
+      return denied("run_script requires a package script name such as test or build.", "run_script");
+    }
+
+    const scripts = await this.readPackageScripts();
+    if (!scripts[normalizedScript]) {
+      return denied(`package script not found: ${normalizedScript}`, "run_script");
+    }
+
+    if (!this.allowShell) {
+      const approval = await this.requestApproval(
+        "run_script",
+        "shell",
+        {
+          script: normalizedScript
+        },
+        `Run package script: npm run ${normalizedScript}`
+      );
+      if (approval.decision === "deny") {
+        return denied("run_script denied by permission policy.", "run_script", approval);
+      }
+    }
+
+    const output = await runCommand(`npm run ${normalizedScript}`, this.root, this.timeoutMs, this.signal);
+    return {
+      ok: output.exitCode === 0,
+      summary: `npm run ${normalizedScript} exited ${output.exitCode}`,
+      content: clip(output.output, 20_000),
+      tool: "run_script",
+      category: toolSpecs.run_script.category,
+      preview: `npm run ${normalizedScript}`
+    };
+  }
+
+  private async runTests(): Promise<ToolResult> {
+    const scripts = await this.readPackageScripts();
+    if (!scripts.test) {
+      return denied("No package test script found.", "run_tests");
+    }
+
+    const result = await this.runScript("test");
+    return {
+      ...result,
+      tool: "run_tests",
+      category: toolSpecs.run_tests.category,
+      preview: "npm test"
     };
   }
 
   private async runShell(command: string): Promise<ToolResult> {
     if (!this.allowShell) {
-      return denied("run_shell denied. Restart with --allow-shell to allow commands.");
+      const approval = await this.requestApproval(
+        "run_shell",
+        "shell",
+        {
+          command
+        },
+        `Run shell command: ${command}`
+      );
+      if (approval.decision === "deny") {
+        return denied("run_shell denied by permission policy.", "run_shell", approval);
+      }
     }
 
     if (!command.trim()) {
@@ -354,7 +731,57 @@ export class WorkspaceTools {
     return {
       ok: output.exitCode === 0,
       summary: `command exited ${output.exitCode}`,
-      content: clip(output.output, 20_000)
+      content: clip(output.output, 20_000),
+      tool: "run_shell",
+      category: toolSpecs.run_shell.category,
+      preview: command
+    };
+  }
+
+  private async readPackageScripts(): Promise<Record<string, string>> {
+    const packageJsonPath = await this.resolveReadPath("package.json");
+    const packageJson = JSON.parse(await readFile(packageJsonPath, "utf8")) as { scripts?: Record<string, unknown> };
+    return Object.fromEntries(Object.entries(packageJson.scripts ?? {}).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
+  }
+
+  private async requestApproval(
+    tool: AgentToolName,
+    permission: Exclude<ToolPermission, "none">,
+    args: Record<string, unknown>,
+    preview: string
+  ): Promise<{ request: ApprovalRequest; decision: PermissionDecision }> {
+    const spec = getToolSpec(tool);
+    const request: ApprovalRequest = {
+      id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      tool,
+      permission,
+      risk: spec.risk,
+      preview,
+      arguments: args
+    };
+
+    if (this.sessionApprovals.has(permission)) {
+      return {
+        request,
+        decision: "allow_session"
+      };
+    }
+
+    if (!this.approvalHandler) {
+      return {
+        request,
+        decision: "deny"
+      };
+    }
+
+    const decision = await this.approvalHandler(request);
+    if (decision === "allow_session") {
+      this.sessionApprovals.add(permission);
+    }
+
+    return {
+      request,
+      decision
     };
   }
 
@@ -442,6 +869,7 @@ async function walkFiles(
 async function searchTextWithRipgrep(workspaceRoot: string, query: string, timeoutMs: number, signal?: AbortSignal): Promise<ToolResult | null> {
   const ignoreGlobs = [
     "!.git/**",
+    "!.patchpilot/**",
     "!node_modules/**",
     "!dist/**",
     "!coverage/**",
@@ -605,8 +1033,63 @@ function runCommand(command: string, cwd: string, timeoutMs: number, signal?: Ab
   });
 }
 
+function runGitApply(patchContent: string, cwd: string, timeoutMs: number, signal?: AbortSignal): Promise<{ exitCode: number | null; output: string }> {
+  return new Promise((resolve) => {
+    const child = spawn("git", ["apply", "--whitespace=nowarn", "-"], {
+      cwd,
+      signal,
+      windowsHide: true,
+      stdio: ["pipe", "pipe", "pipe"]
+    });
+
+    let output = "";
+    const timeout = setTimeout(() => {
+      output += `\nPatch timed out after ${timeoutMs}ms.`;
+      child.kill();
+    }, timeoutMs);
+
+    child.stdout.on("data", (chunk: Buffer) => {
+      output += chunk.toString("utf8");
+    });
+
+    child.stderr.on("data", (chunk: Buffer) => {
+      output += chunk.toString("utf8");
+    });
+
+    child.on("error", (error: NodeJS.ErrnoException) => {
+      clearTimeout(timeout);
+      resolve({
+        exitCode: error.name === "AbortError" ? null : 1,
+        output: error.name === "AbortError" ? "Patch aborted." : error.message
+      });
+    });
+
+    child.on("close", (exitCode: number | null) => {
+      clearTimeout(timeout);
+      resolve({ exitCode, output });
+    });
+
+    child.stdin.end(patchContent);
+  });
+}
+
 function readString(value: unknown, fallback: string): string {
   return typeof value === "string" ? value : fallback;
+}
+
+function readNumber(value: unknown, fallback: number): number {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return Math.trunc(value);
+  }
+
+  if (typeof value === "string") {
+    const parsed = Number.parseInt(value, 10);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+
+  return fallback;
 }
 
 function isPlaceholderPath(value: string): boolean {
@@ -622,11 +1105,21 @@ function isSensitivePath(value: string): boolean {
     .some((part) => blockedPathNames.has(part.toLowerCase()));
 }
 
-function denied(message: string): ToolResult {
+function denied(
+  message: string,
+  tool?: AgentToolName,
+  approval?: {
+    request: ApprovalRequest;
+    decision: PermissionDecision;
+  }
+): ToolResult {
   return {
     ok: false,
     summary: message,
-    content: message
+    content: message,
+    tool,
+    category: tool ? toolSpecs[tool].category : undefined,
+    approval
   };
 }
 
@@ -753,6 +1246,19 @@ function clip(content: string, maxLength: number): string {
   }
 
   return `${content.slice(0, maxLength)}\n...[clipped ${content.length - maxLength} chars]`;
+}
+
+function previewPatch(patchContent: string): string {
+  const changedFiles = patchContent
+    .split(/\r?\n/)
+    .filter((line) => line.startsWith("+++ ") || line.startsWith("--- "))
+    .map((line) => line.slice(4).replace(/^a\//, "").replace(/^b\//, ""))
+    .filter((file) => file !== "/dev/null");
+  const uniqueFiles = [...new Set(changedFiles)].slice(0, 6);
+  const fileSummary = uniqueFiles.length > 0 ? uniqueFiles.join(", ") : "unknown files";
+  const added = patchContent.split(/\r?\n/).filter((line) => line.startsWith("+") && !line.startsWith("+++")).length;
+  const removed = patchContent.split(/\r?\n/).filter((line) => line.startsWith("-") && !line.startsWith("---")).length;
+  return `Apply patch to ${fileSummary} (+${added}/-${removed}).`;
 }
 
 function validateShellCommand(command: string): string | null {

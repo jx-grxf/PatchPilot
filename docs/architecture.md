@@ -9,9 +9,10 @@ PatchPilot is split into a small agent core and an Ink terminal interface.
 | `OllamaClient` | Sends chat requests to the selected Ollama HTTP API and reads host model state |
 | `compute` | Classifies the selected Ollama endpoint as local or remote compute |
 | `subagents` | Runs small planner/reviewer advisor calls before the primary agent loop |
-| `AgentRunner` | Maintains the model loop and executes typed tool calls |
-| `WorkspaceTools` | Provides bounded file, search, write, and shell actions |
-| `App` | Renders the TUI transcript, status, and prompt input |
+| `AgentRunner` | Maintains the model loop, work-state transitions, session events, and typed tool calls |
+| `WorkspaceTools` | Provides bounded file, search, patch, Git, test, and shell actions |
+| `SessionStore` | Persists append-only JSONL session events and updates the global session index |
+| `App` | Renders the TUI transcript, approval prompts, status, and prompt input |
 | `systemStats` | Samples CPU and memory usage for the live header telemetry |
 
 ## Compute Model
@@ -69,6 +70,8 @@ Tool request:
 }
 ```
 
+PatchPilot exposes a `ToolSpec` registry for each tool. Specs describe risk, side effects, permission class, and transcript category. Read-only tools can run in parallel; write and shell-like tools run sequentially and pass through approval when the user has not globally enabled that permission.
+
 Final answer:
 
 ```json
@@ -78,9 +81,24 @@ Final answer:
 }
 ```
 
+## Sessions
+
+Each TUI launch creates a session id. Events are appended to `.patchpilot/sessions/<session-id>.jsonl` in the workspace:
+
+- `session.created`
+- `run.started`
+- `model.request`
+- `tool.requested`
+- `approval.requested`
+- `tool.completed`
+- `run.completed`
+- `run.failed`
+
+The workspace `.patchpilot/` folder is ignored by Git. A global index at `~/.patchpilot/session-index.json` keeps recent sessions discoverable for `patchpilot sessions`, `patchpilot resume`, `/sessions`, and `/resume`.
+
 ## Safety
 
-The workspace root is resolved once at startup. Every file path is resolved against that root and rejected if it escapes the workspace. Writes and shell commands are disabled by default.
+The workspace root is resolved once at startup. Every file path is resolved against that root and rejected if it escapes the workspace. Writes and shell commands are blocked by default. In the TUI, risky tools request approval with allow-once, allow-session, or deny decisions. `--apply` and `--allow-shell` remain explicit compatibility switches for users who want global write or shell permission.
 
 ## Telemetry
 

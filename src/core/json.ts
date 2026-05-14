@@ -4,11 +4,18 @@ import type { AgentResponse } from "./types.js";
 const toolNameSchema = z.enum([
   "list_files",
   "read_file",
+  "read_range",
+  "file_info",
   "search_text",
   "inspect_document",
   "git_status",
+  "git_diff",
+  "list_changed_files",
   "list_scripts",
   "write_file",
+  "apply_patch",
+  "run_script",
+  "run_tests",
   "run_shell"
 ]);
 

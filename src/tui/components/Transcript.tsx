@@ -9,6 +9,7 @@ type TranscriptRow = {
   text: string;
   color: InkColor;
   bold?: boolean;
+  dim?: boolean;
 };
 
 export function Transcript(props: {
@@ -48,14 +49,14 @@ function TranscriptRowView(props: { row: TranscriptRow }): React.ReactElement {
   return (
     <Box>
       <Box width={3}>
-        <Text color={props.row.color}>{props.row.marker}</Text>
+        <Text color={props.row.color} dimColor={props.row.dim}>{props.row.marker}</Text>
       </Box>
-      <Box width={13}>
-        <Text color={props.row.color} bold={props.row.bold}>
+      <Box width={14}>
+        <Text color={props.row.color} bold={props.row.bold} dimColor={props.row.dim}>
           {props.row.label}
         </Text>
       </Box>
-      <Text color={props.row.color} wrap="truncate">
+      <Text color={props.row.color} wrap="truncate" dimColor={props.row.dim}>
         {props.row.text}
       </Text>
     </Box>
@@ -78,15 +79,17 @@ function ScrollHint(props: { offset: number; total: number; visible: number }): 
 }
 
 function buildTranscriptRows(lines: LogLine[], width: number): TranscriptRow[] {
-  const textWidth = Math.max(18, width - 18);
+  const textWidth = Math.max(18, width - 19);
   return lines.flatMap((line): TranscriptRow[] => {
-    const color = toneToColor(line.tone);
-    const marker = toneToMarker(line.tone);
+    const color = colorForBlock(line);
+    const marker = markerForBlock(line);
+    const label = labelForBlock(line);
     const textRows = wrapText(line.text, textWidth);
-    const detailRows = line.detail ? wrapText(line.detail, textWidth) : [];
+    const metadata = [line.preview, line.workState ? `state ${line.workState}` : "", line.toolCallId ? `id ${line.toolCallId}` : ""].filter(Boolean).join("  ");
+    const detailRows = [line.detail, metadata].filter(Boolean).flatMap((detail) => wrapText(detail as string, textWidth));
     const rows: TranscriptRow[] = textRows.map((text, index) => ({
       marker: index === 0 ? marker : "",
-      label: index === 0 ? line.label : "",
+      label: index === 0 ? label : "",
       text,
       color,
       bold: index === 0
@@ -97,11 +100,12 @@ function buildTranscriptRows(lines: LogLine[], width: number): TranscriptRow[] {
         marker: "",
         label: "",
         text,
-        color: "gray" as const
+        color: "gray" as const,
+        dim: true
       }))
     );
 
-    if (line.detail) {
+    if (detailRows.length > 0) {
       rows.push({
         marker: "",
         label: "",
@@ -129,6 +133,56 @@ function emptyRows(): TranscriptRow[] {
       color: "gray"
     }
   ];
+}
+
+function markerForBlock(line: LogLine): string {
+  switch (line.kind) {
+    case "user":
+      return ">";
+    case "assistant":
+      return "<";
+    case "tool":
+      return "#";
+    case "diff":
+      return "+";
+    case "approval":
+      return "?";
+    case "error":
+      return "!";
+    case "final":
+      return "=";
+    case "status":
+      return toneToMarker(line.tone);
+  }
+}
+
+function labelForBlock(line: LogLine): string {
+  if (line.kind === "tool" && line.tool) {
+    return line.tool;
+  }
+
+  return line.label;
+}
+
+function colorForBlock(line: LogLine): InkColor {
+  switch (line.kind) {
+    case "user":
+      return "white";
+    case "assistant":
+      return "cyan";
+    case "tool":
+      return line.tone === "danger" || line.tone === "warning" ? toneToColor(line.tone) : "green";
+    case "diff":
+      return "yellow";
+    case "approval":
+      return "yellow";
+    case "error":
+      return "red";
+    case "final":
+      return "green";
+    case "status":
+      return toneToColor(line.tone);
+  }
 }
 
 function clampScrollOffset(offset: number, rowCount: number, visibleRowCount: number): number {
