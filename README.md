@@ -75,6 +75,8 @@ The core workflow is intentionally simple:
 4. Approve writes or shell commands only when the current task needs them.
 5. Review `/diff`, run tests, then commit manually.
 
+Mode behavior is intentionally explicit: `plan` is read-only, `build` keeps writes and shell behind approval prompts, and `build+bypass` enables write and shell permissions only after a visible warning is accepted in the TUI.
+
 ## Requirements
 
 | Requirement | Notes |
@@ -351,6 +353,7 @@ Release notes are kept in [docs/releases](docs/releases).
 
 | Version | Notes |
 |---|---|
+| `v0.3.1-beta` | [Release notes](docs/releases/v0.3.1-beta.md) |
 | `v0.3.0` | [Release notes](docs/releases/v0.3.0.md) |
 | `v0.2.1` | [Release notes](docs/releases/v0.2.1.md) |
 | `v0.2.0` | [Release notes](docs/releases/v0.2.0.md) |

@@ -24,6 +24,7 @@ import { Transcript } from "./components/Transcript.js";
 import { filterSlashCommands, formatCommandDetail, formatCommandHelp } from "./commands.js";
 import { formatCost, formatSessionTokens, formatTokens, normalizeModelAlias, readToggle } from "./format.js";
 import { checkOllamaHost, discoverOllamaHosts, normalizeOllamaUrl, readOllamaHostDetails, startLocalOllamaAppAndWait, type OllamaHost, type OllamaHostDetails } from "./hosts.js";
+import { initialAgentMode, modeDescription, modePermissionLabel, nextAgentMode, permissionsForMode } from "./modes.js";
 import { selectableModels } from "./modelSelection.js";
 import { readGpuStats, readSystemStats, type GpuStats, type SystemStats } from "./systemStats.js";
 import { maxTranscriptLines, type AdvisorNote, type AgentMode, type LogLine, type LogLineInput } from "./types.js";
@@ -66,7 +67,8 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   const [sessionTelemetry, setSessionTelemetry] = useState<SessionTelemetry>(() => emptySessionTelemetry());
   const [systemStats, setSystemStats] = useState<SystemStats>(() => readSystemStats().stats);
   const [gpuStats, setGpuStats] = useState<GpuStats | null>(null);
-  const [agentMode, setAgentMode] = useState<AgentMode>(props.allowWrite || props.allowShell ? "build" : "plan");
+  const [agentMode, setAgentMode] = useState<AgentMode>(() => initialAgentMode({ allowWrite: props.allowWrite, allowShell: props.allowShell }));
+  const [bypassConfirmation, setBypassConfirmation] = useState(false);
   const [hostOptions, setHostOptions] = useState<OllamaHost[]>([]);
   const [activeHost, setActiveHost] = useState<OllamaHostDetails | null>(null);
   const [isLoadingHosts, setIsLoadingHosts] = useState(false);
@@ -155,27 +157,67 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
 
   const applyMode = useCallback(
     (nextMode: AgentMode, announce = true) => {
+      const permissions = permissionsForMode(nextMode);
       setAgentMode(nextMode);
+      setBypassConfirmation(false);
       setSettings((currentSettings) => ({
         ...currentSettings,
-        allowWrite: nextMode === "build" ? grantedPermissionsRef.current.allowWrite : false,
-        allowShell: nextMode === "build" ? grantedPermissionsRef.current.allowShell : false
+        allowWrite: permissions.allowWrite,
+        allowShell: permissions.allowShell
       }));
 
       if (announce) {
         appendLine({
-          tone: "success",
+          tone: nextMode === "bypass" ? "warning" : "success",
           label: "mode",
-          text: `${nextMode} mode ${nextMode === "plan" ? "keeps tools read-only" : "uses enabled write/shell permissions"}`
+          text: modeDescription(nextMode),
+          detail:
+            nextMode === "plan"
+              ? "Read/search/status tools can still run. Writes, tests, scripts, and shell are denied."
+              : nextMode === "build"
+                ? "Risky tools can run only after allow once/session approval."
+                : "Use only in a trusted workspace. Path guards and destructive shell guards still apply."
         });
       }
     },
     [appendLine]
   );
 
+  const requestBypassMode = useCallback(() => {
+    setBypassConfirmation(true);
+    appendLine({
+      kind: "approval",
+      tone: "danger",
+      label: "bypass",
+      text: "Build + bypass will enable write and shell permissions without per-tool prompts.",
+      detail: "Press y to accept for this session, or n/Esc to stay in build mode. Use this only in a trusted workspace."
+    });
+  }, [appendLine]);
+
+  const confirmBypassMode = useCallback(() => {
+    applyMode("bypass");
+  }, [applyMode]);
+
+  const cancelBypassMode = useCallback(() => {
+    setBypassConfirmation(false);
+    applyMode("build", false);
+    appendLine({
+      kind: "approval",
+      tone: "warning",
+      label: "bypass",
+      text: "Bypass cancelled. Build mode still uses approvals."
+    });
+  }, [appendLine, applyMode]);
+
   const toggleMode = useCallback(() => {
-    applyMode(agentMode === "plan" ? "build" : "plan");
-  }, [agentMode, applyMode]);
+    const mode = nextAgentMode(agentMode);
+    if (mode === "bypass") {
+      requestBypassMode();
+      return;
+    }
+
+    applyMode(mode);
+  }, [agentMode, applyMode, requestBypassMode]);
 
   const loadHostSuggestions = useCallback(
     async (refresh = false, announce = false): Promise<OllamaHost[]> => {
@@ -769,6 +811,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         abortControllerRef.current = abortController;
         const taskRunner = new AgentRunner({
           ...runnableSettings,
+          mode: agentMode,
           signal: abortController.signal,
           sessionStore: sessionStoreRef.current,
           approvalHandler: (request) =>
@@ -785,6 +828,11 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
                   preview: request.preview
                 });
                 resolve("deny");
+                return;
+              }
+
+              if (agentMode === "bypass") {
+                resolve("allow_session");
                 return;
               }
 
@@ -868,14 +916,20 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           return;
         case "build":
         case "plan":
+        case "bypass":
         case "mode": {
           const nextMode = command === "mode" ? args[0]?.toLowerCase() : command;
-          if (nextMode !== "plan" && nextMode !== "build") {
+          if (nextMode !== "plan" && nextMode !== "build" && nextMode !== "bypass") {
             appendLine({
               tone: "accent",
               label: "mode",
-              text: `current ${agentMode}. Use /mode plan, /mode build, or press tab.`
+              text: `current ${agentMode}. Use /mode plan, /mode build, /mode bypass, or press tab.`
             });
+            return;
+          }
+
+          if (nextMode === "bypass" && agentMode !== "bypass") {
+            requestBypassMode();
             return;
           }
 
@@ -887,7 +941,8 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           appendLine({
             tone: "accent",
             label: "permissions",
-            text: `write ${settings.allowWrite ? "on" : "off"} | shell ${settings.allowShell ? "on" : "off"} | subagents ${settings.subagents ? "on" : "off"}`
+            text: `mode ${agentMode} | write ${modePermissionLabel(agentMode, "write")} | shell ${modePermissionLabel(agentMode, "shell")} | subagents ${settings.subagents ? "on" : "off"}`,
+            detail: modeDescription(agentMode)
           });
           return;
         case "provider": {
@@ -1000,36 +1055,32 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         case "apply": {
           const writeEnabled = readToggle(args[0], !settings.allowWrite);
           if (writeEnabled) {
-            setAgentMode("build");
+            requestBypassMode();
+            return;
           }
 
           grantedPermissionsRef.current.allowWrite = writeEnabled;
-          setSettings((currentSettings) => ({
-            ...currentSettings,
-            allowWrite: writeEnabled
-          }));
+          applyMode("build", false);
           appendLine({
             tone: "success",
             label: "write",
-            text: `workspace writes ${writeEnabled ? "enabled" : "disabled"}`
+            text: "workspace writes require approval in build mode"
           });
           return;
         }
         case "shell": {
           const shellEnabled = readToggle(args[0], !settings.allowShell);
           if (shellEnabled) {
-            setAgentMode("build");
+            requestBypassMode();
+            return;
           }
 
           grantedPermissionsRef.current.allowShell = shellEnabled;
-          setSettings((currentSettings) => ({
-            ...currentSettings,
-            allowShell: shellEnabled
-          }));
+          applyMode("build", false);
           appendLine({
             tone: "success",
             label: "shell",
-            text: `shell commands ${shellEnabled ? "enabled" : "disabled"}`
+            text: "shell commands require approval in build mode"
           });
           return;
         }
@@ -1141,8 +1192,8 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
             label: "status",
             text:
               settings.provider === "ollama"
-                ? `provider ollama | model ${settings.model} | host ${activeHost?.host.deviceName ?? settings.ollamaUrl} | route ${activeHost?.host.url ?? settings.ollamaUrl} | compute ${describeComputeTarget(settings.ollamaUrl).kind} | tools local | agents ${settings.subagents ? "on" : "off"} | write ${settings.allowWrite ? "on" : "off"} | shell ${settings.allowShell ? "on" : "off"} | draft ${draftTokens} tok | last ${formatTokens(telemetry)} | session ${formatSessionTokens(sessionTelemetry)} | cost ${formatCost(sessionTelemetry.estimatedCostUsd)}`
-              : `provider ${settings.provider} | model ${settings.model} | host ${settings.provider} api | compute cloud | agents ${settings.subagents ? "on" : "off"} | think ${settings.thinkingMode} | reasoning ${formatReasoningSupport(settings.provider, settings.model, settings.reasoningEffort === "adaptive" ? undefined : settings.reasoningEffort)} | write ${settings.allowWrite ? "on" : "off"} | shell ${settings.allowShell ? "on" : "off"} | draft ${draftTokens} tok | last ${formatTokens(telemetry)} | session ${formatSessionTokens(sessionTelemetry)} | cost ${formatCost(sessionTelemetry.estimatedCostUsd)}`
+                ? `provider ollama | model ${settings.model} | host ${activeHost?.host.deviceName ?? settings.ollamaUrl} | route ${activeHost?.host.url ?? settings.ollamaUrl} | compute ${describeComputeTarget(settings.ollamaUrl).kind} | tools local | agents ${settings.subagents ? "on" : "off"} | mode ${agentMode} | write ${modePermissionLabel(agentMode, "write")} | shell ${modePermissionLabel(agentMode, "shell")} | draft ${draftTokens} tok | last ${formatTokens(telemetry)} | session ${formatSessionTokens(sessionTelemetry)} | cost ${formatCost(sessionTelemetry.estimatedCostUsd)}`
+              : `provider ${settings.provider} | model ${settings.model} | host ${settings.provider} api | compute cloud | agents ${settings.subagents ? "on" : "off"} | think ${settings.thinkingMode} | reasoning ${formatReasoningSupport(settings.provider, settings.model, settings.reasoningEffort === "adaptive" ? undefined : settings.reasoningEffort)} | mode ${agentMode} | write ${modePermissionLabel(agentMode, "write")} | shell ${modePermissionLabel(agentMode, "shell")} | draft ${draftTokens} tok | last ${formatTokens(telemetry)} | session ${formatSessionTokens(sessionTelemetry)} | cost ${formatCost(sessionTelemetry.estimatedCostUsd)}`
           });
           return;
         case "sessions": {
@@ -1332,6 +1383,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       appendLine,
       applyMode,
       connectToHost,
+      requestBypassMode,
       draftTokens,
       exit,
       hostOptions,
@@ -1488,6 +1540,19 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   }, [hostOptions.length, input, isLoadingHosts, isLoadingModels, isRunning, loadHostSuggestions, loadProviderModels, modelOptions.length, onboarding, settings.provider]);
 
   useInput((inputValue, key) => {
+    if (bypassConfirmation) {
+      const normalizedInput = inputValue.toLowerCase();
+      if (normalizedInput === "y") {
+        confirmBypassMode();
+        return;
+      }
+
+      if (normalizedInput === "n" || key.escape) {
+        cancelBypassMode();
+        return;
+      }
+    }
+
     if (pendingApproval) {
       const normalizedInput = inputValue.toLowerCase();
       if (normalizedInput === "y") {

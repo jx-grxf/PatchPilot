@@ -93,6 +93,31 @@ describe("WorkspaceTools", () => {
     expect(result.summary).toContain("--apply");
   });
 
+  it("validates write paths before requesting approval", async () => {
+    let approvals = 0;
+    const tools = new WorkspaceTools({
+      root: tempRoot,
+      allowWrite: false,
+      allowShell: false,
+      approvalHandler: async () => {
+        approvals += 1;
+        return "allow_once";
+      }
+    });
+
+    const result = await tools.execute({
+      name: "write_file",
+      arguments: {
+        path: "relative/path",
+        content: "hello"
+      }
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.summary).toContain("placeholder");
+    expect(approvals).toBe(0);
+  });
+
   it("rejects placeholder read paths", async () => {
     const tools = new WorkspaceTools({
       root: tempRoot,
@@ -433,6 +458,30 @@ describe("WorkspaceTools", () => {
     });
     expect(gitResult.ok).toBe(false);
     expect(gitResult.summary).toContain("git clean");
+  });
+
+  it("validates shell commands before requesting approval", async () => {
+    let approvals = 0;
+    const tools = new WorkspaceTools({
+      root: tempRoot,
+      allowWrite: false,
+      allowShell: false,
+      approvalHandler: async () => {
+        approvals += 1;
+        return "allow_once";
+      }
+    });
+
+    const result = await tools.execute({
+      name: "run_shell",
+      arguments: {
+        command: "rm -rf src"
+      }
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.summary).toContain("destructive rm");
+    expect(approvals).toBe(0);
   });
 
   it("rejects writing through a symlinked directory outside the workspace", async () => {

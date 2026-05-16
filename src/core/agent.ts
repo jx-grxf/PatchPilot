@@ -13,6 +13,7 @@ export type AgentRunnerOptions = {
   model: string;
   ollamaUrl: string;
   workspace: string;
+  mode?: "plan" | "build" | "bypass";
   allowWrite: boolean;
   allowShell: boolean;
   maxSteps: number;
@@ -95,7 +96,12 @@ export class AgentRunner {
     const messages: ChatMessage[] = [
       {
         role: "system",
-        content: buildSystemPrompt(this.tools.root, subagentContext, workspaceSummary)
+        content: buildSystemPrompt(this.tools.root, subagentContext, workspaceSummary, {
+          mode: this.options.mode ?? (this.options.allowWrite || this.options.allowShell ? "bypass" : "plan"),
+          allowWrite: this.options.allowWrite,
+          allowShell: this.options.allowShell,
+          hasApprovalHandler: Boolean(this.options.approvalHandler)
+        })
       },
       {
         role: "user",
@@ -113,15 +119,16 @@ export class AgentRunner {
         return;
       }
 
+      const requestWorkState = stepIndex === 0 ? "planning" : "inspecting";
       yield {
         type: "status",
         message: `thinking step ${stepIndex + 1}/${maxSteps}${this.options.thinkingMode === "adaptive" ? " adaptive" : ""}`,
-        workState: stepIndex === 0 ? "planning" : "inspecting"
+        workState: requestWorkState
       };
       await this.options.sessionStore?.append({
         type: "model.request",
         runId,
-        workState: stepIndex === 0 ? "planning" : "inspecting",
+        workState: requestWorkState,
         provider: this.options.provider,
         model: this.options.model,
         step: stepIndex + 1,
@@ -140,7 +147,7 @@ export class AgentRunner {
       yield {
         type: "metrics",
         metrics: modelResponse.telemetry,
-        workState: "planning"
+        workState: requestWorkState
       };
 
       let parsedResponse;
@@ -280,7 +287,11 @@ export class AgentRunner {
 
       messages.push({
         role: "assistant",
-        content: rawResponse
+        content: JSON.stringify({
+          action: "tools",
+          message: parsedResponse.message,
+          tool_calls: toolCalls
+        })
       });
       messages.push({
         role: "user",
@@ -326,14 +337,41 @@ function shouldUseSubagents(task: string): boolean {
   );
 }
 
-function buildSystemPrompt(workspaceRoot: string, subagentContext: string, workspaceSummary: string): string {
+function buildSystemPrompt(
+  workspaceRoot: string,
+  subagentContext: string,
+  workspaceSummary: string,
+  permissions: {
+    mode: "plan" | "build" | "bypass";
+    allowWrite: boolean;
+    allowShell: boolean;
+    hasApprovalHandler: boolean;
+  }
+): string {
   const workspaceLabel = path.basename(workspaceRoot) || "workspace";
+  const writePolicy = permissions.allowWrite
+    ? "write tools bypass approval for this run"
+    : permissions.hasApprovalHandler && permissions.mode === "build"
+      ? "write tools require interactive approval"
+      : "write tools are unavailable";
+  const shellPolicy = permissions.allowShell
+    ? "shell and test tools bypass approval for this run"
+    : permissions.hasApprovalHandler && permissions.mode === "build"
+      ? "shell and test tools require interactive approval"
+      : "shell and test tools are unavailable";
   return [
     "You are PatchPilot, a local coding agent running inside a terminal TUI.",
     "You help inspect, edit, test, and explain code inside one workspace.",
     `Runtime OS: ${type()} ${release()} (${platform()}). Use OS-appropriate shell commands and paths.`,
     `Workspace root: ${workspaceRoot}`,
     `Workspace label: ${workspaceLabel}`,
+    `Execution mode: ${permissions.mode}.`,
+    `Permission policy: ${writePolicy}; ${shellPolicy}.`,
+    permissions.mode === "plan"
+      ? "Plan mode is read-only: inspect files, explain findings, and return an implementation plan. Do not call write_file, apply_patch, run_script, run_tests, or run_shell."
+      : permissions.mode === "bypass"
+        ? "Build+bypass mode may run write, script, test, or shell tools without per-tool approval. Keep actions narrow and avoid broad destructive commands."
+        : "Build mode may request write, script, test, or shell tools when necessary. Prefer focused tool calls and keep risky actions easy to approve.",
     `All tool paths are relative to the workspace root. If the workspace is named "${workspaceLabel}", do not prefix paths with "${workspaceLabel}/". Use "." for the workspace root.`,
     "Treat short questions about this project, its language, stack, quality, architecture, dependencies, tests, or files as workspace questions.",
     "For greetings, small talk, or clearly non-workspace chat, answer normally without tool calls.",

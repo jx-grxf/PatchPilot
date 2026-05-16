@@ -1,6 +1,6 @@
 import type { AgentToolName, AgentWorkState, SubagentRole, ToolCategory } from "../core/types.js";
 
-export type AgentMode = "plan" | "build";
+export type AgentMode = "plan" | "build" | "bypass";
 
 export type LogTone = "muted" | "normal" | "success" | "warning" | "danger" | "accent";
 
