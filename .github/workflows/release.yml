@@ -57,11 +57,16 @@ jobs:
             exit 0
           fi
 
+          PUBLISH_TAG="latest"
+          if [[ "$GITHUB_REF_NAME" == *-* ]]; then
+            PUBLISH_TAG="beta"
+          fi
+
           if [ -n "${NODE_AUTH_TOKEN:-}" ]; then
-            npm publish --access public --provenance
+            npm publish --access public --provenance --tag "$PUBLISH_TAG"
           else
             echo "NPM_TOKEN is not configured. Falling back to npm trusted publishing/OIDC."
-            npm publish --access public --provenance
+            npm publish --access public --provenance --tag "$PUBLISH_TAG"
           fi
 
       - name: Create GitHub release
@@ -73,10 +78,14 @@ jobs:
             echo "Release notes file $RELEASE_NOTES is missing."
             exit 1
           fi
+          RELEASE_FLAGS=()
+          if [[ "$GITHUB_REF_NAME" == *-* ]]; then
+            RELEASE_FLAGS+=(--prerelease)
+          fi
 
           if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
-            gh release edit "${GITHUB_REF_NAME}" --notes-file "$RELEASE_NOTES"
+            gh release edit "${GITHUB_REF_NAME}" --notes-file "$RELEASE_NOTES" "${RELEASE_FLAGS[@]}"
             gh release upload "${GITHUB_REF_NAME}" *.tgz --clobber
           else
-            gh release create "${GITHUB_REF_NAME}" --verify-tag --notes-file "$RELEASE_NOTES" *.tgz
+            gh release create "${GITHUB_REF_NAME}" --verify-tag --notes-file "$RELEASE_NOTES" "${RELEASE_FLAGS[@]}" *.tgz
           fi
