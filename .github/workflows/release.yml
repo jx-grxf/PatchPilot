@@ -68,8 +68,15 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
+          RELEASE_NOTES="docs/releases/${GITHUB_REF_NAME}.md"
+          if [ ! -f "$RELEASE_NOTES" ]; then
+            echo "Release notes file $RELEASE_NOTES is missing."
+            exit 1
+          fi
+
           if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            gh release edit "${GITHUB_REF_NAME}" --notes-file "$RELEASE_NOTES"
             gh release upload "${GITHUB_REF_NAME}" *.tgz --clobber
           else
-            gh release create "${GITHUB_REF_NAME}" --verify-tag --generate-notes *.tgz
+            gh release create "${GITHUB_REF_NAME}" --verify-tag --notes-file "$RELEASE_NOTES" *.tgz
           fi
