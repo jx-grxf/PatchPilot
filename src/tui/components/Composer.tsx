@@ -57,7 +57,7 @@ export function FooterHints(props: { activePane: "transcript" | "session" }): Re
   return (
     <Box height={1} overflowY="hidden">
       <Text color="gray">
-        tab mode  |  pane {props.activePane}  |  left/right pane  |  pgup/pgdn scroll  |  / starts palette
+        tab plan/build/bypass  |  pane {props.activePane}  |  left/right pane  |  pgup/pgdn scroll  |  / starts palette
       </Text>
     </Box>
   );

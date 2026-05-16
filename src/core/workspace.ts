@@ -505,16 +505,6 @@ export class WorkspaceTools {
   }
 
   private async writeFile(requestedPath: string, content: string): Promise<ToolResult> {
-    if (!this.allowWrite) {
-      const approval = await this.requestApproval("write_file", "write", {
-        path: requestedPath,
-        contentLength: content.length
-      }, `Write ${requestedPath} (${content.length} characters).`);
-      if (approval.decision === "deny") {
-        return denied("write_file denied by permission policy. Restart with --apply or approve the request in build mode.", "write_file", approval);
-      }
-    }
-
     if (!requestedPath) {
       return denied("write_file requires a path.");
     }
@@ -525,6 +515,16 @@ export class WorkspaceTools {
 
     if (isSensitivePath(requestedPath)) {
       return denied(`write_file denied sensitive path: ${requestedPath}`);
+    }
+
+    if (!this.allowWrite) {
+      const approval = await this.requestApproval("write_file", "write", {
+        path: requestedPath,
+        contentLength: content.length
+      }, `Write ${requestedPath} (${content.length} characters).`);
+      if (approval.decision === "deny") {
+        return denied("write_file denied by permission policy. Restart with --apply or approve the request in build mode.", "write_file", approval);
+      }
     }
 
     const absolutePath = await this.resolveWritePath(requestedPath);
@@ -704,6 +704,15 @@ export class WorkspaceTools {
   }
 
   private async runShell(command: string): Promise<ToolResult> {
+    if (!command.trim()) {
+      return denied("run_shell requires a command.");
+    }
+
+    const shellSafetyError = validateShellCommand(command);
+    if (shellSafetyError) {
+      return denied(`run_shell denied. ${shellSafetyError}`);
+    }
+
     if (!this.allowShell) {
       const approval = await this.requestApproval(
         "run_shell",
@@ -716,15 +725,6 @@ export class WorkspaceTools {
       if (approval.decision === "deny") {
         return denied("run_shell denied by permission policy.", "run_shell", approval);
       }
-    }
-
-    if (!command.trim()) {
-      return denied("run_shell requires a command.");
-    }
-
-    const shellSafetyError = validateShellCommand(command);
-    if (shellSafetyError) {
-      return denied(`run_shell denied. ${shellSafetyError}`);
     }
 
     const output = await runCommand(command, this.root, this.timeoutMs, this.signal);

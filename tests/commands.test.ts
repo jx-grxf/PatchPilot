@@ -12,6 +12,7 @@ describe("filterSlashCommands", () => {
 
   it("includes build mode shortcut", () => {
     expect(filterSlashCommands("/b").map((command) => command.name)).toContain("build");
+    expect(filterSlashCommands("/b").map((command) => command.name)).toContain("bypass");
   });
 
   it("filters model commands by prefix", () => {

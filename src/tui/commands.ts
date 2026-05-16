@@ -88,8 +88,8 @@ export const slashCommands: SlashCommand[] = [
   },
   {
     name: "mode",
-    usage: "/mode plan|build",
-    description: "Switch between read-only planning and implementation mode.",
+    usage: "/mode plan|build|bypass",
+    description: "Switch between read-only, approval, and bypass modes.",
     category: "session",
     shortcut: "tab"
   },
@@ -104,6 +104,12 @@ export const slashCommands: SlashCommand[] = [
     usage: "/build",
     description: "Shortcut for /mode build.",
     category: "session"
+  },
+  {
+    name: "bypass",
+    usage: "/bypass",
+    description: "Request build mode without per-tool approvals.",
+    category: "permissions"
   },
   {
     name: "connect",

@@ -3,6 +3,7 @@ import { Box, Text } from "ink";
 import type { AgentWorkState, ModelProvider, ModelTelemetry, SessionTelemetry } from "../../core/types.js";
 import { formatCost, formatLatency, formatSessionTokens, formatSpeed, getModelHint, shortenMiddle, type InkColor } from "../format.js";
 import type { OllamaHostDetails } from "../hosts.js";
+import { modePermissionLabel } from "../modes.js";
 import type { GpuStats, SystemStats } from "../systemStats.js";
 import type { AgentMode } from "../types.js";
 
@@ -40,15 +41,35 @@ export function Header(props: {
       </Box>
       <Text color={modelHint.color} wrap="truncate">
         {props.provider}/{shortenMiddle(props.model, 34)} <Text color="gray">on</Text> {shortenMiddle(hostLabel, 20)} <Text color="gray">mode</Text>{" "}
-        <Text color={props.agentMode === "build" ? "yellow" : "green"}>{props.agentMode}</Text>{" "}
-        <Text color="gray">write</Text> <Text color={props.allowWrite ? "green" : "gray"}>{props.allowWrite ? "on" : "approval"}</Text>{" "}
-        <Text color="gray">shell</Text> <Text color={props.allowShell ? "green" : "gray"}>{props.allowShell ? "on" : "approval"}</Text>
+        <Text color={modeColor(props.agentMode)}>{formatMode(props.agentMode)}</Text>{" "}
+        <Text color="gray">write</Text> <Text color={permissionColor(props.agentMode)}>{modePermissionLabel(props.agentMode, "write")}</Text>{" "}
+        <Text color="gray">shell</Text> <Text color={permissionColor(props.agentMode)}>{modePermissionLabel(props.agentMode, "shell")}</Text>
       </Text>
       <Text color="gray" wrap="truncate">
         {shortenMiddle(props.status, 58)}  {formatSessionTokens(props.sessionTelemetry)}  {formatCost(props.sessionTelemetry.estimatedCostUsd)}  {formatSpeed(props.telemetry)} {formatLatency(props.telemetry)}
       </Text>
     </Box>
   );
+}
+
+function formatMode(agentMode: AgentMode): string {
+  return agentMode === "bypass" ? "build+bypass" : agentMode;
+}
+
+function modeColor(agentMode: AgentMode): InkColor {
+  if (agentMode === "bypass") {
+    return "red";
+  }
+
+  return agentMode === "build" ? "yellow" : "green";
+}
+
+function permissionColor(agentMode: AgentMode): InkColor {
+  if (agentMode === "bypass") {
+    return "red";
+  }
+
+  return agentMode === "build" ? "yellow" : "gray";
 }
 
 function formatWorkState(workState: AgentWorkState): string {

@@ -3,6 +3,7 @@ import { Box, Text } from "ink";
 import type { AgentWorkState, ModelProvider, ModelTelemetry, SessionTelemetry } from "../../core/types.js";
 import { formatCost, formatGpuMemory, formatGpuUtilization, formatOllamaHost, formatSessionTokens, formatTokens, shortenMiddle, type InkColor } from "../format.js";
 import type { OllamaHostDetails } from "../hosts.js";
+import { modeDescription, modePermissionLabel } from "../modes.js";
 import type { GpuStats, SystemStats } from "../systemStats.js";
 import type { AgentMode, AdvisorNote } from "../types.js";
 
@@ -85,14 +86,15 @@ function buildSidebarRows(props: {
   const rows: SidebarLine[] = [
     section("Session"),
     row("state", props.workState.replace(/_/g, " "), props.workState === "error" ? "red" : props.workState === "waiting_approval" ? "yellow" : "green"),
-    row("mode", props.agentMode, props.agentMode === "build" ? "yellow" : "green"),
+    row("mode", formatMode(props.agentMode), modeColor(props.agentMode)),
     row("session", shortenMiddle(props.sessionId, 18), "cyan"),
     row("agents", props.subagents ? "on" : "off", props.subagents ? "cyan" : "gray"),
     spacer(),
     section("Permissions"),
-    row("mode", props.agentMode, props.agentMode === "build" ? "yellow" : "green"),
-    row("write", props.allowWrite ? "on" : "approval", props.allowWrite ? "green" : "yellow"),
-    row("shell", props.allowShell ? "on" : "approval", props.allowShell ? "green" : "yellow"),
+    row("mode", formatMode(props.agentMode), modeColor(props.agentMode)),
+    muted(modeDescription(props.agentMode)),
+    row("write", modePermissionLabel(props.agentMode, "write"), permissionColor(props.agentMode)),
+    row("shell", modePermissionLabel(props.agentMode, "shell"), permissionColor(props.agentMode)),
     spacer(),
     section("Model"),
     row("provider", props.provider, props.provider === "ollama" ? "green" : "cyan"),
@@ -135,6 +137,26 @@ function buildSidebarRows(props: {
   }
 
   return rows;
+}
+
+function formatMode(agentMode: AgentMode): string {
+  return agentMode === "bypass" ? "build+bypass" : agentMode;
+}
+
+function modeColor(agentMode: AgentMode): InkColor {
+  if (agentMode === "bypass") {
+    return "red";
+  }
+
+  return agentMode === "build" ? "yellow" : "green";
+}
+
+function permissionColor(agentMode: AgentMode): InkColor {
+  if (agentMode === "bypass") {
+    return "red";
+  }
+
+  return agentMode === "build" ? "yellow" : "gray";
 }
 
 function section(text: string): SidebarLine {
