@@ -12,6 +12,7 @@ import { defaultNvidiaModel } from "./core/nvidia.js";
 import { runDoctor } from "./core/doctor.js";
 import { defaultOllamaModel, resolveOllamaBaseUrl } from "./core/ollama.js";
 import { defaultOpenRouterModel } from "./core/openrouter.js";
+import { listIndexedSessions, listWorkspaceSessions, loadSessionSummary } from "./core/session.js";
 import { App } from "./tui/App.js";
 
 loadPatchPilotEnv();
@@ -60,6 +61,44 @@ program
     }
 
     process.exitCode = results.every((result) => result.ok) ? 0 : 1;
+  });
+
+program
+  .command("sessions")
+  .description("List recent PatchPilot sessions.")
+  .option("--workspace <path>", "Workspace root. Defaults to the current directory.")
+  .action(async (options: { workspace?: string }) => {
+    const sessions = options.workspace ? await listWorkspaceSessions(path.resolve(options.workspace)) : await listIndexedSessions();
+    if (sessions.length === 0) {
+      console.log("No PatchPilot sessions found.");
+      return;
+    }
+
+    for (const session of sessions.slice(0, 20)) {
+      console.log(`${session.sessionId}  ${session.updatedAt}  ${session.workspace}  ${session.lastTask ?? ""}`);
+    }
+  });
+
+program
+  .command("resume")
+  .description("Show a previous PatchPilot session summary.")
+  .argument("[session-id]", "Session id to inspect. Defaults to the latest workspace session.")
+  .option("--workspace <path>", "Workspace root", process.cwd())
+  .action(async (sessionId: string | undefined, options: { workspace: string }) => {
+    const workspace = path.resolve(options.workspace);
+    const latest = sessionId ? null : (await listWorkspaceSessions(workspace))[0] ?? null;
+    const summary = sessionId ? await loadSessionSummary(workspace, sessionId) : latest;
+    if (!summary) {
+      console.log("No PatchPilot session found for this workspace.");
+      process.exitCode = 1;
+      return;
+    }
+
+    console.log(`session: ${summary.sessionId}`);
+    console.log(`workspace: ${summary.workspace}`);
+    console.log(`updated: ${summary.updatedAt}`);
+    console.log(`model: ${summary.provider ?? "-"} ${summary.model ?? "-"}`);
+    console.log(`last task: ${summary.lastTask ?? "-"}`);
   });
 
 program

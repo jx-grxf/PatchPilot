@@ -1,8 +1,9 @@
 import React from "react";
 import { Box, Text } from "ink";
-import type { ModelProvider, ModelTelemetry, SessionTelemetry } from "../../core/types.js";
-import { formatCost, formatOllamaHost, formatSessionTokens, formatTokens, shortenMiddle, type InkColor } from "../format.js";
+import type { AgentWorkState, ModelProvider, ModelTelemetry, SessionTelemetry } from "../../core/types.js";
+import { formatCost, formatGpuMemory, formatGpuUtilization, formatOllamaHost, formatSessionTokens, formatTokens, shortenMiddle, type InkColor } from "../format.js";
 import type { OllamaHostDetails } from "../hosts.js";
+import type { GpuStats, SystemStats } from "../systemStats.js";
 import type { AgentMode, AdvisorNote } from "../types.js";
 
 type SidebarLine = {
@@ -20,6 +21,10 @@ export function Sidebar(props: {
   allowWrite: boolean;
   allowShell: boolean;
   subagents: boolean;
+  workState: AgentWorkState;
+  sessionId: string;
+  systemStats: SystemStats;
+  gpuStats: GpuStats | null;
   telemetry: ModelTelemetry | null;
   sessionTelemetry: SessionTelemetry;
   draftTokens: number;
@@ -61,6 +66,10 @@ function buildSidebarRows(props: {
   allowWrite: boolean;
   allowShell: boolean;
   subagents: boolean;
+  workState: AgentWorkState;
+  sessionId: string;
+  systemStats: SystemStats;
+  gpuStats: GpuStats | null;
   telemetry: ModelTelemetry | null;
   sessionTelemetry: SessionTelemetry;
   draftTokens: number;
@@ -75,11 +84,19 @@ function buildSidebarRows(props: {
   const hostLoaded = props.activeHost?.runningModels.length ? props.activeHost.runningModels.map((model) => formatRunningModel(model)).join(", ") : "idle";
   const rows: SidebarLine[] = [
     section("Session"),
-    row("provider", props.provider, props.provider === "ollama" ? "green" : "cyan"),
+    row("state", props.workState.replace(/_/g, " "), props.workState === "error" ? "red" : props.workState === "waiting_approval" ? "yellow" : "green"),
     row("mode", props.agentMode, props.agentMode === "build" ? "yellow" : "green"),
-    row("write", props.allowWrite ? "on" : "off", props.allowWrite ? "green" : "red"),
-    row("shell", props.allowShell ? "on" : "off", props.allowShell ? "green" : "red"),
+    row("session", shortenMiddle(props.sessionId, 18), "cyan"),
     row("agents", props.subagents ? "on" : "off", props.subagents ? "cyan" : "gray"),
+    spacer(),
+    section("Permissions"),
+    row("mode", props.agentMode, props.agentMode === "build" ? "yellow" : "green"),
+    row("write", props.allowWrite ? "on" : "approval", props.allowWrite ? "green" : "yellow"),
+    row("shell", props.allowShell ? "on" : "approval", props.allowShell ? "green" : "yellow"),
+    spacer(),
+    section("Model"),
+    row("provider", props.provider, props.provider === "ollama" ? "green" : "cyan"),
+    muted(shortenMiddle(props.model, 28)),
     spacer(),
     section("Host"),
     row("device", shortenMiddle(hostDeviceName, 19), "yellow"),
@@ -88,12 +105,13 @@ function buildSidebarRows(props: {
     muted(`version ${hostVersion}`),
     muted(`models  ${hostModels}`),
     ...wrapSidebarText(`loaded  ${hostLoaded}`),
-    muted(shortenMiddle(props.model, 28)),
     spacer(),
     section("Workspace"),
     ...wrapSidebarText(shortenMiddle(props.workspace, 58)),
     spacer(),
-    section("Telemetry"),
+    section("Runtime"),
+    muted(`cpu ${props.systemStats.cpuPercent}%  mem ${props.systemStats.memoryPercent}%/${props.systemStats.usedMemoryGb}G`),
+    muted(`gpu ${formatGpuUtilization(props.gpuStats)}  vram ${formatGpuMemory(props.gpuStats)}`),
     muted(`draft ${props.draftTokens} tok`),
     ...wrapSidebarText(formatTokens(props.telemetry)),
     ...wrapSidebarText(formatSessionTokens(props.sessionTelemetry)),

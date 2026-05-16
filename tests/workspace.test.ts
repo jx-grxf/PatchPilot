@@ -211,6 +211,116 @@ describe("WorkspaceTools", () => {
     expect(result.content).toContain("##");
   });
 
+  it("reads a bounded line range", async () => {
+    await writeFile(path.join(tempRoot, "note.txt"), "one\ntwo\nthree\n");
+    const tools = new WorkspaceTools({
+      root: tempRoot,
+      allowWrite: false,
+      allowShell: false
+    });
+
+    const result = await tools.execute({
+      name: "read_range",
+      arguments: {
+        path: "note.txt",
+        start: 2,
+        end: 3
+      }
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.content).toContain("2: two");
+    expect(result.content).toContain("3: three");
+  });
+
+  it("reads git diff and changed files", async () => {
+    await execFileAsync("git", ["init"], {
+      cwd: tempRoot
+    });
+    await writeFile(path.join(tempRoot, "note.txt"), "one\n");
+    await execFileAsync("git", ["add", "note.txt"], {
+      cwd: tempRoot
+    });
+    await execFileAsync("git", ["-c", "commit.gpgsign=false", "commit", "-m", "init"], {
+      cwd: tempRoot,
+      env: {
+        ...process.env,
+        GIT_AUTHOR_NAME: "PatchPilot",
+        GIT_AUTHOR_EMAIL: "patchpilot@example.com",
+        GIT_COMMITTER_NAME: "PatchPilot",
+        GIT_COMMITTER_EMAIL: "patchpilot@example.com"
+      }
+    });
+    await writeFile(path.join(tempRoot, "note.txt"), "one\ntwo\n");
+
+    const tools = new WorkspaceTools({
+      root: tempRoot,
+      allowWrite: false,
+      allowShell: false
+    });
+
+    const diff = await tools.execute({
+      name: "git_diff",
+      arguments: {}
+    });
+    expect(diff.ok).toBe(true);
+    expect(diff.content).toContain("+two");
+
+    const files = await tools.execute({
+      name: "list_changed_files",
+      arguments: {}
+    });
+    expect(files.content).toContain("note.txt");
+  });
+
+  it("applies unified patches when writes are enabled", async () => {
+    await execFileAsync("git", ["init"], {
+      cwd: tempRoot
+    });
+    await writeFile(path.join(tempRoot, "note.txt"), "one\n");
+    const tools = new WorkspaceTools({
+      root: tempRoot,
+      allowWrite: true,
+      allowShell: false
+    });
+
+    const result = await tools.execute({
+      name: "apply_patch",
+      arguments: {
+        patch: ["diff --git a/note.txt b/note.txt", "index 5626abf..814f4a4 100644", "--- a/note.txt", "+++ b/note.txt", "@@ -1 +1,2 @@", " one", "+two", ""].join("\n")
+      }
+    });
+
+    expect(result.ok).toBe(true);
+    await expect(readFile(path.join(tempRoot, "note.txt"), "utf8")).resolves.toBe("one\ntwo\n");
+  });
+
+  it("requests approval for scripts when shell is not globally enabled", async () => {
+    await writeFile(
+      path.join(tempRoot, "package.json"),
+      JSON.stringify({
+        scripts: {
+          test: "node -e \"process.exit(0)\""
+        }
+      })
+    );
+    const tools = new WorkspaceTools({
+      root: tempRoot,
+      allowWrite: false,
+      allowShell: false,
+      approvalHandler: async () => "deny"
+    });
+
+    const result = await tools.execute({
+      name: "run_tests",
+      arguments: {}
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.approval?.request.tool).toBe("run_script");
+    expect(result.approval?.decision).toBe("deny");
+  });
+
   it("skips symlinked directories when listing files", async () => {
     const outsideRoot = await mkdtemp(path.join(tmpdir(), "patchpilot-outside-"));
     await mkdir(path.join(tempRoot, "src"));
@@ -269,9 +379,13 @@ describe("WorkspaceTools", () => {
 
   it("does not expose sensitive files through search_text", async () => {
     await mkdir(path.join(tempRoot, "nested"));
+    await mkdir(path.join(tempRoot, ".patchpilot", "sessions"), {
+      recursive: true
+    });
     await writeFile(path.join(tempRoot, ".env"), "GEMINI_API_KEY=secret-root\n");
     await writeFile(path.join(tempRoot, ".npmrc"), "//registry.npmjs.org/:_authToken=secret-npm\n");
     await writeFile(path.join(tempRoot, "nested", ".env.local"), "OPENROUTER_API_KEY=secret-nested\n");
+    await writeFile(path.join(tempRoot, ".patchpilot", "sessions", "session.jsonl"), "secret-session\n");
     await writeFile(path.join(tempRoot, "note.txt"), "ordinary secret word\n");
 
     const tools = new WorkspaceTools({
@@ -292,6 +406,7 @@ describe("WorkspaceTools", () => {
     expect(result.content).not.toContain("secret-root");
     expect(result.content).not.toContain("secret-npm");
     expect(result.content).not.toContain("secret-nested");
+    expect(result.content).not.toContain("secret-session");
   });
 
   it("blocks destructive simple shell commands even when shell is enabled", async () => {

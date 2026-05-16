@@ -11,8 +11,10 @@ import { defaultNvidiaModel, readNvidiaApiKey } from "../core/nvidia.js";
 import { defaultOllamaModel, OllamaClient } from "../core/ollama.js";
 import { defaultOpenRouterModel, isOpenRouterFreeModel, readOpenRouterApiKey } from "../core/openrouter.js";
 import { formatReasoningSupport } from "../core/reasoning.js";
+import { listWorkspaceSessions, loadSessionSummary, SessionStore } from "../core/session.js";
 import { addTelemetryToSession, emptySessionTelemetry, estimateTokens } from "../core/tokenAccounting.js";
-import type { AgentEvent, ModelProvider, ModelTelemetry, SessionTelemetry } from "../core/types.js";
+import type { AgentEvent, AgentWorkState, ApprovalRequest, ModelProvider, ModelTelemetry, PermissionDecision, SessionTelemetry } from "../core/types.js";
+import { WorkspaceTools } from "../core/workspace.js";
 import { CommandSuggestions, type CommandSuggestionItem } from "./components/CommandSuggestions.js";
 import { Composer, FooterHints } from "./components/Composer.js";
 import { Header } from "./components/Header.js";
@@ -24,7 +26,7 @@ import { formatCost, formatSessionTokens, formatTokens, normalizeModelAlias, rea
 import { checkOllamaHost, discoverOllamaHosts, normalizeOllamaUrl, readOllamaHostDetails, startLocalOllamaAppAndWait, type OllamaHost, type OllamaHostDetails } from "./hosts.js";
 import { selectableModels } from "./modelSelection.js";
 import { readGpuStats, readSystemStats, type GpuStats, type SystemStats } from "./systemStats.js";
-import { maxTranscriptLines, type AdvisorNote, type AgentMode, type LogLine } from "./types.js";
+import { maxTranscriptLines, type AdvisorNote, type AgentMode, type LogLine, type LogLineInput } from "./types.js";
 
 export type PatchPilotAppProps = AgentRunnerOptions & {
   initialTask?: string;
@@ -45,6 +47,8 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   const didRunInitialTask = useRef(false);
   const didOpenDefaultOnboarding = useRef(false);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const sessionStoreRef = useRef(new SessionStore({ workspace: props.workspace }));
+  const approvalResolverRef = useRef<((decision: PermissionDecision) => void) | null>(null);
   const grantedPermissionsRef = useRef({
     allowWrite: props.allowWrite,
     allowShell: props.allowShell
@@ -56,6 +60,8 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   const [advisorNotes, setAdvisorNotes] = useState<AdvisorNote[]>([]);
   const [isRunning, setIsRunning] = useState(false);
   const [status, setStatus] = useState("idle");
+  const [workState, setWorkState] = useState<AgentWorkState>("idle");
+  const [pendingApproval, setPendingApproval] = useState<ApprovalRequest | null>(null);
   const [telemetry, setTelemetry] = useState<ModelTelemetry | null>(null);
   const [sessionTelemetry, setSessionTelemetry] = useState<SessionTelemetry>(() => emptySessionTelemetry());
   const [systemStats, setSystemStats] = useState<SystemStats>(() => readSystemStats().stats);
@@ -107,22 +113,45 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         })
       : [];
   const rootHeight = Math.max(24, terminalRows);
-  const headerReservedHeight = 8;
+  const headerReservedHeight = 5;
   const paletteReservedHeight = !onboarding && paletteItems.length > 0 ? Math.min(8, paletteItems.length) + 4 : 0;
   const composerReservedHeight = onboarding ? 0 : 2;
   const footerReservedHeight = onboarding ? 0 : 1;
   const panelHeight = Math.max(8, rootHeight - headerReservedHeight - composerReservedHeight - paletteReservedHeight - footerReservedHeight);
   const transcriptWidth = Math.max(42, terminalColumns - 38);
   const scrollStep = Math.max(4, Math.floor(panelHeight * 0.8));
-  const appendLine = useCallback((line: Omit<LogLine, "id">) => {
+  const appendLine = useCallback((line: LogLineInput) => {
     setLines((currentLines) => [
       ...currentLines.slice(-maxTranscriptLines),
       {
         ...line,
+        kind: line.kind ?? defaultLogKind(line),
         id: Date.now() + Math.random()
       }
     ]);
   }, []);
+
+  const resolveApproval = useCallback(
+    (decision: PermissionDecision) => {
+      if (!pendingApproval || !approvalResolverRef.current) {
+        return;
+      }
+
+      approvalResolverRef.current(decision);
+      approvalResolverRef.current = null;
+      appendLine({
+        kind: "approval",
+        tone: decision === "deny" ? "warning" : "success",
+        label: "approval",
+        text: `${pendingApproval.tool} ${decision.replace("_", " ")}`,
+        detail: pendingApproval.preview,
+        workState: "waiting_approval",
+        tool: pendingApproval.tool
+      });
+      setPendingApproval(null);
+    },
+    [appendLine, pendingApproval]
+  );
 
   const applyMode = useCallback(
     (nextMode: AgentMode, announce = true) => {
@@ -724,6 +753,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       setTranscriptScrollOffset(0);
       setIsRunning(true);
       appendLine({
+        kind: "user",
         tone: "normal",
         label: "you",
         text: task
@@ -735,13 +765,47 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           return;
         }
 
-      const abortController = new AbortController();
-      abortControllerRef.current = abortController;
-      const taskRunner = new AgentRunner({
-        ...runnableSettings,
-        signal: abortController.signal
-      });
+        const abortController = new AbortController();
+        abortControllerRef.current = abortController;
+        const taskRunner = new AgentRunner({
+          ...runnableSettings,
+          signal: abortController.signal,
+          sessionStore: sessionStoreRef.current,
+          approvalHandler: (request) =>
+            new Promise<PermissionDecision>((resolve) => {
+              if (agentMode === "plan") {
+                appendLine({
+                  kind: "approval",
+                  tone: "warning",
+                  label: "approval",
+                  text: `${request.tool} blocked in plan mode`,
+                  detail: "Switch to /mode build before approving write, script, test, or shell tools.",
+                  workState: "waiting_approval",
+                  tool: request.tool,
+                  preview: request.preview
+                });
+                resolve("deny");
+                return;
+              }
+
+              setPendingApproval(request);
+              setWorkState("waiting_approval");
+              setStatus(`approval needed for ${request.tool}`);
+              appendLine({
+                kind: "approval",
+                tone: "warning",
+                label: "approval",
+                text: `${request.tool} needs ${request.permission} approval`,
+                detail: `${request.preview}  Press y once, a session, or n deny.`,
+                workState: "waiting_approval",
+                tool: request.tool,
+                preview: request.preview
+              });
+              approvalResolverRef.current = resolve;
+            })
+        });
         for await (const event of taskRunner.run(task)) {
+          setWorkState(event.workState);
           if (event.type === "metrics") {
             if (runnableSettings.provider === "ollama") {
               usedOllamaModelsRef.current.add(`${runnableSettings.ollamaUrl}|${runnableSettings.model}`);
@@ -767,17 +831,20 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         }
       } catch (error) {
         appendLine({
+          kind: "error",
           tone: "danger",
           label: "error",
-          text: error instanceof Error ? error.message : String(error)
+          text: error instanceof Error ? error.message : String(error),
+          workState: "error"
         });
       } finally {
         abortControllerRef.current = null;
         setStatus("idle");
+        setWorkState("idle");
         setIsRunning(false);
       }
     },
-    [appendLine, isRunning, modelOptions, settings]
+    [agentMode, appendLine, isRunning, modelOptions, settings]
   );
 
   const handleSlashCommand = useCallback(
@@ -1078,6 +1145,62 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
               : `provider ${settings.provider} | model ${settings.model} | host ${settings.provider} api | compute cloud | agents ${settings.subagents ? "on" : "off"} | think ${settings.thinkingMode} | reasoning ${formatReasoningSupport(settings.provider, settings.model, settings.reasoningEffort === "adaptive" ? undefined : settings.reasoningEffort)} | write ${settings.allowWrite ? "on" : "off"} | shell ${settings.allowShell ? "on" : "off"} | draft ${draftTokens} tok | last ${formatTokens(telemetry)} | session ${formatSessionTokens(sessionTelemetry)} | cost ${formatCost(sessionTelemetry.estimatedCostUsd)}`
           });
           return;
+        case "sessions": {
+          const sessions = await listWorkspaceSessions(settings.workspace);
+          appendLine({
+            kind: "status",
+            tone: sessions.length > 0 ? "accent" : "muted",
+            label: "sessions",
+            text: sessions.length > 0 ? `Found ${sessions.length} workspace session${sessions.length === 1 ? "" : "s"}.` : "No workspace sessions yet.",
+            detail: sessions
+              .slice(0, 8)
+              .map((session, index) => `${index + 1}. ${session.sessionId}  ${session.updatedAt}  ${session.lastTask ?? "no task"}`)
+              .join("\n")
+          });
+          return;
+        }
+        case "resume": {
+          const sessionId = args[0] ?? "";
+          const sessions = await listWorkspaceSessions(settings.workspace);
+          const selectedSession = sessionId ? await loadSessionSummary(settings.workspace, sessionId) : sessions[0] ?? null;
+          appendLine({
+            kind: "status",
+            tone: selectedSession ? "accent" : "warning",
+            label: "resume",
+            text: selectedSession ? `Loaded session ${selectedSession.sessionId}` : "No session available to resume.",
+            detail: selectedSession
+              ? `workspace ${selectedSession.workspace}\nupdated ${selectedSession.updatedAt}\nmodel ${selectedSession.provider ?? "-"} ${selectedSession.model ?? "-"}\nlast task ${selectedSession.lastTask ?? "-"}`
+              : "Run /sessions after at least one PatchPilot run."
+          });
+          return;
+        }
+        case "diff": {
+          const result = await new WorkspaceTools({
+            root: settings.workspace,
+            allowWrite: false,
+            allowShell: false
+          }).execute({
+            name: "git_diff",
+            arguments: {}
+          });
+          appendLine({
+            kind: "diff",
+            tone: result.ok ? "accent" : "warning",
+            label: "diff",
+            text: result.summary,
+            detail: result.content,
+            tool: "git_diff"
+          });
+          return;
+        }
+        case "approve": {
+          const decision = args[0] === "session" ? "allow_session" : "allow_once";
+          resolveApproval(decision);
+          return;
+        }
+        case "deny":
+          resolveApproval("deny");
+          return;
         case "connect":
         case "host":
         case "ollama":
@@ -1215,6 +1338,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       loadHostSuggestions,
       loadProviderModels,
       modelOptions,
+      resolveApproval,
       sessionTelemetry,
       settings,
       telemetry
@@ -1258,7 +1382,11 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   );
 
   useEffect(() => {
-    if (!props.initialTask || didRunInitialTask.current || onboarding) {
+    void sessionStoreRef.current.create();
+  }, []);
+
+  useEffect(() => {
+    if (!props.initialTask || didRunInitialTask.current || onboarding || process.env.PATCHPILOT_ONBOARDING_COMPLETE !== "1") {
       return;
     }
 
@@ -1271,7 +1399,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   }, [hostOptions, input, modelOptions, onboarding, settings.model, settings.provider]);
 
   useEffect(() => {
-    if (didOpenDefaultOnboarding.current || props.initialTask || onboarding || process.env.PATCHPILOT_ONBOARDING_COMPLETE === "1") {
+    if (didOpenDefaultOnboarding.current || onboarding || process.env.PATCHPILOT_ONBOARDING_COMPLETE === "1") {
       return;
     }
 
@@ -1360,9 +1488,28 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   }, [hostOptions.length, input, isLoadingHosts, isLoadingModels, isRunning, loadHostSuggestions, loadProviderModels, modelOptions.length, onboarding, settings.provider]);
 
   useInput((inputValue, key) => {
+    if (pendingApproval) {
+      const normalizedInput = inputValue.toLowerCase();
+      if (normalizedInput === "y") {
+        resolveApproval("allow_once");
+        return;
+      }
+
+      if (normalizedInput === "a") {
+        resolveApproval("allow_session");
+        return;
+      }
+
+      if (normalizedInput === "n" || key.escape) {
+        resolveApproval("deny");
+        return;
+      }
+    }
+
     if (isRunning && key.escape) {
       abortControllerRef.current?.abort();
       appendLine({
+        kind: "status",
         tone: "warning",
         label: "stop",
         text: "Stopping current task..."
@@ -1514,6 +1661,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         provider={settings.provider}
         workspace={settings.workspace}
         status={status}
+        workState={workState}
         allowWrite={settings.allowWrite}
         allowShell={settings.allowShell}
         agentMode={agentMode}
@@ -1551,6 +1699,10 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
             allowWrite={settings.allowWrite}
             allowShell={settings.allowShell}
             subagents={settings.subagents}
+            workState={workState}
+            sessionId={sessionStoreRef.current.sessionId}
+            systemStats={systemStats}
+            gpuStats={gpuStats}
             telemetry={telemetry}
             sessionTelemetry={sessionTelemetry}
             draftTokens={draftTokens}
@@ -1616,7 +1768,7 @@ async function loadKnownOrAvailableModels(
   ollamaUrl: string,
   modelOptions: string[],
   setModelOptions: React.Dispatch<React.SetStateAction<string[]>>,
-  appendLine: (line: Omit<LogLine, "id">) => void
+  appendLine: (line: LogLineInput) => void
 ): Promise<string[] | null> {
   try {
     return modelOptions.length > 0 ? modelOptions : await loadAvailableModels(provider, ollamaUrl, setModelOptions);
@@ -1635,7 +1787,7 @@ async function switchModel(
   nextModel: string,
   ollamaUrl: string,
   currentModel: string,
-  appendLine: (line: Omit<LogLine, "id">) => void,
+  appendLine: (line: LogLineInput) => void,
   setModelOptions: React.Dispatch<React.SetStateAction<string[]>>,
   setSettings: React.Dispatch<React.SetStateAction<AgentRunnerOptions>>,
   setTelemetry: React.Dispatch<React.SetStateAction<ModelTelemetry | null>>,
@@ -1702,7 +1854,7 @@ async function switchModel(
 async function resolveRunnableSettings(
   settings: AgentRunnerOptions,
   modelOptions: string[],
-  appendLine: (line: Omit<LogLine, "id">) => void,
+  appendLine: (line: LogLineInput) => void,
   setModelOptions: React.Dispatch<React.SetStateAction<string[]>>
 ): Promise<AgentRunnerOptions | null> {
   let installedModels: string[];
@@ -2020,50 +2172,79 @@ function upsertAdvisorNote(notes: AdvisorNote[], nextNote: AdvisorNote): Advisor
   return [...nextNotes, nextNote].slice(-2);
 }
 
-function eventToLine(event: AgentEvent): Omit<LogLine, "id"> {
+function eventToLine(event: AgentEvent): LogLineInput {
   switch (event.type) {
     case "status":
       return {
+        kind: "status",
         tone: "muted",
-        label: "thinking",
-        text: event.message
+        label: event.workState,
+        text: event.message,
+        workState: event.workState
       };
     case "assistant":
       return {
+        kind: "assistant",
         tone: "accent",
         label: "pilot",
-        text: event.message
+        text: event.message,
+        workState: event.workState
       };
     case "subagent":
       return {
+        kind: "assistant",
         tone: "accent",
         label: event.role,
         text: "advisor brief updated",
-        detail: event.message
+        detail: event.message,
+        workState: event.workState
       };
     case "tool":
       return {
+        kind: event.name === "git_diff" ? "diff" : "tool",
         tone: event.ok ? "success" : "warning",
         label: event.name,
-        text: event.summary
+        text: event.summary,
+        workState: event.workState,
+        tool: event.name,
+        toolCallId: event.toolCallId,
+        category: event.category,
+        preview: event.preview
+      };
+    case "approval":
+      return {
+        kind: "approval",
+        tone: event.decision === "deny" ? "warning" : "success",
+        label: "approval",
+        text: `${event.request.tool} ${event.decision.replace("_", " ")}`,
+        detail: event.request.preview,
+        workState: event.workState,
+        tool: event.request.tool,
+        preview: event.request.preview
       };
     case "final":
       return {
+        kind: "final",
         tone: "success",
         label: "final",
-        text: event.message
+        text: event.message,
+        workState: event.workState
       };
     case "error":
       return {
+        kind: "error",
         tone: "danger",
         label: "error",
-        text: event.message
+        text: event.message,
+        workState: event.workState
       };
     case "metrics":
       return {
+        kind: "status",
         tone: "muted",
         label: "metrics",
-        text: formatTokens(event.metrics)
+        text: formatTokens(event.metrics),
+        workState: event.workState
       };
   }
 }
@@ -2081,7 +2262,31 @@ function eventToStatus(event: AgentEvent): string {
     return `${event.role} subagent`;
   }
 
+  if (event.type === "approval") {
+    return `${event.request.tool}: ${event.decision.replace("_", " ")}`;
+  }
+
   return event.type;
+}
+
+function defaultLogKind(line: LogLineInput): LogLine["kind"] {
+  if (line.kind) {
+    return line.kind;
+  }
+
+  if (line.label === "you") {
+    return "user";
+  }
+
+  if (line.label === "error") {
+    return "error";
+  }
+
+  if (line.label === "final") {
+    return "final";
+  }
+
+  return "status";
 }
 
 function formatHostOptions(hosts: OllamaHost[]): string {
