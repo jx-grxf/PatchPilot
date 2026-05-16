@@ -27,5 +27,6 @@ describe("normalizeOllamaUrl", () => {
     expect(classifyOllamaHost("http://100.88.10.2:11434")).toBe("tailscale");
     expect(classifyOllamaHost("http://builder.example.ts.net:11434")).toBe("tailscale");
     expect(classifyOllamaHost("http://192.168.1.50:11434")).toBe("lan");
+    expect(classifyOllamaHost("http://172.16.1.20:11434")).toBe("lan");
   });
 });

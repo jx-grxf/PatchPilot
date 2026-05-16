@@ -3,6 +3,7 @@ import { Box, Text } from "ink";
 import TextInput from "ink-text-input";
 import type { ModelProvider } from "../../core/types.js";
 import type { OllamaHost } from "../hosts.js";
+import { selectableModels } from "../modelSelection.js";
 
 export type ApiKeyProvider = "gemini" | "openrouter" | "nvidia";
 
@@ -74,6 +75,11 @@ export function OnboardingPanel(props: {
   selectedIndex: number;
   input: string;
   busyMessage?: string | null;
+  notice?: {
+    tone: "warning" | "danger" | "success";
+    text: string;
+    detail?: string;
+  } | null;
   onInputChange: (value: string) => void;
   onInputSubmit: (value: string) => void;
 }): React.ReactElement {
@@ -85,7 +91,7 @@ export function OnboardingPanel(props: {
         : props.state.step === "api-key-choice" || props.state.step === "gemini-key" || props.state.step === "openrouter-key" || props.state.step === "nvidia-key" || props.state.step === "codex-login"
           ? 2
           : 3;
-  const visibleModels = props.state.step === "model" ? filterModelRows(props.input, props.state.models) : [];
+  const visibleModels = props.state.step === "model" ? selectableModels(props.input, props.state.models) : [];
   const selectedModel = props.state.step === "model" ? visibleModels[props.selectedIndex] ?? null : null;
 
   return (
@@ -105,6 +111,12 @@ export function OnboardingPanel(props: {
       {props.busyMessage ? (
         <Box marginTop={1}>
           <Text color="yellow">{props.busyMessage}</Text>
+        </Box>
+      ) : null}
+      {props.notice ? (
+        <Box marginTop={1} flexDirection="column">
+          <Text color={props.notice.tone === "success" ? "green" : props.notice.tone === "warning" ? "yellow" : "red"}>{props.notice.text}</Text>
+          {props.notice.detail ? <Text color="gray">{props.notice.detail}</Text> : null}
         </Box>
       ) : null}
       {props.state.step === "entry" ? (
@@ -147,10 +159,14 @@ export function OnboardingPanel(props: {
           title={`${providerLabel(props.state.provider)} API key`}
           subtitle="Use up/down and Enter. Existing keys stay in PatchPilot config."
           rows={[
-            {
-              label: props.state.hasExistingKey ? "Use Existing Key" : "Enter New Key",
-              description: props.state.hasExistingKey ? "Continue with the saved key" : "No saved key found"
-            },
+            ...(props.state.hasExistingKey
+              ? [
+                  {
+                    label: "Use Existing Key",
+                    description: "Continue with the saved key"
+                  }
+                ]
+              : []),
             {
               label: "Enter New Key",
               description: "Replace or add the key in PatchPilot config"
@@ -231,15 +247,6 @@ export function OnboardingPanel(props: {
 
 function providerLabel(provider: ApiKeyProvider): string {
   return provider === "openrouter" ? "OpenRouter" : provider === "nvidia" ? "NVIDIA" : "Gemini";
-}
-
-function filterModelRows(query: string, models: string[]): string[] {
-  const normalizedQuery = query.trim().toLowerCase();
-  if (!normalizedQuery) {
-    return models;
-  }
-
-  return models.filter((model) => normalizedQuery.split(/\s+/).every((token) => model.toLowerCase().includes(token)));
 }
 
 function InputStep(props: {

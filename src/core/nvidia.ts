@@ -1,4 +1,6 @@
 import type { ModelChatOptions, ModelChatResult, ModelTelemetry } from "./types.js";
+import { fetchWithTimeout } from "./http.js";
+import { getNvidiaReasoningEffort } from "./reasoning.js";
 import { attachTokenCost } from "./tokenAccounting.js";
 
 export const defaultNvidiaModel = "meta/llama-3.1-70b-instruct";
@@ -63,6 +65,7 @@ export class NvidiaClient {
         messages: options.messages,
         max_tokens: this.runtimeOptions.maxTokens,
         temperature: this.runtimeOptions.temperature,
+        reasoning_effort: getNvidiaReasoningEffort(options.model, options.reasoningEffort),
         response_format: options.formatJson ? agentResponseFormat : undefined
       }),
       signal: options.signal
@@ -101,7 +104,11 @@ export class NvidiaClient {
 
   private async fetchNvidia(path: string, init?: RequestInit): Promise<Response> {
     try {
-      return await fetch(`${this.baseUrl}${path}`, init);
+      return await fetchWithTimeout(`${this.baseUrl}${path}`, init, {
+        timeoutMs: init?.method === "POST" ? 90_000 : 8000,
+        retries: init?.method === "POST" ? 0 : 1,
+        label: `NVIDIA ${path}`
+      });
     } catch (error) {
       const suffix = error instanceof Error ? ` ${error.message}` : "";
       throw new Error(`Cannot reach NVIDIA API at ${this.baseUrl}.${suffix}`);
@@ -138,7 +145,7 @@ const agentResponseFormat = {
                 required: ["name", "arguments"],
                 properties: {
                   name: {
-                    enum: ["list_files", "read_file", "search_text", "inspect_document", "write_file", "run_shell"]
+                    enum: ["list_files", "read_file", "search_text", "inspect_document", "git_status", "list_scripts", "write_file", "run_shell"]
                   },
                   arguments: {
                     type: "object",

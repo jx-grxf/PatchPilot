@@ -1,4 +1,6 @@
 import type { ModelChatOptions, ModelChatResult, ModelTelemetry } from "./types.js";
+import { fetchWithTimeout } from "./http.js";
+import { getOllamaThinkValue } from "./reasoning.js";
 import { attachTokenCost } from "./tokenAccounting.js";
 
 export const defaultOllamaModel = "qwen2.5-coder:7b";
@@ -73,6 +75,7 @@ export class OllamaClient {
         messages: options.messages,
         stream: false,
         keep_alive: this.runtimeOptions.keepAlive,
+        think: getOllamaThinkValue(options.model, options.reasoningEffort),
         options: {
           num_ctx: this.runtimeOptions.numCtx,
           num_predict: this.runtimeOptions.numPredict,
@@ -159,7 +162,11 @@ export class OllamaClient {
 
   private async fetchOllama(path: string, init?: RequestInit): Promise<Response> {
     try {
-      return await fetch(`${this.baseUrl}${path}`, init);
+      return await fetchWithTimeout(`${this.baseUrl}${path}`, init, {
+        timeoutMs: init?.method === "POST" ? 120_000 : 3000,
+        retries: init?.method === "POST" ? 0 : 1,
+        label: `Ollama ${path} at ${this.baseUrl}`
+      });
     } catch (error) {
       throw new Error(formatOllamaConnectionError(this.baseUrl, error));
     }

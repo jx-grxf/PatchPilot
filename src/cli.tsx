@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import path from "node:path";
+import { readFileSync } from "node:fs";
 import React from "react";
 import { render } from "ink";
 import { Command } from "commander";
@@ -35,7 +36,7 @@ program.enablePositionalOptions();
 program
   .name("patchpilot")
   .description("Local-first coding agent TUI powered by Ollama and OpenAI-compatible providers.")
-  .version("0.2.0");
+  .version(readPackageVersion());
 
 program
   .command("doctor")
@@ -69,7 +70,7 @@ program
   .option("--ollama-url <url>", "Ollama base URL", defaultOllamaUrl)
   .option("--steps <count>", "Maximum agent steps", "8")
   .option("--thinking <mode>", "Thinking budget mode: fixed or adaptive.", process.env.PATCHPILOT_THINKING_MODE ?? "fixed")
-  .option("--reasoning <effort>", "Provider reasoning effort: low, medium, high, xhigh, or adaptive.", process.env.PATCHPILOT_REASONING_EFFORT ?? "medium")
+  .option("--reasoning <effort>", "Provider reasoning effort: none, low, medium, high, xhigh, or adaptive.", process.env.PATCHPILOT_REASONING_EFFORT ?? "medium")
   .option("--apply", "Allow file writes inside the workspace.", false)
   .option("--allow-shell", "Allow shell commands inside the workspace.", false)
   .option("--no-subagents", "Disable planner and reviewer subagents for faster local runs.")
@@ -96,6 +97,19 @@ program
 
 await program.parseAsync(process.argv);
 
-function readReasoningEffort(value: string): "low" | "medium" | "high" | "xhigh" | "adaptive" {
-  return value === "low" || value === "medium" || value === "high" || value === "xhigh" || value === "adaptive" ? value : "medium";
+function readReasoningEffort(value: string): "none" | "low" | "medium" | "high" | "xhigh" | "adaptive" {
+  return value === "none" || value === "off" || value === "false"
+    ? "none"
+    : value === "low" || value === "medium" || value === "high" || value === "xhigh" || value === "adaptive"
+      ? value
+      : "medium";
+}
+
+function readPackageVersion(): string {
+  try {
+    const packageJson = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version?: unknown };
+    return typeof packageJson.version === "string" ? packageJson.version : "0.0.0";
+  } catch {
+    return "0.0.0";
+  }
 }

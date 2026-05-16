@@ -10,6 +10,7 @@ import { createModelClient } from "../core/modelClient.js";
 import { defaultNvidiaModel, readNvidiaApiKey } from "../core/nvidia.js";
 import { defaultOllamaModel, OllamaClient } from "../core/ollama.js";
 import { defaultOpenRouterModel, isOpenRouterFreeModel, readOpenRouterApiKey } from "../core/openrouter.js";
+import { formatReasoningSupport } from "../core/reasoning.js";
 import { addTelemetryToSession, emptySessionTelemetry, estimateTokens } from "../core/tokenAccounting.js";
 import type { AgentEvent, ModelProvider, ModelTelemetry, SessionTelemetry } from "../core/types.js";
 import { CommandSuggestions, type CommandSuggestionItem } from "./components/CommandSuggestions.js";
@@ -21,6 +22,7 @@ import { Transcript } from "./components/Transcript.js";
 import { filterSlashCommands, formatCommandDetail, formatCommandHelp } from "./commands.js";
 import { formatCost, formatSessionTokens, formatTokens, normalizeModelAlias, readToggle } from "./format.js";
 import { checkOllamaHost, discoverOllamaHosts, normalizeOllamaUrl, readOllamaHostDetails, startLocalOllamaAppAndWait, type OllamaHost, type OllamaHostDetails } from "./hosts.js";
+import { selectableModels } from "./modelSelection.js";
 import { readGpuStats, readSystemStats, type GpuStats, type SystemStats } from "./systemStats.js";
 import { maxTranscriptLines, type AdvisorNote, type AgentMode, type LogLine } from "./types.js";
 
@@ -43,6 +45,12 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   const didRunInitialTask = useRef(false);
   const didOpenDefaultOnboarding = useRef(false);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const grantedPermissionsRef = useRef({
+    allowWrite: props.allowWrite,
+    allowShell: props.allowShell
+  });
+  const activeHostSyncInFlightRef = useRef(false);
+  const autoLoadKeysRef = useRef(new Set<string>());
   const usedOllamaModelsRef = useRef(new Set<string>());
   const [lines, setLines] = useState<LogLine[]>([]);
   const [advisorNotes, setAdvisorNotes] = useState<AdvisorNote[]>([]);
@@ -62,6 +70,11 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   const [onboardingIndex, setOnboardingIndex] = useState(0);
   const [onboardingInput, setOnboardingInput] = useState("");
   const [onboardingBusyMessage, setOnboardingBusyMessage] = useState<string | null>(null);
+  const [onboardingNotice, setOnboardingNotice] = useState<{
+    tone: "warning" | "danger" | "success";
+    text: string;
+    detail?: string;
+  } | null>(null);
   const [paletteIndex, setPaletteIndex] = useState(0);
   const [activeScrollPane, setActiveScrollPane] = useState<"transcript" | "session">("transcript");
   const [transcriptScrollOffset, setTranscriptScrollOffset] = useState(0);
@@ -116,8 +129,8 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       setAgentMode(nextMode);
       setSettings((currentSettings) => ({
         ...currentSettings,
-        allowWrite: nextMode === "build" ? currentSettings.allowWrite : false,
-        allowShell: nextMode === "build" ? currentSettings.allowShell : false
+        allowWrite: nextMode === "build" ? grantedPermissionsRef.current.allowWrite : false,
+        allowShell: nextMode === "build" ? grantedPermissionsRef.current.allowShell : false
       }));
 
       if (announce) {
@@ -269,6 +282,8 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       } = {}
     ): Promise<void> => {
       setTelemetry(null);
+      setOnboardingInput("");
+      setOnboardingNotice(null);
       setOnboardingBusyMessage(`Loading ${provider} models...`);
       const nextModel = defaultModelForProvider(provider, options.currentModel ?? settings.model);
       setSettings((currentSettings) => ({
@@ -280,9 +295,8 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       try {
         const models = await loadAvailableModels(provider, options.ollamaUrl ?? settings.ollamaUrl, setModelOptions, true);
         if (models.length === 0) {
-          appendLine({
+          setOnboardingNotice({
             tone: "warning",
-            label: "onboarding",
             text:
               provider === "ollama"
                 ? "No Ollama models found on that host."
@@ -290,7 +304,8 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
                   ? "No Gemini models listed. Check the API key."
                   : provider === "openrouter"
                     ? "No OpenRouter models listed. Check the API key."
-                    : "No Codex OAuth models listed."
+                    : "No Codex OAuth models listed.",
+            detail: "Use the back key to choose another provider or retry after fixing the provider setup."
           });
           return;
         }
@@ -303,16 +318,16 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         });
         setOnboardingIndex(0);
       } catch (error) {
-        appendLine({
+        setOnboardingNotice({
           tone: "danger",
-          label: "onboarding",
-          text: error instanceof Error ? error.message : String(error)
+          text: error instanceof Error ? error.message : String(error),
+          detail: "Fix the provider setup, then press Enter or go back and retry."
         });
       } finally {
         setOnboardingBusyMessage(null);
       }
     },
-    [appendLine, settings.model, settings.ollamaUrl]
+    [settings.model, settings.ollamaUrl]
   );
 
   const closeOnboarding = useCallback(() => {
@@ -320,6 +335,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
     setOnboardingIndex(0);
     setOnboardingInput("");
     setOnboardingBusyMessage(null);
+    setOnboardingNotice(null);
   }, []);
 
   const goBackOnboarding = useCallback(() => {
@@ -329,6 +345,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
 
     setOnboardingBusyMessage(null);
     setOnboardingInput("");
+    setOnboardingNotice(null);
     setOnboardingIndex(0);
 
     switch (onboarding.step) {
@@ -394,6 +411,12 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         return;
       }
 
+      if (onboardingBusyMessage) {
+        return;
+      }
+
+      setOnboardingNotice(null);
+
       if (onboarding.step === "entry") {
         const selection = readEntrySelection(value, onboardingIndex);
         if (!selection) {
@@ -412,7 +435,12 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           }
 
           if (!details) {
-            setOnboardingBusyMessage("Local Ollama is not reachable. Start Ollama.app or run `ollama serve`, then press Enter again.");
+            setOnboardingBusyMessage(null);
+            setOnboardingNotice({
+              tone: "warning",
+              text: "Local Ollama is not reachable.",
+              detail: "Start Ollama.app or run `ollama serve`, then press Enter to retry."
+            });
             return;
           }
 
@@ -470,9 +498,8 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
 
         const selectedHost = onboarding.hosts[selectionIndex - 1];
         if (!selectedHost) {
-          appendLine({
+          setOnboardingNotice({
             tone: "warning",
-            label: "onboarding",
             text: "Unknown host selection."
           });
           return;
@@ -484,6 +511,11 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         });
         if (!details) {
           setOnboardingBusyMessage(null);
+          setOnboardingNotice({
+            tone: "warning",
+            text: `No Ollama server answered at ${selectedHost.url}.`,
+            detail: "Check firewall, MagicDNS/IP, and whether Ollama is listening on that machine."
+          });
           return;
         }
 
@@ -497,9 +529,8 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       if (onboarding.step === "host-input") {
         const hostValue = value.trim();
         if (!hostValue) {
-          appendLine({
+          setOnboardingNotice({
             tone: "warning",
-            label: "onboarding",
             text: "Host cannot be empty."
           });
           return;
@@ -511,6 +542,11 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         });
         if (!details) {
           setOnboardingBusyMessage(null);
+          setOnboardingNotice({
+            tone: "warning",
+            text: `No Ollama server answered at ${hostValue}.`,
+            detail: "Check the IP, MagicDNS name, firewall rules, and whether Ollama is running."
+          });
           return;
         }
 
@@ -545,9 +581,8 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       if (onboarding.step === "gemini-key") {
         const apiKey = value.trim();
         if (!apiKey) {
-          appendLine({
+          setOnboardingNotice({
             tone: "warning",
-            label: "onboarding",
             text: "Gemini API key cannot be empty."
           });
           return;
@@ -559,9 +594,8 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           PATCHPILOT_MODEL: defaultGeminiModel,
           GEMINI_API_KEY: apiKey
         });
-        appendLine({
+        setOnboardingNotice({
           tone: "success",
-          label: "onboarding",
           text: "Gemini API key saved to PatchPilot config."
         });
         await openModelSelection("gemini", {
@@ -573,9 +607,8 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       if (onboarding.step === "openrouter-key") {
         const apiKey = value.trim();
         if (!apiKey) {
-          appendLine({
+          setOnboardingNotice({
             tone: "warning",
-            label: "onboarding",
             text: "OpenRouter API key cannot be empty."
           });
           return;
@@ -587,9 +620,8 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           PATCHPILOT_MODEL: defaultOpenRouterModel,
           OPENROUTER_API_KEY: apiKey
         });
-        appendLine({
+        setOnboardingNotice({
           tone: "success",
-          label: "onboarding",
           text: "OpenRouter API key saved to PatchPilot config."
         });
         await openModelSelection("openrouter", {
@@ -601,9 +633,8 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       if (onboarding.step === "nvidia-key") {
         const apiKey = value.trim();
         if (!apiKey) {
-          appendLine({
+          setOnboardingNotice({
             tone: "warning",
-            label: "onboarding",
             text: "NVIDIA API key cannot be empty."
           });
           return;
@@ -615,9 +646,8 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           PATCHPILOT_MODEL: defaultNvidiaModel,
           NVIDIA_API_KEY: apiKey
         });
-        appendLine({
+        setOnboardingNotice({
           tone: "success",
-          label: "onboarding",
           text: "NVIDIA API key saved to PatchPilot config."
         });
         await openModelSelection("nvidia", {
@@ -628,10 +658,10 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
 
       if (onboarding.step === "codex-login") {
         if (!hasCodexCliOAuth()) {
-          appendLine({
+          setOnboardingNotice({
             tone: "warning",
-            label: "onboarding",
-            text: "Codex OAuth is still missing. Run `codex login`, then press Enter again."
+            text: "Codex OAuth is still missing.",
+            detail: "Run `codex login` in another terminal, then press Enter to retry."
           });
           return;
         }
@@ -642,14 +672,13 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         return;
       }
 
-      const selectableModels = filterModelOptions(onboardingInput, onboarding.models);
-      const selectedModel = selectModelFromInput(value, selectableModels, onboardingIndex, {
+      const visibleModels = selectableModels(onboardingInput, onboarding.models);
+      const selectedModel = selectModelFromInput(value, visibleModels, onboardingIndex, {
         allowManual: onboarding.provider !== "ollama"
       });
       if (!selectedModel) {
-        appendLine({
+        setOnboardingNotice({
           tone: "warning",
-          label: "onboarding",
           text: "Unknown model selection. Pick a listed model."
         });
         return;
@@ -682,7 +711,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       }
       closeOnboarding();
     },
-    [activeHost?.host.url, appendLine, closeOnboarding, connectToHost, loadHostSuggestions, onboarding, onboardingIndex, openModelSelection, settings.ollamaUrl]
+    [activeHost?.host.url, appendLine, closeOnboarding, connectToHost, loadHostSuggestions, onboarding, onboardingBusyMessage, onboardingIndex, openModelSelection, settings.ollamaUrl]
   );
 
   const runTask = useCallback(
@@ -881,7 +910,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
             appendLine({
               tone: "accent",
               label: "reasoning",
-              text: `current ${settings.reasoningEffort}. Use /reasoning low, medium, high, xhigh, or adaptive.`
+              text: `current ${settings.reasoningEffort}. Use /reasoning none, low, medium, high, xhigh, or adaptive.`
             });
             return;
           }
@@ -896,7 +925,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           appendLine({
             tone: "success",
             label: "reasoning",
-            text: `provider reasoning ${nextEffort}${settings.provider === "ollama" ? " (Ollama ignores common reasoning effort)" : ""}`
+            text: formatReasoningSupport(settings.provider, settings.model, nextEffort === "adaptive" ? undefined : nextEffort)
           });
           return;
         }
@@ -907,6 +936,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
             setAgentMode("build");
           }
 
+          grantedPermissionsRef.current.allowWrite = writeEnabled;
           setSettings((currentSettings) => ({
             ...currentSettings,
             allowWrite: writeEnabled
@@ -924,6 +954,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
             setAgentMode("build");
           }
 
+          grantedPermissionsRef.current.allowShell = shellEnabled;
           setSettings((currentSettings) => ({
             ...currentSettings,
             allowShell: shellEnabled
@@ -965,7 +996,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
                 tone: "warning",
                 label: "model",
                 text: `No unique model match for "${requestedModel}".`,
-                detail: formatModelOptions(filterModelOptions(requestedModel, models).slice(0, 12), settings.model)
+                detail: formatModelOptions(selectableModels(requestedModel, models).slice(0, 12), settings.model)
               });
               return;
             }
@@ -1020,6 +1051,8 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
               return;
             }
 
+            setInput("/models ");
+            setPaletteIndex(0);
             appendLine({
               tone: "accent",
               label: "models",
@@ -1042,7 +1075,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
             text:
               settings.provider === "ollama"
                 ? `provider ollama | model ${settings.model} | host ${activeHost?.host.deviceName ?? settings.ollamaUrl} | route ${activeHost?.host.url ?? settings.ollamaUrl} | compute ${describeComputeTarget(settings.ollamaUrl).kind} | tools local | agents ${settings.subagents ? "on" : "off"} | write ${settings.allowWrite ? "on" : "off"} | shell ${settings.allowShell ? "on" : "off"} | draft ${draftTokens} tok | last ${formatTokens(telemetry)} | session ${formatSessionTokens(sessionTelemetry)} | cost ${formatCost(sessionTelemetry.estimatedCostUsd)}`
-                : `provider ${settings.provider} | model ${settings.model} | host ${settings.provider} api | compute cloud | agents ${settings.subagents ? "on" : "off"} | think ${settings.thinkingMode} | reasoning ${settings.reasoningEffort} | write ${settings.allowWrite ? "on" : "off"} | shell ${settings.allowShell ? "on" : "off"} | draft ${draftTokens} tok | last ${formatTokens(telemetry)} | session ${formatSessionTokens(sessionTelemetry)} | cost ${formatCost(sessionTelemetry.estimatedCostUsd)}`
+              : `provider ${settings.provider} | model ${settings.model} | host ${settings.provider} api | compute cloud | agents ${settings.subagents ? "on" : "off"} | think ${settings.thinkingMode} | reasoning ${formatReasoningSupport(settings.provider, settings.model, settings.reasoningEffort === "adaptive" ? undefined : settings.reasoningEffort)} | write ${settings.allowWrite ? "on" : "off"} | shell ${settings.allowShell ? "on" : "off"} | draft ${draftTokens} tok | last ${formatTokens(telemetry)} | session ${formatSessionTokens(sessionTelemetry)} | cost ${formatCost(sessionTelemetry.estimatedCostUsd)}`
           });
           return;
         case "connect":
@@ -1064,6 +1097,8 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
               text: "Scanning LAN and Tailscale for Ollama hosts..."
             });
             await loadHostSuggestions(true, true);
+            setInput("/connect ");
+            setPaletteIndex(0);
             return;
           }
 
@@ -1090,6 +1125,8 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
             text: "Scanning LAN and Tailscale for Ollama hosts..."
           });
           await loadHostSuggestions(true, true);
+          setInput("/connect ");
+          setPaletteIndex(0);
           return;
         case "eject": {
           if (settings.provider !== "ollama") {
@@ -1255,6 +1292,11 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
 
     let cancelled = false;
     async function syncActiveHost(): Promise<void> {
+      if (activeHostSyncInFlightRef.current) {
+        return;
+      }
+
+      activeHostSyncInFlightRef.current = true;
       const verifiedHost = await checkOllamaHost(settings.ollamaUrl, {
         timeoutMs: 800
       });
@@ -1262,15 +1304,17 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         if (!cancelled) {
           setActiveHost((currentHost) => (currentHost?.host.url === settings.ollamaUrl ? currentHost : null));
         }
+        activeHostSyncInFlightRef.current = false;
         return;
       }
 
-        const details = await readOllamaHostDetails(verifiedHost).catch(() => ({
+      const details = await readOllamaHostDetails(verifiedHost).catch(() => ({
         host: verifiedHost,
         models: [] as string[],
         runningModels: [],
         fetchedAt: Date.now()
       }));
+      activeHostSyncInFlightRef.current = false;
 
       if (cancelled) {
         return;
@@ -1299,11 +1343,19 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
 
     const trimmedInput = input.trim();
     if (settings.provider === "ollama" && (trimmedInput === "/connect" || trimmedInput === "/hosts") && hostOptions.length === 0 && !isLoadingHosts) {
-      void loadHostSuggestions(false, false);
+      const key = `${settings.provider}:${settings.ollamaUrl}:${trimmedInput}:hosts`;
+      if (!autoLoadKeysRef.current.has(key)) {
+        autoLoadKeysRef.current.add(key);
+        void loadHostSuggestions(false, false);
+      }
     }
 
     if ((trimmedInput === "/models" || trimmedInput === "/model") && modelOptions.length === 0 && !isLoadingModels) {
-      void loadProviderModels(false);
+      const key = `${settings.provider}:${settings.ollamaUrl}:${trimmedInput}:models`;
+      if (!autoLoadKeysRef.current.has(key)) {
+        autoLoadKeysRef.current.add(key);
+        void loadProviderModels(false);
+      }
     }
   }, [hostOptions.length, input, isLoadingHosts, isLoadingModels, isRunning, loadHostSuggestions, loadProviderModels, modelOptions.length, onboarding, settings.provider]);
 
@@ -1325,7 +1377,11 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         return;
       }
 
-      const optionCount = onboarding.step === "model" ? filterModelOptions(onboardingInput, onboarding.models).length : getOnboardingOptionCount(onboarding);
+      if (onboardingBusyMessage) {
+        return;
+      }
+
+      const optionCount = onboarding.step === "model" ? selectableModels(onboardingInput, onboarding.models).length : getOnboardingOptionCount(onboarding);
       if (optionCount > 0 && key.upArrow) {
         setOnboardingIndex((currentIndex) => (currentIndex - 1 + optionCount) % optionCount);
         return;
@@ -1480,6 +1536,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           selectedIndex={onboardingIndex}
           input={onboardingInput}
           busyMessage={onboardingBusyMessage}
+          notice={onboardingNotice}
           onInputChange={setOnboardingInput}
           onInputSubmit={(value) => void handleOnboardingSubmit(value)}
         />
@@ -1750,7 +1807,7 @@ function buildCommandSuggestionItems(options: {
       });
     } else {
       items.unshift(
-        ...filterModelOptions(modelQuery, options.modelOptions).slice(0, 8).map((model) => ({
+        ...selectableModels(modelQuery, options.modelOptions).slice(0, 8).map((model) => ({
           key: `model-${model}`,
           category: "model",
           label: model,
@@ -1772,7 +1829,7 @@ function getOnboardingOptionCount(onboarding: OnboardingState): number {
     case "host":
       return onboarding.hosts.length + 1;
     case "api-key-choice":
-      return 2;
+      return onboarding.hasExistingKey ? 2 : 1;
     case "model":
       return onboarding.models.length;
     default:
@@ -1842,7 +1899,7 @@ function selectModelFromInput(value: string, models: string[], selectedIndex?: n
     return normalizedValue;
   }
 
-  const matches = filterModelOptions(normalizedValue, models);
+  const matches = selectableModels(normalizedValue, models);
   if (matches.length === 1) {
     return matches[0] ?? null;
   }
@@ -1852,40 +1909,6 @@ function selectModelFromInput(value: string, models: string[], selectedIndex?: n
 
 function isPlausibleCloudModelId(value: string): boolean {
   return /^[A-Za-z0-9][A-Za-z0-9._:/+-]*$/.test(value) && value.length >= 3;
-}
-
-function filterModelOptions(query: string, models: string[]): string[] {
-  const normalizedQuery = query.trim().toLowerCase();
-  if (!normalizedQuery) {
-    return models;
-  }
-
-  return models
-    .map((model) => ({
-      model,
-      score: scoreModelMatch(model, normalizedQuery)
-    }))
-    .filter((item): item is { model: string; score: number } => item.score !== null)
-    .sort((left, right) => left.score - right.score || left.model.localeCompare(right.model))
-    .map((item) => item.model);
-}
-
-function scoreModelMatch(model: string, query: string): number | null {
-  const normalizedModel = model.toLowerCase();
-  if (normalizedModel === query) {
-    return 0;
-  }
-
-  if (normalizedModel.startsWith(query)) {
-    return 1;
-  }
-
-  if (normalizedModel.includes(query)) {
-    return 2 + normalizedModel.indexOf(query) / 1000;
-  }
-
-  const tokens = query.split(/[\s/:_-]+/).filter(Boolean);
-  return tokens.length > 0 && tokens.every((token) => normalizedModel.includes(token)) ? 10 : null;
 }
 
 function defaultModelForProvider(provider: ModelProvider, currentModel: string): string {
@@ -1989,7 +2012,7 @@ async function ejectOllamaModels(options: {
 }
 
 function isReasoningEffort(value: string | undefined): value is AgentRunnerOptions["reasoningEffort"] {
-  return value === "low" || value === "medium" || value === "high" || value === "xhigh" || value === "adaptive";
+  return value === "none" || value === "low" || value === "medium" || value === "high" || value === "xhigh" || value === "adaptive";
 }
 
 function upsertAdvisorNote(notes: AdvisorNote[], nextNote: AdvisorNote): AdvisorNote[] {

@@ -4,7 +4,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import type { ModelChatOptions, ModelChatResult, ModelTelemetry, ReasoningEffort } from "./types.js";
+import type { ModelChatOptions, ModelChatResult, ModelTelemetry, ProviderReasoningEffort } from "./types.js";
 import { attachTokenCost, estimateTokens } from "./tokenAccounting.js";
 
 const execFileAsync = promisify(execFile);
@@ -114,7 +114,7 @@ function buildCodexPrompt(options: ModelChatOptions): string {
 
 function runCodexExec(options: {
   model: string;
-  reasoningEffort?: ReasoningEffort;
+  reasoningEffort?: ProviderReasoningEffort;
   workspace: string;
   prompt: string;
   outputPath: string;
@@ -129,7 +129,7 @@ function runCodexExec(options: {
         "--json",
         "--model",
         options.model,
-        ...(options.reasoningEffort ? ["-c", `model_reasoning_effort="${options.reasoningEffort}"`] : []),
+        ...(options.reasoningEffort && options.reasoningEffort !== "none" ? ["-c", `model_reasoning_effort="${options.reasoningEffort}"`] : []),
         "--sandbox",
         "read-only",
         "--cd",

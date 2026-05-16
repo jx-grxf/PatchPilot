@@ -373,7 +373,7 @@ async function getTailscalePeerCandidates(): Promise<OllamaHost[]> {
 }
 
 function shouldScanPrefix(prefix: string): boolean {
-  return prefix !== "192.168.56" && !prefix.startsWith("172.");
+  return prefix !== "192.168.56" && !isDockerBridgePrefix(prefix) && isPrivatePrefix(prefix);
 }
 
 function scoreNetworkPrefix(prefix: string): number {
@@ -414,6 +414,14 @@ async function runPool<Input, Output>(
 
 function isPrivateIpAddress(address: string): boolean {
   return /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[0-1])\.)/.test(address);
+}
+
+function isPrivatePrefix(prefix: string): boolean {
+  return /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[0-1])\.)/.test(`${prefix}.`);
+}
+
+function isDockerBridgePrefix(prefix: string): boolean {
+  return prefix === "172.17.0" || prefix === "172.18.0";
 }
 
 function isTailscaleIpAddress(address: string): boolean {

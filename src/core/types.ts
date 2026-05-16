@@ -7,12 +7,13 @@ export type ChatMessage = {
 
 export type ModelProvider = "ollama" | "gemini" | "codex" | "openrouter" | "nvidia";
 export type ReasoningEffort = "low" | "medium" | "high" | "xhigh";
+export type ProviderReasoningEffort = ReasoningEffort | "none";
 
 export type ModelChatOptions = {
   model: string;
   messages: ChatMessage[];
   formatJson?: boolean;
-  reasoningEffort?: ReasoningEffort;
+  reasoningEffort?: ProviderReasoningEffort;
   signal?: AbortSignal;
 };
 
@@ -31,6 +32,8 @@ export type AgentToolName =
   | "read_file"
   | "search_text"
   | "inspect_document"
+  | "git_status"
+  | "list_scripts"
   | "write_file"
   | "run_shell";
 

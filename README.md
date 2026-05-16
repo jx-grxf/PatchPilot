@@ -34,6 +34,7 @@ PatchPilot is a terminal interface for running coding-agent tasks inside a repos
 
 - [Highlights](#highlights)
 - [Why This Exists](#why-this-exists)
+- [Requirements](#requirements)
 - [Quick Start](#quick-start)
 - [Usage](#usage)
 - [Providers](#providers)
@@ -42,6 +43,7 @@ PatchPilot is a terminal interface for running coding-agent tasks inside a repos
 - [Tech Stack](#tech-stack)
 - [Development](#development)
 - [Roadmap](#roadmap)
+- [Release Notes](#release-notes)
 - [Security and Legal](#security-and-legal)
 - [License](#license)
 
@@ -73,12 +75,29 @@ The core workflow is intentionally simple:
 4. Enable writes or shell commands only when the current task needs them.
 5. Review the diff before committing.
 
+## Requirements
+
+| Requirement | Notes |
+|---|---|
+| Node.js 22 or newer | Required for the published CLI and source builds. |
+| Git | Required for repository context and normal development workflows. |
+| Ollama | Optional, only needed for local or remote Ollama inference. |
+| Provider API key | Optional, only needed for Gemini, OpenRouter, or NVIDIA routes. |
+| Codex CLI login | Optional, only needed for the Codex provider route. |
+
 ## Quick Start
 
 Install the public CLI globally:
 
 ```bash
 npm install -g @jx-grxf/patchpilot
+```
+
+Verify the installed CLI:
+
+```bash
+patchpilot --version
+patchpilot doctor --provider ollama
 ```
 
 For source development, clone it, install dependencies, build it, and link the local CLI:
@@ -95,7 +114,6 @@ For local Ollama inference:
 
 ```bash
 ollama pull qwen2.5-coder:7b
-patchpilot doctor
 patchpilot
 ```
 
@@ -120,6 +138,8 @@ patchpilot "add tests for the parser" --apply --allow-shell
 
 API keys are stored by onboarding in `~/.patchpilot/.env`.
 
+On first launch, PatchPilot opens guided setup for provider choice, API-key storage, host discovery, and model selection. Press Escape to leave setup, or run `/onboarding` later to reopen it.
+
 ## Usage
 
 ```bash
@@ -135,7 +155,7 @@ patchpilot doctor [options]
 | `--ollama-url <url>` | Ollama base URL. Defaults to `http://127.0.0.1:11434`. |
 | `--steps <count>` | Maximum agent loop steps before stopping. |
 | `--thinking <mode>` | Step-budget mode: `fixed` or `adaptive`. |
-| `--reasoning <effort>` | Provider reasoning effort: `low`, `medium`, `high`, `xhigh`, or `adaptive`. |
+| `--reasoning <effort>` | Provider reasoning effort: `none`, `low`, `medium`, `high`, `xhigh`, or `adaptive`. Unsupported provider/model combinations fall back to provider defaults. |
 | `--apply` | Allows file writes inside the workspace. |
 | `--allow-shell` | Allows shell commands inside the workspace. |
 | `--no-subagents` | Disables explorer/planner/reviewer advisor calls for faster runs. |
@@ -150,7 +170,7 @@ Useful slash commands inside the TUI:
 | `/mode plan` | Read-only planning mode. |
 | `/mode build` | Implementation mode; writes and shell can still be toggled separately. |
 | `/think fixed\|adaptive` | Switch between fixed and adaptive step budgets. |
-| `/reasoning low\|medium\|high\|xhigh\|adaptive` | Set provider reasoning effort where supported. |
+| `/reasoning none\|low\|medium\|high\|xhigh\|adaptive` | Set provider reasoning effort where supported. |
 | `/write on\|off` | Enable or disable workspace writes. |
 | `/shell on\|off` | Enable or disable shell commands. |
 | `/agents on\|off` | Enable or disable advisor subagents. |
@@ -204,6 +224,8 @@ patchpilot doctor --provider codex
 PatchPilot caches model discovery for a short TTL inside the running TUI, so normal prompts do not re-query providers every time. Run `/models` again when you intentionally want to refresh the visible list.
 
 PatchPilot reads provider cache telemetry when the provider reports it, for example Codex cached input tokens or OpenRouter `prompt_tokens_details.cached_tokens`, then displays cache hit rate as `cached / input`.
+
+Reasoning support is provider and model dependent. Codex accepts fixed reasoning levels. OpenRouter receives normalized `reasoning.effort` for compatible models. Gemini uses Thinking configuration where the selected model exposes it; some Gemini models cannot disable thinking. Ollama only receives native `think` values for known thinking model families. NVIDIA reasoning effort is limited to supported GPT-OSS NIM routes.
 
 OpenRouter `:free` models are rate-limited by OpenRouter. PatchPilot warns when a selected model ID ends in `:free`.
 
@@ -300,10 +322,21 @@ If Vitest fails because a native optional dependency was installed incorrectly, 
 | Distribution | Signed macOS and Windows desktop shell with the CLI as a sidecar. |
 | Efficiency | More token-cache-aware prompts and provider-specific cost reporting. |
 
+## Release Notes
+
+Release notes are kept in [docs/releases](docs/releases).
+
+| Version | Notes |
+|---|---|
+| `v0.2.1` | [Release notes](docs/releases/v0.2.1.md) |
+| `v0.2.0` | [Release notes](docs/releases/v0.2.0.md) |
+| `v0.1.0` | [Release notes](docs/releases/v0.1.0.md) |
+
 ## Security and Legal
 
 PatchPilot can read files, write files, and run shell commands when you enable those capabilities. Use it only in repositories and environments you trust.
 
+- Security policy: see [SECURITY.md](SECURITY.md).
 - Security reports: please use GitHub Security Advisories or contact the maintainer privately with reproduction steps and impact.
 - License: this project is provided under the [MIT License](LICENSE).
 - Warranty: the software is provided "AS IS", without warranties of any kind.
