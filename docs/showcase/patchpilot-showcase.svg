@@ -1,39 +1,84 @@
-<svg width="920" height="520" viewBox="0 0 920 520" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
-  <title id="title">PatchPilot TUI showcase</title>
-  <desc id="desc">A stylized terminal interface for the PatchPilot local coding agent.</desc>
-  <rect width="920" height="520" rx="28" fill="#0B1020"/>
-  <rect x="32" y="32" width="856" height="456" rx="18" fill="#111827" stroke="#334155"/>
-  <rect x="32" y="32" width="856" height="48" rx="18" fill="#172033"/>
-  <circle cx="60" cy="56" r="7" fill="#EF4444"/>
-  <circle cx="84" cy="56" r="7" fill="#F59E0B"/>
-  <circle cx="108" cy="56" r="7" fill="#22C55E"/>
-  <text x="138" y="62" fill="#E5E7EB" font-family="Consolas, Menlo, monospace" font-size="18" font-weight="700">PatchPilot</text>
-  <rect x="704" y="45" width="146" height="24" rx="12" fill="#0F766E"/>
-  <text x="724" y="62" fill="#CCFBF1" font-family="Consolas, Menlo, monospace" font-size="13">qwen2.5-coder</text>
+<svg width="2048" height="1024" viewBox="0 0 2048 1024" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">PatchPilot v0.3 terminal showcase</title>
+  <desc id="desc">PatchPilot terminal interface with a calm header, session sidebar, approval permissions, Gemini provider, and typed transcript blocks.</desc>
+  <rect width="2048" height="1024" fill="#1F2636"/>
+  <rect x="22" y="17" width="2004" height="88" rx="2" fill="#202739" stroke="#6CB36F" stroke-width="1.5"/>
+  <text x="37" y="43" fill="#E3C95C" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="17" font-weight="700">gemini/gemini-3.1-flash-lite-preview</text>
+  <text x="397" y="43" fill="#708296" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="17">on</text>
+  <text x="429" y="43" fill="#E3C95C" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="17" font-weight="700">gemini api</text>
+  <text x="528" y="43" fill="#5C6E83" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="17">mode</text>
+  <text x="581" y="43" fill="#73BC75" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="17">plan</text>
+  <text x="631" y="43" fill="#5C6E83" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="17">write</text>
+  <text x="692" y="43" fill="#5C6E83" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="17">approval</text>
+  <text x="785" y="43" fill="#5C6E83" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="17">shell</text>
+  <text x="846" y="43" fill="#5C6E83" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="17">approval</text>
+  <text x="1973" y="43" fill="#73BC75" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="17" text-anchor="end">idle</text>
+  <text x="37" y="66" fill="#546A80" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="17">idle  1 req 2472 in/160 out  -  49.6 tok/s 1.2s</text>
 
-  <rect x="56" y="104" width="228" height="338" rx="12" fill="#0F172A" stroke="#334155"/>
-  <text x="76" y="134" fill="#38BDF8" font-family="Consolas, Menlo, monospace" font-size="14" font-weight="700">Workspace</text>
-  <text x="76" y="166" fill="#CBD5E1" font-family="Consolas, Menlo, monospace" font-size="13">src/core/agent.ts</text>
-  <text x="76" y="194" fill="#CBD5E1" font-family="Consolas, Menlo, monospace" font-size="13">src/core/tools.ts</text>
-  <text x="76" y="222" fill="#CBD5E1" font-family="Consolas, Menlo, monospace" font-size="13">src/tui/App.tsx</text>
-  <text x="76" y="250" fill="#94A3B8" font-family="Consolas, Menlo, monospace" font-size="13">tests/parser.test.ts</text>
-  <rect x="76" y="290" width="168" height="30" rx="8" fill="#1E293B"/>
-  <text x="94" y="311" fill="#A7F3D0" font-family="Consolas, Menlo, monospace" font-size="13">write: disabled</text>
-  <rect x="76" y="332" width="168" height="30" rx="8" fill="#1E293B"/>
-  <text x="94" y="353" fill="#FDE68A" font-family="Consolas, Menlo, monospace" font-size="13">shell: ask first</text>
+  <rect x="22" y="149" width="304" height="836" rx="2" fill="#202739" stroke="#4B627A" stroke-width="1.2"/>
+  <text x="37" y="176" fill="#78D2D3" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="17" font-weight="700">Session</text>
+  <text x="37" y="198" fill="#73BC75" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="17">state</text>
+  <text x="125" y="198" fill="#73BC75" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="17">idle</text>
+  <text x="37" y="220" fill="#73BC75" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="17">mode</text>
+  <text x="125" y="220" fill="#73BC75" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="17">plan</text>
+  <text x="37" y="242" fill="#78D2D3" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="17">session</text>
+  <text x="125" y="242" fill="#78D2D3" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="17">20260516...-019fgk</text>
+  <text x="37" y="264" fill="#78D2D3" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="17">agents</text>
+  <text x="125" y="264" fill="#78D2D3" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="17">on</text>
 
-  <rect x="308" y="104" width="556" height="338" rx="12" fill="#020617" stroke="#334155"/>
-  <text x="332" y="136" fill="#F8FAFC" font-family="Consolas, Menlo, monospace" font-size="15" font-weight="700">Agent transcript</text>
-  <text x="332" y="174" fill="#94A3B8" font-family="Consolas, Menlo, monospace" font-size="13">user</text>
-  <text x="390" y="174" fill="#E5E7EB" font-family="Consolas, Menlo, monospace" font-size="13">add parser tests and explain the diff</text>
-  <text x="332" y="216" fill="#38BDF8" font-family="Consolas, Menlo, monospace" font-size="13">pilot</text>
-  <text x="390" y="216" fill="#CBD5E1" font-family="Consolas, Menlo, monospace" font-size="13">reading parser and current tests...</text>
-  <rect x="332" y="244" width="492" height="42" rx="10" fill="#111827"/>
-  <text x="354" y="270" fill="#A7F3D0" font-family="Consolas, Menlo, monospace" font-size="13">tool read_file src/core/json.ts</text>
-  <rect x="332" y="302" width="492" height="42" rx="10" fill="#111827"/>
-  <text x="354" y="328" fill="#FDE68A" font-family="Consolas, Menlo, monospace" font-size="13">tool write_file denied: run with --apply</text>
-  <rect x="332" y="364" width="492" height="42" rx="10" fill="#111827"/>
-  <text x="354" y="390" fill="#C4B5FD" font-family="Consolas, Menlo, monospace" font-size="13">final review the proposed patch before commit</text>
-  <rect x="56" y="456" width="808" height="1" fill="#334155"/>
-  <text x="56" y="476" fill="#64748B" font-family="Consolas, Menlo, monospace" font-size="12">local model, visible tools, explicit permissions</text>
+  <text x="37" y="286" fill="#78D2D3" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="17" font-weight="700">Permissions</text>
+  <text x="37" y="308" fill="#73BC75" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="17">mode</text>
+  <text x="125" y="308" fill="#73BC75" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="17">plan</text>
+  <text x="37" y="330" fill="#E3C95C" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="17">write</text>
+  <text x="125" y="330" fill="#E3C95C" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="17">approval</text>
+  <text x="37" y="352" fill="#E3C95C" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="17">shell</text>
+  <text x="125" y="352" fill="#E3C95C" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="17">approval</text>
+
+  <text x="37" y="374" fill="#78D2D3" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="17" font-weight="700">Model</text>
+  <text x="37" y="396" fill="#78D2D3" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="17">provider</text>
+  <text x="125" y="396" fill="#78D2D3" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="17">gemini</text>
+  <text x="37" y="418" fill="#52677C" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="17">gemini-3.1-f...lite-preview</text>
+
+  <text x="37" y="440" fill="#78D2D3" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="17" font-weight="700">Host</text>
+  <text x="37" y="462" fill="#E3C95C" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="17">device</text>
+  <text x="125" y="462" fill="#E3C95C" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="17">gemini api</text>
+  <text x="37" y="484" fill="#73BC75" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="17">network</text>
+  <text x="125" y="484" fill="#73BC75" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="17">cloud</text>
+  <text x="37" y="506" fill="#52677C" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="17">gemini cloud</text>
+  <text x="37" y="528" fill="#52677C" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="17">version -</text>
+  <text x="37" y="550" fill="#52677C" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="17">models  -</text>
+  <text x="37" y="572" fill="#52677C" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="17">loaded  idle</text>
+
+  <text x="37" y="594" fill="#78D2D3" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="17" font-weight="700">Workspace</text>
+  <text x="37" y="616" fill="#52677C" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="17">/Users/johann...s/PatchPilot</text>
+
+  <text x="37" y="638" fill="#78D2D3" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="17" font-weight="700">Runtime</text>
+  <text x="37" y="660" fill="#52677C" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="17">cpu 22%  mem 99%/7.9G</text>
+  <text x="37" y="682" fill="#52677C" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="17">gpu -  vram -</text>
+  <text x="37" y="704" fill="#52677C" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="17">draft 0 tok</text>
+  <text x="37" y="726" fill="#52677C" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="17">2472 in/160 out/2632 total</text>
+  <text x="37" y="748" fill="#52677C" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="17">1 req 2472 in/160 out</text>
+  <text x="37" y="770" fill="#52677C" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="17">-</text>
+
+  <text x="37" y="792" fill="#78D2D3" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="17" font-weight="700">Advisors</text>
+  <text x="37" y="814" fill="#52677C" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="17">No advisor output yet.</text>
+
+  <rect x="344" y="149" width="1682" height="836" rx="2" fill="#202739" stroke="#6BDCE4" stroke-width="1.3"/>
+  <text x="359" y="176" fill="#E9EEF5" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="17">&gt;</text>
+  <text x="389" y="176" fill="#E9EEF5" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="17" font-weight="700">you</text>
+  <text x="525" y="176" fill="#E9EEF5" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="17">Hey, whats up?</text>
+
+  <text x="359" y="198" fill="#52677C" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="17">-</text>
+  <text x="389" y="198" fill="#52677C" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="17" font-weight="700">planning</text>
+  <text x="525" y="198" fill="#52677C" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="17">thinking step 1/8</text>
+  <text x="525" y="220" fill="#28364A" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="17">state planning</text>
+
+  <text x="359" y="242" fill="#73BC75" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="17">=</text>
+  <text x="389" y="242" fill="#73BC75" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="17" font-weight="700">final</text>
+  <text x="525" y="242" fill="#73BC75" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="17">Not much! Just hanging out in the terminal, ready to help you with your code. I'm PatchPilot, your local-first coding agent. How can I help you with</text>
+  <text x="525" y="264" fill="#73BC75" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="17">the workspace today?</text>
+  <text x="525" y="286" fill="#28364A" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="17">state done</text>
+
+  <text x="339" y="1014" fill="#78D2D3" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="17">patch &gt;</text>
+  <text x="426" y="1014" fill="#52677C" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="17">Ask PatchPilot or type /help...</text>
 </svg>

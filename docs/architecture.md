@@ -96,6 +96,10 @@ Each TUI launch creates a session id. Events are appended to `.patchpilot/sessio
 
 The workspace `.patchpilot/` folder is ignored by Git. A global index at `~/.patchpilot/session-index.json` keeps recent sessions discoverable for `patchpilot sessions`, `patchpilot resume`, `/sessions`, and `/resume`.
 
+## Release Publishing
+
+Tagged releases use `.github/workflows/release.yml`. The workflow verifies that `package.json` matches the tag, installs with `npm ci`, runs tests, builds, packs the CLI, publishes `@jx-grxf/patchpilot` to npm, and then creates or updates the GitHub Release with the `.tgz` artifact. Publishing uses the `NPM_TOKEN` repository secret when present and can fall back to npm trusted publishing if the package is configured for GitHub Actions OIDC on npm.
+
 ## Safety
 
 The workspace root is resolved once at startup. Every file path is resolved against that root and rejected if it escapes the workspace. Writes and shell commands are blocked by default. In the TUI, risky tools request approval with allow-once, allow-session, or deny decisions. `--apply` and `--allow-shell` remain explicit compatibility switches for users who want global write or shell permission.

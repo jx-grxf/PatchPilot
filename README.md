@@ -351,6 +351,7 @@ Release notes are kept in [docs/releases](docs/releases).
 
 | Version | Notes |
 |---|---|
+| `v0.3.0` | [Release notes](docs/releases/v0.3.0.md) |
 | `v0.2.1` | [Release notes](docs/releases/v0.2.1.md) |
 | `v0.2.0` | [Release notes](docs/releases/v0.2.0.md) |
 | `v0.1.0` | [Release notes](docs/releases/v0.1.0.md) |

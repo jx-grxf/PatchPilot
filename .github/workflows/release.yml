@@ -4,9 +4,11 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
 
 permissions:
   contents: write
+  id-token: write
 
 jobs:
   release:
@@ -23,9 +25,19 @@ jobs:
         with:
           node-version: 24
           cache: npm
+          registry-url: https://registry.npmjs.org
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Verify tag matches package version
+        run: |
+          PACKAGE_VERSION="$(node -p "require('./package.json').version")"
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          if [ "$PACKAGE_VERSION" != "$TAG_VERSION" ]; then
+            echo "package.json version $PACKAGE_VERSION does not match tag $GITHUB_REF_NAME"
+            exit 1
+          fi
 
       - name: Test
         run: npm test
@@ -35,6 +47,22 @@ jobs:
 
       - name: Pack CLI artifact
         run: npm pack
+
+      - name: Publish to npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if npm view "@jx-grxf/patchpilot@${GITHUB_REF_NAME#v}" version >/dev/null 2>&1; then
+            echo "@jx-grxf/patchpilot@${GITHUB_REF_NAME#v} is already published."
+            exit 0
+          fi
+
+          if [ -n "${NODE_AUTH_TOKEN:-}" ]; then
+            npm publish --access public --provenance
+          else
+            echo "NPM_TOKEN is not configured. Falling back to npm trusted publishing/OIDC."
+            npm publish --access public --provenance
+          fi
 
       - name: Create GitHub release
         env:
