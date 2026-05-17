@@ -13,10 +13,16 @@ describe("OpenRouterClient", () => {
         JSON.stringify({
           data: [
             {
-              id: "z/model"
+              id: "z/model",
+              supported_parameters: ["response_format"]
             },
             {
-              id: "a/model:free"
+              id: "a/model:free",
+              supported_parameters: ["response_format", "reasoning"]
+            },
+            {
+              id: "audio/model",
+              supported_parameters: ["tools"]
             }
           ]
         }),
@@ -30,6 +36,83 @@ describe("OpenRouterClient", () => {
     );
 
     await expect(new OpenRouterClient("test-key").listModels()).resolves.toEqual(["openrouter/auto", "a/model:free", "z/model"]);
+  });
+
+  it("does not send reasoning to OpenRouter models without listed reasoning support", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch");
+    fetchMock
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            data: [
+              {
+                id: "a/model",
+                supported_parameters: ["response_format"]
+              }
+            ]
+          }),
+          {
+            status: 200,
+            headers: {
+              "Content-Type": "application/json"
+            }
+          }
+        )
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  content: "ok"
+                }
+              }
+            ]
+          }),
+          {
+            status: 200,
+            headers: {
+              "Content-Type": "application/json"
+            }
+          }
+        )
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            data: []
+          }),
+          {
+            status: 200,
+            headers: {
+              "Content-Type": "application/json"
+            }
+          }
+        )
+      );
+
+    const client = new OpenRouterClient("test-key");
+    await client.listModels();
+    await client.chat({
+      model: "a/model",
+      formatJson: true,
+      reasoningEffort: "high",
+      messages: [
+        {
+          role: "user",
+          content: "hello"
+        }
+      ]
+    });
+
+    expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))).toMatchObject({
+      model: "a/model",
+      response_format: {
+        type: "json_object"
+      }
+    });
+    expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))).not.toHaveProperty("reasoning");
   });
 
   it("sends OpenAI-compatible chat requests and reads cache telemetry", async () => {

@@ -10,6 +10,14 @@ type OpenRouterModel = {
   id: string;
   name?: string;
   context_length?: number;
+  supported_parameters?: string[];
+  per_request_limits?: {
+    prompt_tokens?: string;
+    completion_tokens?: string;
+  };
+  top_provider?: {
+    max_completion_tokens?: number;
+  };
   pricing?: {
     prompt?: string;
     completion?: string;
@@ -53,9 +61,16 @@ type OpenRouterRuntimeOptions = {
 
 const modelPricingCacheTtlMs = 15 * 60_000;
 let modelPricingCache: {
+  baseUrl: string;
   expiresAt: number;
   rates: Map<string, OpenRouterTokenRates>;
 } | null = null;
+const modelCapabilityCache = new Map<string, OpenRouterModelCapability>();
+
+type OpenRouterModelCapability = {
+  supportsJson: boolean | null;
+  supportsReasoning: boolean | null;
+};
 
 export type OpenRouterTokenRates = {
   inputPerToken: number;
@@ -90,14 +105,14 @@ export class OpenRouterClient {
         "HTTP-Referer": "https://github.com/jx-grxf/PatchPilot",
         "X-Title": "PatchPilot"
       },
-      body: JSON.stringify({
+      body: JSON.stringify(cleanUndefined({
         model: normalizeOpenRouterModel(options.model),
         messages: options.messages,
         max_tokens: this.runtimeOptions.maxTokens,
         temperature: this.runtimeOptions.temperature,
-        reasoning: getOpenRouterReasoningConfig(options.reasoningEffort),
-          response_format: options.formatJson ? { type: "json_object" } : undefined
-        }),
+        reasoning: this.supportsReasoning(options.model) ? getOpenRouterReasoningConfig(options.reasoningEffort) : undefined,
+        response_format: options.formatJson && this.supportsJson(options.model) !== false ? { type: "json_object" } : undefined
+      })),
       signal: options.signal
     });
     const durationMs = Date.now() - startedAt;
@@ -105,6 +120,16 @@ export class OpenRouterClient {
 
     if (!response.ok || payload.error) {
       const reason = payload.error?.message ? ` ${payload.error.message}` : "";
+      if (response.status === 401) {
+        throw new Error(`OpenRouter authentication failed for model "${options.model}". Check OPENROUTER_API_KEY.`);
+      }
+      if (response.status === 402) {
+        throw new Error(`OpenRouter credit is exhausted for model "${options.model}". Add credits or use a free/cheaper route.${reason}`);
+      }
+      if (response.status === 429) {
+        const retryAfter = response.headers.get("retry-after");
+        throw new Error(`OpenRouter rate limit hit for model "${options.model}".${retryAfter ? ` Retry after ${retryAfter}s.` : ""}${reason}`);
+      }
       throw new Error(`OpenRouter chat failed for model "${options.model}": HTTP ${response.status}.${reason}`);
     }
 
@@ -121,7 +146,18 @@ export class OpenRouterClient {
 
   async listModels(): Promise<string[]> {
     const models = await fetchOpenRouterModels(this.baseUrl);
-    return [defaultOpenRouterModel, ...models.map((model) => model.id).sort()];
+    for (const model of models) {
+      modelCapabilityCache.set(capabilityKey(this.baseUrl, model.id), readOpenRouterCapability(model));
+    }
+    return [defaultOpenRouterModel, ...models.filter(isAgentCompatibleOpenRouterModel).map((model) => model.id).sort()];
+  }
+
+  private supportsJson(model: string): boolean | null {
+    return modelCapabilityCache.get(capabilityKey(this.baseUrl, normalizeOpenRouterModel(model)))?.supportsJson ?? null;
+  }
+
+  private supportsReasoning(model: string): boolean {
+    return modelCapabilityCache.get(capabilityKey(this.baseUrl, normalizeOpenRouterModel(model)))?.supportsReasoning === true;
   }
 
   private async fetchOpenRouter(path: string, init?: RequestInit): Promise<Response> {
@@ -168,11 +204,12 @@ function normalizeOpenRouterModel(model: string): string {
 }
 
 async function readOpenRouterPricing(): Promise<Map<string, OpenRouterTokenRates>> {
-  if (modelPricingCache && modelPricingCache.expiresAt > Date.now()) {
+  const baseUrl = process.env.PATCHPILOT_OPENROUTER_BASE_URL ?? defaultOpenRouterBaseUrl;
+  if (modelPricingCache && modelPricingCache.baseUrl === baseUrl && modelPricingCache.expiresAt > Date.now()) {
     return modelPricingCache.rates;
   }
 
-  const models = await fetchOpenRouterModels(process.env.PATCHPILOT_OPENROUTER_BASE_URL ?? defaultOpenRouterBaseUrl).catch(() => []);
+  const models = await fetchOpenRouterModels(baseUrl).catch(() => []);
   const rates = new Map<string, OpenRouterTokenRates>();
   for (const model of models) {
     rates.set(model.id, {
@@ -184,6 +221,7 @@ async function readOpenRouterPricing(): Promise<Map<string, OpenRouterTokenRates
   }
 
   modelPricingCache = {
+    baseUrl,
     expiresAt: Date.now() + modelPricingCacheTtlMs,
     rates
   };
@@ -203,6 +241,33 @@ async function fetchOpenRouterModels(baseUrl: string): Promise<OpenRouterModel[]
   }
 
   return payload.data ?? [];
+}
+
+function readOpenRouterCapability(model: OpenRouterModel): OpenRouterModelCapability {
+  if (!Array.isArray(model.supported_parameters)) {
+    return {
+      supportsJson: null,
+      supportsReasoning: null
+    };
+  }
+
+  return {
+    supportsJson: model.supported_parameters.includes("response_format"),
+    supportsReasoning: model.supported_parameters.includes("reasoning")
+  };
+}
+
+function isAgentCompatibleOpenRouterModel(model: OpenRouterModel): boolean {
+  const capability = readOpenRouterCapability(model);
+  return capability.supportsJson !== false;
+}
+
+function capabilityKey(baseUrl: string, model: string): string {
+  return `${baseUrl.replace(/\/$/, "")}:${normalizeOpenRouterModel(model)}`;
+}
+
+function cleanUndefined(value: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined));
 }
 
 async function toTelemetry(payload: OpenRouterChatResponse, durationMs: number, model: string): Promise<ModelTelemetry> {

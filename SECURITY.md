@@ -17,4 +17,6 @@ Do not open a public issue for a vulnerability before the maintainer has had tim
 
 ## Security Model
 
-PatchPilot keeps file tools inside one workspace root, blocks common secret files, and requires explicit flags for writes and shell commands. Cloud providers may receive prompt and repository context under their own terms. Review diffs before committing generated changes.
+PatchPilot keeps file tools inside one workspace root, blocks common secret files and credential-like extensions, and requires approval or explicit trusted bypass for writes and shell commands. Package-script approvals include the resolved script body because scripts can hide publish, push, or destructive commands.
+
+Session logs are stored in `.patchpilot/sessions/` under the workspace and summarized in `~/.patchpilot/session-index.json`. Treat those logs as local project metadata: they may contain prompts, tool names, summaries, and clipped command output. Do not use cloud providers or trusted bypass in repositories containing secrets you do not want processed by external model providers.

@@ -343,6 +343,8 @@ describe("WorkspaceTools", () => {
 
     expect(result.ok).toBe(false);
     expect(result.approval?.request.tool).toBe("run_script");
+    expect(result.approval?.request.preview).toContain("npm run test");
+    expect(result.approval?.request.arguments.command).toContain("node -e");
     expect(result.approval?.decision).toBe("deny");
   });
 

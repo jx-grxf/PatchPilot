@@ -20,10 +20,13 @@ describe("NvidiaClient", () => {
         JSON.stringify({
           data: [
             {
-              id: "z/model"
+              id: "meta/llama-3.1-70b-instruct"
             },
             {
-              id: "a/model"
+              id: "nvidia/embed-qa"
+            },
+            {
+              id: "meta/llama-3.1-70b-instruct"
             }
           ]
         }),
@@ -36,7 +39,7 @@ describe("NvidiaClient", () => {
       )
     );
 
-    await expect(new NvidiaClient("test-key").listModels()).resolves.toEqual(["a/model", "z/model"]);
+    await expect(new NvidiaClient("test-key").listModels()).resolves.toEqual(["meta/llama-3.1-70b-instruct"]);
     expect(fetchMock).toHaveBeenCalledWith(
       "https://integrate.api.nvidia.com/v1/models",
       expect.objectContaining({

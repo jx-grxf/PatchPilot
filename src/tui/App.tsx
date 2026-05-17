@@ -15,6 +15,7 @@ import { listWorkspaceSessions, loadSessionSummary, SessionStore } from "../core
 import { addTelemetryToSession, emptySessionTelemetry, estimateTokens } from "../core/tokenAccounting.js";
 import type { AgentEvent, AgentWorkState, ApprovalRequest, ModelProvider, ModelTelemetry, PermissionDecision, SessionTelemetry } from "../core/types.js";
 import { WorkspaceTools } from "../core/workspace.js";
+import { ApprovalPanel } from "./components/ApprovalPanel.js";
 import { CommandSuggestions, type CommandSuggestionItem } from "./components/CommandSuggestions.js";
 import { Composer, FooterHints } from "./components/Composer.js";
 import { Header } from "./components/Header.js";
@@ -119,7 +120,8 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   const paletteReservedHeight = !onboarding && paletteItems.length > 0 ? Math.min(8, paletteItems.length) + 4 : 0;
   const composerReservedHeight = onboarding ? 0 : 2;
   const footerReservedHeight = onboarding ? 0 : 1;
-  const panelHeight = Math.max(8, rootHeight - headerReservedHeight - composerReservedHeight - paletteReservedHeight - footerReservedHeight);
+  const approvalReservedHeight = !onboarding && (pendingApproval || bypassConfirmation) ? 6 : 0;
+  const panelHeight = Math.max(8, rootHeight - headerReservedHeight - composerReservedHeight - paletteReservedHeight - footerReservedHeight - approvalReservedHeight);
   const transcriptWidth = Math.max(42, terminalColumns - 38);
   const scrollStep = Math.max(4, Math.floor(panelHeight * 0.8));
   const appendLine = useCallback((line: LogLineInput) => {
@@ -184,15 +186,14 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   );
 
   const requestBypassMode = useCallback(() => {
+    if (bypassConfirmation) {
+      return;
+    }
+
     setBypassConfirmation(true);
-    appendLine({
-      kind: "approval",
-      tone: "danger",
-      label: "bypass",
-      text: "Build + bypass will enable write and shell permissions without per-tool prompts.",
-      detail: "Press y to accept for this session, or n/Esc to stay in build mode. Use this only in a trusted workspace."
-    });
-  }, [appendLine]);
+    setStatus("bypass confirmation needed");
+    setWorkState("waiting_approval");
+  }, [bypassConfirmation]);
 
   const confirmBypassMode = useCallback(() => {
     applyMode("bypass");
@@ -200,6 +201,8 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
 
   const cancelBypassMode = useCallback(() => {
     setBypassConfirmation(false);
+    setStatus("idle");
+    setWorkState("idle");
     applyMode("build", false);
     appendLine({
       kind: "approval",
@@ -744,7 +747,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       }
 
       const visibleModels = selectableModels(onboardingInput, onboarding.models);
-      const selectedModel = selectModelFromInput(value, visibleModels, onboardingIndex, {
+      const selectedModel = visibleModels[onboardingIndex] ?? selectModelFromInput(value, visibleModels, onboardingIndex, {
         allowManual: onboarding.provider !== "ollama"
       });
       if (!selectedModel) {
@@ -839,6 +842,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
               setPendingApproval(request);
               setWorkState("waiting_approval");
               setStatus(`approval needed for ${request.tool}`);
+              setTranscriptScrollOffset(0);
               appendLine({
                 kind: "approval",
                 tone: "warning",
@@ -1400,7 +1404,16 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   const handleSubmit = useCallback(
     async (value: string) => {
       const nextValue = value.trim();
-      if (!nextValue || isRunning) {
+      if (!nextValue) {
+        return;
+      }
+
+      if (isRunning && nextValue.startsWith("/")) {
+        await handleSlashCommand(nextValue);
+        return;
+      }
+
+      if (isRunning) {
         return;
       }
 
@@ -1542,6 +1555,11 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   useInput((inputValue, key) => {
     if (bypassConfirmation) {
       const normalizedInput = inputValue.toLowerCase();
+      if (key.tab) {
+        cancelBypassMode();
+        return;
+      }
+
       if (normalizedInput === "y") {
         confirmBypassMode();
         return;
@@ -1754,7 +1772,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           onInputSubmit={(value) => void handleOnboardingSubmit(value)}
         />
       ) : (
-        <Box flexDirection="row" height={panelHeight + composerReservedHeight + paletteReservedHeight + footerReservedHeight} overflowY="hidden">
+        <Box flexDirection="row" height={panelHeight + approvalReservedHeight + composerReservedHeight + paletteReservedHeight + footerReservedHeight} overflowY="hidden">
           <Sidebar
             workspace={settings.workspace}
             model={settings.model}
@@ -1777,7 +1795,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
             isActive={activeScrollPane === "session"}
             activeHost={activeHost}
           />
-          <Box flexDirection="column" flexGrow={1} height={panelHeight + composerReservedHeight + paletteReservedHeight + footerReservedHeight} overflowY="hidden">
+          <Box flexDirection="column" flexGrow={1} height={panelHeight + approvalReservedHeight + composerReservedHeight + paletteReservedHeight + footerReservedHeight} overflowY="hidden">
             <Transcript
               lines={lines}
               isRunning={isRunning}
@@ -1786,11 +1804,13 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
               width={transcriptWidth}
               scrollOffset={transcriptScrollOffset}
             />
+            <ApprovalPanel request={pendingApproval} bypassConfirmation={bypassConfirmation} />
             <Composer
               input={input}
               isRunning={isRunning}
               status={status}
               draftTokens={draftTokens}
+              isApprovalWaiting={Boolean(pendingApproval || bypassConfirmation)}
               onChange={setInput}
               onSubmit={(value) => void handleSubmit(value)}
             />
@@ -1873,7 +1893,7 @@ async function switchModel(
     return;
   }
 
-  if (!installedModels.includes(nextModel)) {
+  if (!installedModels.includes(nextModel) && !(provider !== "ollama" && isPlausibleCloudModelId(nextModel))) {
     appendLine({
       tone: "warning",
       label: "model",
@@ -1902,9 +1922,10 @@ async function switchModel(
     PATCHPILOT_MODEL: nextModel
   });
   appendLine({
-    tone: "success",
+    tone: installedModels.includes(nextModel) ? "success" : "warning",
     label: "model",
-    text: `switched to ${nextModel}`
+    text: installedModels.includes(nextModel) ? `switched to ${nextModel}` : `switched to unverified ${provider} model ${nextModel}`,
+    detail: installedModels.includes(nextModel) ? undefined : "The provider did not list this model in discovery. PatchPilot will try it and surface the provider error if it is unavailable."
   });
   if (provider === "openrouter" && isOpenRouterFreeModel(nextModel)) {
     appendLine({
@@ -1936,7 +1957,15 @@ async function resolveRunnableSettings(
     return null;
   }
 
-  if (installedModels.includes(settings.model)) {
+  if (installedModels.includes(settings.model) || (settings.provider !== "ollama" && isPlausibleCloudModelId(settings.model))) {
+    if (!installedModels.includes(settings.model)) {
+      appendLine({
+        tone: "warning",
+        label: "model",
+        text: `using unverified ${settings.provider} model ${settings.model}`,
+        detail: "Model discovery did not list it; the next provider request will be the compatibility check."
+      });
+    }
     return settings;
   }
 
@@ -2353,6 +2382,7 @@ function defaultLogKind(line: LogLineInput): LogLine["kind"] {
 
   return "status";
 }
+
 
 function formatHostOptions(hosts: OllamaHost[]): string {
   return hosts

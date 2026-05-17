@@ -42,8 +42,12 @@ type GeminiGenerateContentResponse = {
 type GeminiModelsResponse = {
   models?: Array<{
     name: string;
+    displayName?: string;
     supportedGenerationMethods?: string[];
+    inputTokenLimit?: number;
+    outputTokenLimit?: number;
   }>;
+  nextPageToken?: string;
   error?: {
     code?: number;
     message?: string;
@@ -107,24 +111,31 @@ export class GeminiClient {
 
   async listModels(): Promise<string[]> {
     this.assertConfigured();
-    const response = await this.fetchGemini("models", {
-      headers: {
-        "x-goog-api-key": this.apiKey
+    const models: string[] = [];
+    let pageToken = "";
+    do {
+      const response = await this.fetchGemini(`models?pageSize=1000${pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : ""}`, {
+        headers: {
+          "x-goog-api-key": this.apiKey
+        }
+      });
+      const payload = (await readJsonSafely(response)) as GeminiModelsResponse;
+
+      if (!response.ok || payload.error) {
+        const reason = payload.error?.message ? ` ${payload.error.message}` : "";
+        throw new Error(`Gemini models failed with HTTP ${response.status}.${reason}`);
       }
-    });
-    const payload = (await readJsonSafely(response)) as GeminiModelsResponse;
 
-    if (!response.ok || payload.error) {
-      const reason = payload.error?.message ? ` ${payload.error.message}` : "";
-      throw new Error(`Gemini models failed with HTTP ${response.status}.${reason}`);
-    }
+      models.push(
+        ...(payload.models
+          ?.filter((model) => model.supportedGenerationMethods?.includes("generateContent"))
+          .map((model) => stripModelPrefix(model.name))
+          .filter(isLikelyGeminiAgentModel) ?? [])
+      );
+      pageToken = payload.nextPageToken ?? "";
+    } while (pageToken);
 
-    return (
-      payload.models
-        ?.filter((model) => model.supportedGenerationMethods?.includes("generateContent"))
-        .map((model) => stripModelPrefix(model.name))
-        .sort() ?? []
-    );
+    return [...new Set(models)].sort();
   }
 
   private async fetchGemini(path: string, init?: RequestInit): Promise<Response> {
@@ -217,7 +228,7 @@ function toTelemetry(payload: GeminiGenerateContentResponse, durationMs: number,
   const responseTokens = payload.usageMetadata?.candidatesTokenCount ?? 0;
   const cachedPromptTokens = payload.usageMetadata?.cachedContentTokenCount ?? 0;
   const thoughtsTokens = payload.usageMetadata?.thoughtsTokenCount ?? 0;
-  const totalTokens = payload.usageMetadata?.totalTokenCount ?? promptTokens + responseTokens;
+  const totalTokens = payload.usageMetadata?.totalTokenCount ?? promptTokens + responseTokens + thoughtsTokens;
 
   return attachTokenCost(
     {
@@ -235,6 +246,15 @@ function toTelemetry(payload: GeminiGenerateContentResponse, durationMs: number,
     "gemini",
     model
   );
+}
+
+function isLikelyGeminiAgentModel(model: string): boolean {
+  const normalizedModel = model.toLowerCase();
+  if (/(embedding|imagen|veo|tts|aqa|live|bidi|audio|speech)/.test(normalizedModel)) {
+    return false;
+  }
+
+  return normalizedModel.startsWith("gemini-");
 }
 
 async function readJsonSafely(response: Response): Promise<unknown> {
