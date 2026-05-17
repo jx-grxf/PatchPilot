@@ -35,25 +35,15 @@ export function Sidebar(props: {
   isActive: boolean;
   activeHost: OllamaHostDetails | null;
 }): React.ReactElement {
-  const rows = buildSidebarRows(props);
-  const visibleRowCount = Math.max(1, props.height - 2);
-  const hasOverflow = rows.length > visibleRowCount;
-  const contentRowCount = hasOverflow ? Math.max(1, visibleRowCount - 1) : visibleRowCount;
-  const clampedOffset = clampScrollOffset(props.scrollOffset, rows.length, contentRowCount);
-  const visibleRows = rows.slice(Math.max(0, rows.length - contentRowCount - clampedOffset), rows.length - clampedOffset);
+  const rows = buildSidebarRows(props).slice(0, Math.max(1, props.height - 2));
 
   return (
     <Box width={32} height={props.height} overflowY="hidden" borderStyle="round" borderColor={props.isActive ? "cyan" : "gray"} flexDirection="column" paddingX={1} marginRight={1}>
-      {visibleRows.map((row, index) => (
+      {rows.map((row, index) => (
         <Text key={`${index}-${row.text}`} color={row.color} bold={row.bold} wrap="truncate">
           {row.text}
         </Text>
       ))}
-      {hasOverflow ? (
-        <Text color="gray" wrap="truncate">
-          scroll {Math.max(1, rows.length - contentRowCount - clampedOffset + 1)}-{Math.min(rows.length, rows.length - clampedOffset)}/{rows.length}
-        </Text>
-      ) : null}
     </Box>
   );
 }
@@ -83,6 +73,7 @@ function buildSidebarRows(props: {
   const hostVersion = props.activeHost?.host.version ?? "-";
   const hostModels = props.activeHost ? `${props.activeHost.models.length} available` : "-";
   const hostLoaded = props.activeHost?.runningModels.length ? props.activeHost.runningModels.map((model) => formatRunningModel(model)).join(", ") : "idle";
+  const telemetryRows = compactTelemetryRows(props.telemetry, props.sessionTelemetry);
   const rows: SidebarLine[] = [
     section("Session"),
     row("state", props.workState.replace(/_/g, " "), props.workState === "error" ? "red" : props.workState === "waiting_approval" ? "yellow" : "green"),
@@ -104,19 +95,17 @@ function buildSidebarRows(props: {
     row("device", shortenMiddle(hostDeviceName, 19), "yellow"),
     row("network", hostNetwork, "green"),
     muted(shortenMiddle(hostRoute, 28)),
-    muted(`version ${hostVersion}`),
-    muted(`models  ${hostModels}`),
-    ...wrapSidebarText(`loaded  ${hostLoaded}`),
+    muted(`ver ${hostVersion}  models ${hostModels}`),
+    muted(`loaded ${shortenMiddle(hostLoaded, 21)}`),
     spacer(),
     section("Workspace"),
-    ...wrapSidebarText(shortenMiddle(props.workspace, 58)),
+    muted(shortenMiddle(props.workspace, 28)),
     spacer(),
     section("Runtime"),
     muted(`cpu ${props.systemStats.cpuPercent}%  mem ${props.systemStats.memoryPercent}%/${props.systemStats.usedMemoryGb}G`),
     muted(`gpu ${formatGpuUtilization(props.gpuStats)}  vram ${formatGpuMemory(props.gpuStats)}`),
     muted(`draft ${props.draftTokens} tok`),
-    ...wrapSidebarText(formatTokens(props.telemetry)),
-    ...wrapSidebarText(formatSessionTokens(props.sessionTelemetry)),
+    ...telemetryRows,
     muted(formatCost(props.sessionTelemetry.estimatedCostUsd)),
     spacer(),
     section("Advisors")
@@ -206,8 +195,16 @@ function formatRunningModel(model: OllamaHostDetails["runningModels"][number]): 
   return `${model.name}${vram}`;
 }
 
-function clampScrollOffset(offset: number, rowCount: number, visibleRowCount: number): number {
-  return Math.max(0, Math.min(offset, Math.max(0, rowCount - visibleRowCount)));
+function compactTelemetryRows(telemetry: ModelTelemetry | null, sessionTelemetry: SessionTelemetry): SidebarLine[] {
+  const rows: SidebarLine[] = [];
+  if (telemetry) {
+    rows.push(muted(formatTokens(telemetry)));
+  } else {
+    rows.push(muted("-"));
+  }
+
+  rows.push(muted(formatSessionTokens(sessionTelemetry)));
+  return rows.flatMap((line) => wrapSidebarText(line.text).slice(0, 2));
 }
 
 function wrapText(value: string, width: number): string[] {

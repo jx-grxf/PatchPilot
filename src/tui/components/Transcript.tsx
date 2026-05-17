@@ -92,7 +92,8 @@ function buildTranscriptRows(lines: LogLine[], width: number): TranscriptRow[] {
       label: index === 0 ? label : "",
       text,
       color,
-      bold: index === 0
+      bold: index === 0,
+      dim: false
     }));
 
     rows.push(
@@ -101,7 +102,7 @@ function buildTranscriptRows(lines: LogLine[], width: number): TranscriptRow[] {
         label: "",
         text,
         color: "gray" as const,
-        dim: true
+        dim: line.kind !== "approval" && line.kind !== "error"
       }))
     );
 

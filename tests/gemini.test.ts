@@ -25,7 +25,7 @@ describe("GeminiClient", () => {
           usageMetadata: {
             promptTokenCount: 10,
             candidatesTokenCount: 5,
-            totalTokenCount: 15
+            thoughtsTokenCount: 2
           }
         }),
         {
@@ -84,8 +84,8 @@ describe("GeminiClient", () => {
       promptTokens: 10,
       cachedPromptTokens: 0,
       cacheWriteTokens: 0,
-      responseTokens: 5,
-      totalTokens: 15,
+      responseTokens: 7,
+      totalTokens: 17,
       evalTokensPerSecond: 10,
       promptDurationMs: 0,
       responseDurationMs: 500,
@@ -97,17 +97,39 @@ describe("GeminiClient", () => {
   });
 
   it("lists only generateContent-capable models", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
       new Response(
         JSON.stringify({
           models: [
             {
               name: "models/gemini-2.5-flash",
               supportedGenerationMethods: ["generateContent"]
+            }
+          ],
+          nextPageToken: "next"
+        }),
+        {
+          status: 200,
+          headers: {
+            "Content-Type": "application/json"
+          }
+        }
+      )
+    ).mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          models: [
+            {
+              name: "models/gemini-3-pro-preview",
+              supportedGenerationMethods: ["generateContent"]
             },
             {
               name: "models/text-embedding-004",
               supportedGenerationMethods: ["embedContent"]
+            },
+            {
+              name: "models/imagen-4.0",
+              supportedGenerationMethods: ["generateContent"]
             }
           ]
         }),
@@ -120,7 +142,7 @@ describe("GeminiClient", () => {
       )
     );
 
-    await expect(new GeminiClient("test-key").listModels()).resolves.toEqual(["gemini-2.5-flash"]);
+    await expect(new GeminiClient("test-key").listModels()).resolves.toEqual(["gemini-2.5-flash", "gemini-3-pro-preview"]);
   });
 
   it("reads Gemini API key aliases and runtime tuning", () => {

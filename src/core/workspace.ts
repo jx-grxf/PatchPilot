@@ -66,11 +66,16 @@ const blockedPathNames = new Set([
   ".env.development",
   ".env.production",
   ".env.test",
+  ".envrc",
   ".npmrc",
   ".pypirc",
   ".netrc",
+  "credentials.json",
+  "secrets.json",
   "id_rsa",
   "id_ed25519",
+  "id_ecdsa",
+  "id_dsa",
   "known_hosts"
 ]);
 
@@ -663,14 +668,16 @@ export class WorkspaceTools {
       return denied(`package script not found: ${normalizedScript}`, "run_script");
     }
 
+    const scriptCommand = scripts[normalizedScript];
     if (!this.allowShell) {
       const approval = await this.requestApproval(
         "run_script",
         "shell",
         {
-          script: normalizedScript
+          script: normalizedScript,
+          command: scriptCommand
         },
-        `Run package script: npm run ${normalizedScript}`
+        previewPackageScript(normalizedScript, scriptCommand)
       );
       if (approval.decision === "deny") {
         return denied("run_script denied by permission policy.", "run_script", approval);
@@ -684,7 +691,7 @@ export class WorkspaceTools {
       content: clip(output.output, 20_000),
       tool: "run_script",
       category: toolSpecs.run_script.category,
-      preview: `npm run ${normalizedScript}`
+      preview: previewPackageScript(normalizedScript, scriptCommand)
     };
   }
 
@@ -995,7 +1002,7 @@ async function findNearestExistingParent(absolutePath: string): Promise<string> 
 function runCommand(command: string, cwd: string, timeoutMs: number, signal?: AbortSignal): Promise<{ exitCode: number | null; output: string }> {
   const isWindows = platform() === "win32";
   const shellExecutable = isWindows ? "powershell.exe" : "bash";
-  const shellArgs = isWindows ? ["-NoProfile", "-Command", command] : ["-lc", command];
+  const shellArgs = isWindows ? ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", command] : ["-lc", command];
 
   return new Promise((resolve) => {
     const child = spawn(shellExecutable, shellArgs, {
@@ -1102,7 +1109,18 @@ function isSensitivePath(value: string): boolean {
   return normalizedPath
     .split("/")
     .filter(Boolean)
-    .some((part) => blockedPathNames.has(part.toLowerCase()));
+    .some((part) => {
+      const normalizedPart = part.toLowerCase();
+      return (
+        blockedPathNames.has(normalizedPart) ||
+        normalizedPart.endsWith(".pem") ||
+        normalizedPart.endsWith(".key") ||
+        normalizedPart.endsWith(".p12") ||
+        normalizedPart.endsWith(".pfx") ||
+        normalizedPart.startsWith("secrets.") ||
+        normalizedPart.includes("credentials")
+      );
+    });
 }
 
 function denied(
@@ -1302,6 +1320,12 @@ function validateShellCommand(command: string): string | null {
   }
 
   return null;
+}
+
+function previewPackageScript(name: string, command: string): string {
+  const risk = validateShellCommand(command);
+  const prefix = risk ? `Risky package script (${risk})` : "Run package script";
+  return `${prefix}: npm run ${name} -> ${clip(command, 220)}`;
 }
 
 function stripQuotes(value: string): string {
