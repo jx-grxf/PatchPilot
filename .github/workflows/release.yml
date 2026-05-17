@@ -99,3 +99,14 @@ jobs:
           else
             gh release create "${GITHUB_REF_NAME}" --verify-tag --notes-file "$RELEASE_NOTES" "${RELEASE_FLAGS[@]}" *.tgz
           fi
+
+      - name: Trigger website rebuild
+        env:
+          WEBSITE_DEPLOY_HOOK_URL: ${{ secrets.WEBSITE_DEPLOY_HOOK_URL }}
+        run: |
+          if [ -z "$WEBSITE_DEPLOY_HOOK_URL" ]; then
+            echo "WEBSITE_DEPLOY_HOOK_URL secret is missing; skipping website rebuild."
+            exit 0
+          fi
+
+          curl --fail --silent --show-error --request POST "$WEBSITE_DEPLOY_HOOK_URL"
