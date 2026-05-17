@@ -75,6 +75,12 @@ export class NvidiaClient {
 
     if (!response.ok || payload.error) {
       const reason = payload.error?.message ? ` ${payload.error.message}` : "";
+      if (response.status === 401) {
+        throw new Error("NVIDIA authentication failed. Check NVIDIA_API_KEY.");
+      }
+      if (response.status === 429) {
+        throw new Error(`NVIDIA rate limit hit for model "${options.model}".${reason}`);
+      }
       throw new Error(`NVIDIA chat failed for model "${options.model}": HTTP ${response.status}.${reason}`);
     }
 
@@ -98,7 +104,15 @@ export class NvidiaClient {
       throw new Error(`NVIDIA models failed with HTTP ${response.status}.${reason}`);
     }
 
-    const models = payload.data?.map((model) => model.id?.trim()).filter((model): model is string => Boolean(model)).sort() ?? [];
+    const models =
+      [
+        ...new Set(
+          payload.data
+            ?.map((model) => model.id?.trim())
+            .filter((model): model is string => Boolean(model))
+            .filter(isLikelyNvidiaChatModel) ?? []
+        )
+      ].sort();
     return models.length > 0 ? models : [defaultNvidiaModel];
   }
 
@@ -172,6 +186,15 @@ const agentResponseFormat = {
 
 export function readNvidiaApiKey(env: NodeJS.ProcessEnv = process.env): string {
   return env.NVIDIA_API_KEY?.trim() || env.PATCHPILOT_NVIDIA_API_KEY?.trim() || "";
+}
+
+function isLikelyNvidiaChatModel(model: string): boolean {
+  const normalizedModel = model.toLowerCase();
+  if (/(^|\/)(embed|rerank|rank|guard|safety|audio|asr|tts|ocr|vlm|vision|bge|nvlm|kosmos|phi-3-vision)/.test(normalizedModel)) {
+    return false;
+  }
+
+  return /(llama|mistral|mixtral|nemotron|qwen|deepseek|gpt-oss|gemma|phi|granite)/.test(normalizedModel);
 }
 
 function readNvidiaRuntimeOptions(env: NodeJS.ProcessEnv = process.env): NvidiaRuntimeOptions {

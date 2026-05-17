@@ -5,7 +5,7 @@
 **A local-first coding-agent TUI that makes repo changes visible, permissioned, and easy to review across local, remote, and cloud model routes.**
 
 [![CI](https://github.com/jx-grxf/PatchPilot/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/jx-grxf/PatchPilot/actions/workflows/ci.yml)
-![Status](https://img.shields.io/badge/status-public%20preview-0ea5e9)
+![Status](https://img.shields.io/badge/status-preview%20agent-0ea5e9)
 ![TypeScript](https://img.shields.io/badge/TypeScript-5.9-3178C6?logo=typescript&logoColor=white)
 ![Node](https://img.shields.io/badge/Node.js-22%2B-339933?logo=node.js&logoColor=white)
 ![Ink](https://img.shields.io/badge/TUI-Ink-111827)
@@ -27,6 +27,8 @@
 </p>
 
 PatchPilot is a terminal interface for running coding-agent tasks inside a repository. It shows what the agent is doing, keeps risky actions behind explicit permissions, and supports local Ollama, remote Ollama, Google Gemini, OpenRouter, NVIDIA NIM-compatible endpoints, and Codex CLI OAuth.
+
+PatchPilot is still preview software. The v0.4 line focuses on making the TUI, approvals, and provider selection reliable enough for real project use; it is not a finished autonomous PR bot or a v1 desktop product.
 
 ---
 
@@ -56,7 +58,7 @@ PatchPilot is a terminal interface for running coding-agent tasks inside a repos
 | Cloud provider routes | Gemini, OpenRouter, NVIDIA, and Codex CLI OAuth are available from one TUI. |
 | Guided onboarding | First-run setup walks through local/remote mode, provider auth, host discovery, and model choice. |
 | Observable agent loop | Transcript, tool calls, telemetry, token counts, provider cache hits, latency, and cost estimates are visible. |
-| Explicit permissions | Risky tools request approval unless writes or shell commands are explicitly enabled. |
+| Explicit permissions | Risky tools show a sticky approval box unless trusted bypass is explicitly accepted. |
 | Workspace boundary | File tools are constrained to the selected project root and block common secret files. |
 | Slash-command palette | Type `/` for browsable commands, provider switching, modes, models, diagnostics, and host selection. |
 | Advisor subagents | Explorer, planner, and reviewer advisor calls can brief the main agent before it edits. |
@@ -132,7 +134,7 @@ cd /path/to/your/project
 patchpilot "find likely test gaps in this repo"
 ```
 
-Use build permissions only when you intentionally want PatchPilot to modify files or run commands:
+Use bypass permissions only when you intentionally want PatchPilot to modify files or run commands without per-tool approval:
 
 ```bash
 patchpilot "add tests for the parser" --apply --allow-shell
@@ -172,11 +174,11 @@ Useful slash commands inside the TUI:
 | `/help <command>` | Explain one command, for example `/help think` or `/help model`. |
 | `/onboarding` | Open guided provider/auth/model setup. |
 | `/mode plan` | Read-only planning mode. |
-| `/mode build` | Implementation mode; writes and shell can still be toggled separately. |
+| `/mode build` | Implementation mode; writes, scripts, tests, and shell require per-tool approval. |
 | `/think fixed\|adaptive` | Switch between fixed and adaptive step budgets. |
 | `/reasoning none\|low\|medium\|high\|xhigh\|adaptive` | Set provider reasoning effort where supported. |
-| `/write on\|off` | Enable or disable workspace writes. |
-| `/shell on\|off` | Enable or disable shell commands. |
+| `/write on\|off` | Requests trusted bypass for direct writes, or returns to approval-gated build mode. |
+| `/shell on\|off` | Requests trusted bypass for direct shell commands, or returns to approval-gated build mode. |
 | `/agents on\|off` | Enable or disable advisor subagents. |
 | `/provider ollama\|gemini\|openrouter\|nvidia\|codex` | Switch inference provider. |
 | `/model <query>` | Search and switch the model for the current provider. |
@@ -234,9 +236,9 @@ PatchPilot caches model discovery for a short TTL inside the running TUI, so nor
 
 PatchPilot reads provider cache telemetry when the provider reports it, for example Codex cached input tokens or OpenRouter `prompt_tokens_details.cached_tokens`, then displays cache hit rate as `cached / input`.
 
-Reasoning support is provider and model dependent. Codex accepts fixed reasoning levels. OpenRouter receives normalized `reasoning.effort` for compatible models. Gemini uses Thinking configuration where the selected model exposes it; some Gemini models cannot disable thinking. Ollama only receives native `think` values for known thinking model families. NVIDIA reasoning effort is limited to supported GPT-OSS NIM routes.
+Reasoning support is provider and model dependent. Codex accepts fixed reasoning levels. OpenRouter receives `reasoning.effort` only for models whose metadata advertises reasoning support. Gemini uses Thinking configuration where the selected model exposes it; some Gemini models cannot disable thinking. Ollama only receives native `think` values for known thinking model families. NVIDIA reasoning effort is limited to supported GPT-OSS NIM routes.
 
-OpenRouter `:free` models are rate-limited by OpenRouter. PatchPilot warns when a selected model ID ends in `:free`.
+OpenRouter `:free` models are rate-limited by OpenRouter. PatchPilot warns when a selected model ID ends in `:free`, and OpenRouter credit or rate-limit failures are surfaced as explicit provider errors.
 
 ## Remote Ollama
 
@@ -277,9 +279,9 @@ PATCHPILOT_NUM_CTX=4096 PATCHPILOT_NUM_PREDICT=768 patchpilot
 PatchPilot is designed to keep powerful actions boring and reviewable:
 
 - File access is constrained to one workspace root.
-- Secret-like files such as `.env`, `.npmrc`, SSH keys, and `.netrc` are blocked from normal file tools.
+- Secret-like files such as `.env`, `.envrc`, `.npmrc`, `.netrc`, SSH keys, PEM/key/cert bundles, and credential files are blocked from normal file tools.
 - Writes are blocked by default; in the TUI, risky write tools request approval, and `--apply` keeps the legacy always-allow write path.
-- Shell commands are blocked by default; dedicated script/test tools request approval, and `--allow-shell` keeps the legacy always-allow shell path.
+- Shell commands are blocked by default; dedicated script/test tools request approval and show the package script body before running. `--allow-shell` keeps the legacy always-allow shell path.
 - Shell execution uses a restricted single-command runner.
 - Provider config is stored in `~/.patchpilot/.env`, not in the current repository by default.
 - Session logs are stored as append-only JSONL in `.patchpilot/sessions/`; that folder is gitignored. A global index in `~/.patchpilot/session-index.json` powers `patchpilot sessions` and `/resume`.
@@ -300,7 +302,7 @@ run tests
 commit manually with git
 ```
 
-PatchPilot now has approval prompts and a Git diff command, but it still does not replace human review. Inline rich diff review and commit/PR automation remain future work.
+PatchPilot now has sticky approval prompts and a Git diff command, but it still does not replace human review. Inline rich diff review, real context resume, and commit/PR automation remain future work.
 
 ## Tech Stack
 
@@ -353,6 +355,7 @@ Release notes are kept in [docs/releases](docs/releases).
 
 | Version | Notes |
 |---|---|
+| `v0.4.0` | [Release notes](docs/releases/v0.4.0.md) |
 | `v0.3.1-beta` | [Release notes](docs/releases/v0.3.1-beta.md) |
 | `v0.3.0` | [Release notes](docs/releases/v0.3.0.md) |
 | `v0.2.1` | [Release notes](docs/releases/v0.2.1.md) |

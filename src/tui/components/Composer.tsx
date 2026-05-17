@@ -5,6 +5,7 @@ import TextInput from "ink-text-input";
 export function Composer(props: {
   input: string;
   isRunning: boolean;
+  isApprovalWaiting?: boolean;
   status: string;
   draftTokens: number;
   mask?: string;
@@ -36,8 +37,10 @@ export function Composer(props: {
   return (
     <Box flexDirection="column" height={2} overflowY="hidden">
       <Box height={1}>
-        <Text color={props.isRunning ? "yellow" : "cyan"}>{props.isRunning ? "running  " : "patch >  "}</Text>
-        {props.isRunning ? (
+        <Text color={props.isApprovalWaiting ? "yellow" : props.isRunning ? "yellow" : "cyan"}>
+          {props.isApprovalWaiting ? "input >  " : props.isRunning ? "running  " : "patch >  "}
+        </Text>
+        {props.isRunning && !props.isApprovalWaiting ? (
           <Text color="yellow">
             {spinnerFrames[frameIndex]} {props.status}
             <Text color="gray">{elapsedSeconds > 0 ? `  ${elapsedSeconds}s` : "  starting"}</Text>
@@ -47,7 +50,7 @@ export function Composer(props: {
         )}
       </Box>
       <Text color="gray" wrap="truncate">
-        {props.isRunning ? "Input is locked while the current run is active." : `prompt ${props.draftTokens} tok est`}
+        {props.isApprovalWaiting ? "Approval waiting: use y/a/n or /approve session, /deny." : props.isRunning ? "Input is locked while the current run is active." : `prompt ${props.draftTokens} tok est`}
       </Text>
     </Box>
   );
