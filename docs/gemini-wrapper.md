@@ -50,7 +50,7 @@ with owner-only file permissions (`0600`) and stores this config:
 
 ```sh
 PATCHPILOT_PROVIDER=gemini-wrapper
-PATCHPILOT_MODEL=gemini-2.5-flash
+PATCHPILOT_MODEL=gemini-3-flash
 PATCHPILOT_GEMINI_WRAPPER_MODE=python
 PATCHPILOT_GEMINI_WRAPPER_COOKIES_JSON=/Users/you/.patchpilot/gemini-cookies.json
 ```
@@ -58,7 +58,7 @@ PATCHPILOT_GEMINI_WRAPPER_COOKIES_JSON=/Users/you/.patchpilot/gemini-cookies.jso
 ## 4. Verify
 
 ```sh
-patchpilot doctor --provider gemini-wrapper --check-model gemini-2.5-flash
+patchpilot doctor --provider gemini-wrapper --check-model gemini-3-flash
 ```
 
 Expected checks:

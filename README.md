@@ -205,7 +205,7 @@ The transcript and sidebar have internal scroll areas. With an empty prompt, use
 | Ollama local | `ollama` | `qwen2.5-coder:7b` | Private local coding work and offline experiments. | Install Ollama, pull a model, run `patchpilot`. |
 | Ollama remote | `ollama` with `--ollama-url` or `/connect` | Host model inventory | Laptop editing with a stronger desktop/server GPU. | Expose Ollama on the host, then use `/connect` or `--ollama-url`. |
 | Google Gemini | `gemini`, `google` | `gemini-2.5-flash` | Fast cloud inference through a Gemini API key. | Store `GEMINI_API_KEY` in `~/.patchpilot/.env` or use onboarding. |
-| Gemini-Wrapper | `gemini-wrapper`, `geminiwrapper` | `gemini-2.5-flash` | Bridge to the installed `gemini_webapi` Python wrapper, with optional HTTP-wrapper mode. | Install `gemini_webapi`, then use onboarding to paste `__Secure-1PSID`. PatchPilot creates `~/.patchpilot/gemini-cookies.json`, runs the bridge commands itself, and never scans browser cookies. |
+| Gemini-Wrapper | `gemini-wrapper`, `geminiwrapper` | `gemini-3-flash` | Bridge to the installed `gemini_webapi` Python wrapper, with optional HTTP-wrapper mode. | Use onboarding to paste `__Secure-1PSID`. PatchPilot creates `~/.patchpilot/gemini-cookies.json`, runs the bridge commands itself, and never scans browser cookies. |
 | OpenRouter | `openrouter`, `open-router` | `openrouter/auto` | Broad model routing, auto model selection, and free variants. | Store `OPENROUTER_API_KEY` in `~/.patchpilot/.env` or use onboarding. |
 | NVIDIA | `nvidia`, `nim` | `meta/llama-3.1-70b-instruct` | NVIDIA NIM OpenAI-compatible endpoints. | Store `NVIDIA_API_KEY` in `~/.patchpilot/.env` or use onboarding. |
 | Codex CLI | `codex`, `openai`, `openai-codex` | `gpt-5.5` | Using an existing Codex CLI OAuth login. | Run `codex login`, then `patchpilot --provider codex`. |
@@ -215,7 +215,7 @@ Examples:
 ```bash
 patchpilot --provider ollama --model qwen2.5-coder:7b
 patchpilot --provider gemini --model gemini-2.5-flash
-patchpilot --provider gemini-wrapper --model gemini-2.5-flash
+patchpilot --provider gemini-wrapper --model gemini-3-flash
 patchpilot --provider openrouter --model openrouter/auto
 patchpilot --provider nvidia --model meta/llama-3.1-70b-instruct
 patchpilot --provider codex --model gpt-5.5

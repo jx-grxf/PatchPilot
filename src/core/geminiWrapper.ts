@@ -6,7 +6,7 @@ import { getPatchPilotConfigDir } from "./env.js";
 import { fetchWithTimeout } from "./http.js";
 import { attachTokenCost, estimateTokens } from "./tokenAccounting.js";
 
-export const defaultGeminiWrapperModel = "gemini-2.5-flash";
+export const defaultGeminiWrapperModel = "gemini-3-flash";
 export const geminiWebApiInstallCommand = "PatchPilot managed install: python3 -m venv ~/.patchpilot/gemini-wrapper-venv && ~/.patchpilot/gemini-wrapper-venv/bin/python -m pip install -U gemini_webapi";
 
 type GeminiWrapperModelsResponse = {
@@ -132,11 +132,15 @@ export class GeminiWrapperClient {
     if (this.usesPythonBridge()) {
       await this.assertPythonBridgeReady();
       return [
-        "gemini-2.5-flash",
-        "gemini-2.5-pro",
-        "gemini-2.0-flash",
-        "gemini-1.5-pro",
-        "gemini-1.5-flash"
+        "gemini-3-flash",
+        "gemini-3-pro",
+        "gemini-3-flash-thinking",
+        "gemini-3-pro-plus",
+        "gemini-3-flash-plus",
+        "gemini-3-flash-thinking-plus",
+        "gemini-3-pro-advanced",
+        "gemini-3-flash-advanced",
+        "gemini-3-flash-thinking-advanced"
       ];
     }
 
@@ -211,7 +215,7 @@ export class GeminiWrapperClient {
       this.pythonCommand,
       {
         command: "chat",
-        model: normalizeGeminiWrapperModel(options.model),
+        model: normalizeGeminiWrapperBridgeModel(options.model),
         prompt,
         cookiesJson: this.cookiesJson || undefined,
         secure1psid: readGeminiWrapperSecure1psid() || undefined,
@@ -384,6 +388,19 @@ function normalizeGeminiWrapperModel(model: string): string {
   return trimmedModel || defaultGeminiWrapperModel;
 }
 
+function normalizeGeminiWrapperBridgeModel(model: string): string {
+  const normalizedModel = normalizeGeminiWrapperModel(model);
+  if (normalizedModel === "gemini-2.5-flash" || normalizedModel === "gemini-2.0-flash" || normalizedModel === "gemini-1.5-flash") {
+    return "gemini-3-flash";
+  }
+
+  if (normalizedModel === "gemini-2.5-pro" || normalizedModel === "gemini-1.5-pro") {
+    return "gemini-3-pro";
+  }
+
+  return normalizedModel;
+}
+
 function isLikelyGeminiWrapperChatModel(model: string): boolean {
   const normalizedModel = model.toLowerCase();
   return !/(embedding|embed|imagen|veo|tts|audio|speech|rerank|rank|vision|bidi|live)/.test(normalizedModel);
@@ -529,7 +546,7 @@ async def main():
     client = GeminiClient(secure_1psid=psid, secure_1psidts=psidts, cookies=extra or None, proxy=payload.get("proxy"))
     await client.init(timeout=90, auto_refresh=False, verbose=False)
     try:
-        response = await client.generate_content(payload["prompt"], model=payload.get("model") or "gemini-2.5-flash", temporary=True)
+        response = await client.generate_content(payload["prompt"], model=payload.get("model") or "gemini-3-flash", temporary=True)
         text = getattr(response, "text", None) or str(response)
         print(json.dumps({"content": text}))
     finally:

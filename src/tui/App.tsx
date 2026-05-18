@@ -2317,7 +2317,7 @@ function defaultModelForProvider(provider: ModelProvider, currentModel: string):
   }
 
   if (provider === "gemini-wrapper") {
-    return currentModel.startsWith("gemini-") ? currentModel : defaultGeminiWrapperModel;
+    return currentModel.startsWith("gemini-3-") ? currentModel : defaultGeminiWrapperModel;
   }
 
   if (provider === "gemini") {
