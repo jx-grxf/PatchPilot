@@ -23,6 +23,10 @@ export function resolveProviderReasoning(options: {
     return getGeminiThinkingConfig(options.model, options.requested) === undefined ? undefined : options.requested;
   }
 
+  if (options.provider === "gemini-wrapper") {
+    return undefined;
+  }
+
   if (options.provider === "codex") {
     return options.requested === "none" ? undefined : options.requested;
   }

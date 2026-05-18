@@ -7,6 +7,7 @@ import { Command } from "commander";
 import { defaultCodexModel } from "./core/codex.js";
 import { loadPatchPilotEnv } from "./core/env.js";
 import { defaultGeminiModel } from "./core/gemini.js";
+import { defaultGeminiWrapperModel } from "./core/geminiWrapper.js";
 import { normalizeModelProvider, readModelProvider } from "./core/modelClient.js";
 import { defaultNvidiaModel } from "./core/nvidia.js";
 import { runDoctor } from "./core/doctor.js";
@@ -23,6 +24,8 @@ const defaultModel =
   process.env.PATCHPILOT_MODEL ??
   (defaultProvider === "gemini"
     ? defaultGeminiModel
+    : defaultProvider === "gemini-wrapper"
+      ? defaultGeminiWrapperModel
     : defaultProvider === "openrouter"
       ? defaultOpenRouterModel
       : defaultProvider === "nvidia"
@@ -42,7 +45,7 @@ program
 program
   .command("doctor")
   .description("Check local PatchPilot requirements.")
-  .option("--provider <name>", "Model provider: ollama, gemini, openrouter, nvidia, or codex.", defaultProvider)
+  .option("--provider <name>", "Model provider: ollama, gemini, gemini-wrapper, openrouter, nvidia, or codex.", defaultProvider)
   .option("--check-url <url>", "Ollama base URL to verify", defaultOllamaUrl)
   .option("--ollama-url <url>", "Alias for --check-url.")
   .option("--check-model <name>", "Model name to verify", defaultModel)
@@ -104,7 +107,7 @@ program
 program
   .argument("[task...]", "Task for the local coding agent.")
   .option("--workspace <path>", "Workspace root", process.cwd())
-  .option("--provider <name>", "Model provider: ollama, gemini, openrouter, nvidia, or codex.", defaultProvider)
+  .option("--provider <name>", "Model provider: ollama, gemini, gemini-wrapper, openrouter, nvidia, or codex.", defaultProvider)
   .option("--model <name>", "Model name", defaultModel)
   .option("--ollama-url <url>", "Ollama base URL", defaultOllamaUrl)
   .option("--steps <count>", "Maximum agent steps", "8")

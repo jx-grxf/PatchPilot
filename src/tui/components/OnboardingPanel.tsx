@@ -5,7 +5,7 @@ import type { ModelProvider } from "../../core/types.js";
 import type { OllamaHost } from "../hosts.js";
 import { selectableModels } from "../modelSelection.js";
 
-export type ApiKeyProvider = "gemini" | "openrouter" | "nvidia";
+export type ApiKeyProvider = "gemini" | "gemini-wrapper" | "openrouter" | "nvidia";
 
 export type OnboardingState =
   | {
@@ -25,6 +25,13 @@ export type OnboardingState =
     }
   | {
       step: "gemini-key";
+    }
+  | {
+      step: "gemini-wrapper-url";
+    }
+  | {
+      step: "gemini-wrapper-key";
+      baseUrl: string;
     }
   | {
       step: "openrouter-key";
@@ -54,6 +61,10 @@ const entryOptions = [
   {
     label: "Gemini",
     description: "Use the Google Gemini API key from PatchPilot config"
+  },
+  {
+    label: "Gemini-Wrapper",
+    description: "Use an explicit OpenAI-compatible wrapper URL; no browser cookies"
   },
   {
     label: "OpenRouter",
@@ -88,7 +99,7 @@ export function OnboardingPanel(props: {
       ? 0
       : props.state.step === "host" || props.state.step === "host-input"
         ? 1
-        : props.state.step === "api-key-choice" || props.state.step === "gemini-key" || props.state.step === "openrouter-key" || props.state.step === "nvidia-key" || props.state.step === "codex-login"
+        : props.state.step === "api-key-choice" || props.state.step === "gemini-key" || props.state.step === "gemini-wrapper-url" || props.state.step === "gemini-wrapper-key" || props.state.step === "openrouter-key" || props.state.step === "nvidia-key" || props.state.step === "codex-login"
           ? 2
           : 3;
   const visibleModels = props.state.step === "model" ? selectableModels(props.input, props.state.models) : [];
@@ -186,6 +197,27 @@ export function OnboardingPanel(props: {
           mask="*"
         />
       ) : null}
+      {props.state.step === "gemini-wrapper-url" ? (
+        <InputStep
+          title="Connect Gemini-Wrapper"
+          description="Enter an explicit OpenAI-compatible wrapper URL. PatchPilot will not scan browser cookies or web sessions."
+          prompt="url  > "
+          value={props.input}
+          onChange={props.onInputChange}
+          onSubmit={props.onInputSubmit}
+        />
+      ) : null}
+      {props.state.step === "gemini-wrapper-key" ? (
+        <InputStep
+          title="Enter Gemini-Wrapper API key"
+          description="Required for remote wrapper URLs. Local wrapper URLs may leave this empty."
+          prompt="key  > "
+          value={props.input}
+          onChange={props.onInputChange}
+          onSubmit={props.onInputSubmit}
+          mask="*"
+        />
+      ) : null}
       {props.state.step === "openrouter-key" ? (
         <InputStep
           title="Enter your OpenRouter API key"
@@ -246,7 +278,7 @@ export function OnboardingPanel(props: {
 }
 
 function providerLabel(provider: ApiKeyProvider): string {
-  return provider === "openrouter" ? "OpenRouter" : provider === "nvidia" ? "NVIDIA" : "Gemini";
+  return provider === "openrouter" ? "OpenRouter" : provider === "nvidia" ? "NVIDIA" : provider === "gemini-wrapper" ? "Gemini-Wrapper" : "Gemini";
 }
 
 function InputStep(props: {

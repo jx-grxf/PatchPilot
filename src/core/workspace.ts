@@ -79,6 +79,12 @@ const blockedPathNames = new Set([
   "known_hosts"
 ]);
 
+const blockedPathPatterns = [
+  /(^|\/)(cookies|network\/cookies|login data|web data)$/i,
+  /(^|\/)(chrome|chromium|brave-browser|brave|microsoft edge|edge|arc|firefox|safari)(\/|$)/i,
+  /(^|\/)(default|profile \d+|profiles?)\/(cookies|network\/cookies|login data|web data)$/i
+];
+
 export type WorkspaceToolsOptions = {
   root: string;
   allowWrite: boolean;
@@ -898,7 +904,18 @@ async function searchTextWithRipgrep(workspaceRoot: string, query: string, timeo
       "!**/.netrc",
       "!**/id_rsa",
       "!**/id_ed25519",
-      "!**/known_hosts"
+      "!**/known_hosts",
+      "!**/Cookies",
+      "!**/Network/Cookies",
+      "!**/Login Data",
+      "!**/Web Data",
+      "!**/Chrome/**",
+      "!**/Chromium/**",
+      "!**/Brave*/**",
+      "!**/Microsoft Edge/**",
+      "!**/Arc/**",
+      "!**/Firefox/**",
+      "!**/Safari/**"
     ];
 
   return new Promise((resolve) => {
@@ -1120,7 +1137,7 @@ function isSensitivePath(value: string): boolean {
         normalizedPart.startsWith("secrets.") ||
         normalizedPart.includes("credentials")
       );
-    });
+    }) || blockedPathPatterns.some((pattern) => pattern.test(normalizedPath));
 }
 
 function denied(

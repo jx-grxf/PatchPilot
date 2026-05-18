@@ -5,7 +5,7 @@ export type ChatMessage = {
   content: string;
 };
 
-export type ModelProvider = "ollama" | "gemini" | "codex" | "openrouter" | "nvidia";
+export type ModelProvider = "ollama" | "gemini" | "gemini-wrapper" | "codex" | "openrouter" | "nvidia";
 export type ReasoningEffort = "low" | "medium" | "high" | "xhigh";
 export type ProviderReasoningEffort = ReasoningEffort | "none";
 

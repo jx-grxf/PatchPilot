@@ -413,6 +413,10 @@ describe("WorkspaceTools", () => {
     await writeFile(path.join(tempRoot, ".npmrc"), "//registry.npmjs.org/:_authToken=secret-npm\n");
     await writeFile(path.join(tempRoot, "nested", ".env.local"), "OPENROUTER_API_KEY=secret-nested\n");
     await writeFile(path.join(tempRoot, ".patchpilot", "sessions", "session.jsonl"), "secret-session\n");
+    await mkdir(path.join(tempRoot, "Library", "Application Support", "Google", "Chrome", "Default", "Network"), {
+      recursive: true
+    });
+    await writeFile(path.join(tempRoot, "Library", "Application Support", "Google", "Chrome", "Default", "Network", "Cookies"), "secret-browser-cookie\n");
     await writeFile(path.join(tempRoot, "note.txt"), "ordinary secret word\n");
 
     const tools = new WorkspaceTools({
@@ -434,6 +438,7 @@ describe("WorkspaceTools", () => {
     expect(result.content).not.toContain("secret-npm");
     expect(result.content).not.toContain("secret-nested");
     expect(result.content).not.toContain("secret-session");
+    expect(result.content).not.toContain("secret-browser-cookie");
   });
 
   it("blocks destructive simple shell commands even when shell is enabled", async () => {

@@ -33,10 +33,10 @@ export const slashCommands: SlashCommand[] = [
   },
   {
     name: "provider",
-    usage: "/provider ollama|gemini|openrouter|nvidia|codex",
-    description: "Switch between Ollama, Gemini, OpenRouter, NVIDIA, and Codex inference.",
+    usage: "/provider ollama|gemini|gemini-wrapper|openrouter|nvidia|codex",
+    description: "Switch between Ollama, Gemini, Gemini-Wrapper, OpenRouter, NVIDIA, and Codex inference.",
     category: "model",
-    detail: "Provider controls where inference runs. Ollama can be local or remote. Gemini, OpenRouter, NVIDIA, and Codex are cloud providers."
+    detail: "Provider controls where inference runs. Gemini-Wrapper requires an explicit OpenAI-compatible wrapper URL and never reads browser cookies."
   },
   {
     name: "think",

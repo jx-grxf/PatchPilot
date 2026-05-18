@@ -61,12 +61,16 @@ describe("dotenv helpers", () => {
     saveDotEnvValues(
       {
         PATCHPILOT_PROVIDER: "gemini",
-        GEMINI_API_KEY: "secret key"
+        GEMINI_API_KEY: "secret key",
+        PATCHPILOT_GEMINI_WRAPPER_BASE_URL: "http://localhost:8787/v1",
+        PATCHPILOT_GEMINI_WRAPPER_API_KEY: "wrapper secret"
       },
       tempRoot
     );
 
-    await expect(readFile(path.join(tempRoot, ".env"), "utf8")).resolves.toBe('PATCHPILOT_PROVIDER=gemini\nGEMINI_API_KEY="secret key"\n');
+    await expect(readFile(path.join(tempRoot, ".env"), "utf8")).resolves.toBe(
+      'PATCHPILOT_PROVIDER=gemini\nGEMINI_API_KEY="secret key"\nPATCHPILOT_GEMINI_WRAPPER_BASE_URL=http://localhost:8787/v1\nPATCHPILOT_GEMINI_WRAPPER_API_KEY="wrapper secret"\n'
+    );
   });
 
   it("loads PatchPilot config from the same .env path it saves", async () => {
