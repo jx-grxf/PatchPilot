@@ -6,7 +6,13 @@ import { describeComputeTarget } from "../core/compute.js";
 import { runDoctor } from "../core/doctor.js";
 import { savePatchPilotEnvValues } from "../core/env.js";
 import { defaultGeminiModel, readGeminiApiKey } from "../core/gemini.js";
-import { defaultGeminiWrapperModel, geminiWrapperRequiresApiKey, readGeminiWrapperApiKey, readGeminiWrapperBaseUrl } from "../core/geminiWrapper.js";
+import {
+  defaultGeminiWrapperModel,
+  geminiWrapperRequiresApiKey,
+  readGeminiWrapperApiKey,
+  readGeminiWrapperBaseUrl,
+  readGeminiWrapperCookiesJson
+} from "../core/geminiWrapper.js";
 import { createModelClient } from "../core/modelClient.js";
 import { defaultNvidiaModel, readNvidiaApiKey } from "../core/nvidia.js";
 import { defaultOllamaModel, OllamaClient } from "../core/ollama.js";
@@ -435,6 +441,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       case "api-key-choice":
       case "gemini-key":
       case "gemini-wrapper-url":
+      case "gemini-wrapper-cookies":
       case "gemini-wrapper-key":
       case "openrouter-key":
       case "nvidia-key":
@@ -656,7 +663,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           return;
         }
 
-        setOnboarding(onboarding.provider === "gemini-wrapper" ? { step: "gemini-wrapper-url" } : {
+        setOnboarding(onboarding.provider === "gemini-wrapper" ? { step: "gemini-wrapper-cookies" } : {
           step: `${onboarding.provider}-key` as "gemini-key" | "openrouter-key" | "nvidia-key"
         });
         setOnboardingInput("");
@@ -686,6 +693,36 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         });
         await openModelSelection("gemini", {
           currentModel: defaultGeminiModel
+        });
+        return;
+      }
+
+      if (onboarding.step === "gemini-wrapper-cookies") {
+        const cookiesPath = value.trim();
+        if (!cookiesPath) {
+          setOnboardingNotice({
+            tone: "warning",
+            text: "Cookie JSON path cannot be empty.",
+            detail: "Export cookies yourself and point PatchPilot at that file. PatchPilot will not scan browser profiles."
+          });
+          return;
+        }
+
+        process.env.PATCHPILOT_GEMINI_WRAPPER_MODE = "python";
+        process.env.PATCHPILOT_GEMINI_WRAPPER_COOKIES_JSON = cookiesPath;
+        savePatchPilotEnvValues({
+          PATCHPILOT_PROVIDER: "gemini-wrapper",
+          PATCHPILOT_MODEL: defaultGeminiWrapperModel,
+          PATCHPILOT_GEMINI_WRAPPER_MODE: "python",
+          PATCHPILOT_GEMINI_WRAPPER_COOKIES_JSON: cookiesPath
+        });
+        setOnboardingNotice({
+          tone: "success",
+          text: "Gemini-API bridge cookie file saved to PatchPilot config.",
+          detail: "PatchPilot will run the installed gemini_webapi package through python3."
+        });
+        await openModelSelection("gemini-wrapper", {
+          currentModel: defaultGeminiWrapperModel
         });
         return;
       }
@@ -2299,7 +2336,7 @@ function hasApiKey(provider: ApiKeyProvider): boolean {
   }
 
   if (provider === "gemini-wrapper") {
-    return Boolean(readGeminiWrapperBaseUrl());
+    return Boolean(readGeminiWrapperBaseUrl() || readGeminiWrapperCookiesJson());
   }
 
   if (provider === "openrouter") {

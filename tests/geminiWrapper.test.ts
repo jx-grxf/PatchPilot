@@ -1,5 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { GeminiWrapperClient, geminiWrapperRequiresApiKey, readGeminiWrapperApiKey, readGeminiWrapperBaseUrl } from "../src/core/geminiWrapper.js";
+import {
+  GeminiWrapperClient,
+  geminiWrapperRequiresApiKey,
+  readGeminiWrapperApiKey,
+  readGeminiWrapperBaseUrl,
+  readGeminiWrapperCookiesJson,
+  readGeminiWrapperMode,
+  readGeminiWrapperPythonCommand
+} from "../src/core/geminiWrapper.js";
 import { normalizeModelProvider } from "../src/core/modelClient.js";
 
 afterEach(() => {
@@ -14,11 +22,15 @@ describe("GeminiWrapperClient", () => {
     expect(readGeminiWrapperApiKey({ PATCHPILOT_GEMINI_WRAPPER_API_KEY: " patch-key " } as NodeJS.ProcessEnv)).toBe("patch-key");
     expect(readGeminiWrapperApiKey({ GEMINI_WRAPPER_API_KEY: " wrapper-key " } as NodeJS.ProcessEnv)).toBe("wrapper-key");
     expect(readGeminiWrapperApiKey({ GEMINI_API_KEY: "official-gemini-key" } as NodeJS.ProcessEnv)).toBe("");
+    expect(readGeminiWrapperMode({ PATCHPILOT_GEMINI_WRAPPER_MODE: "python" } as NodeJS.ProcessEnv)).toBe("python");
+    expect(readGeminiWrapperMode({ PATCHPILOT_GEMINI_WRAPPER_MODE: "invalid" } as NodeJS.ProcessEnv)).toBe("auto");
+    expect(readGeminiWrapperCookiesJson({ PATCHPILOT_GEMINI_WRAPPER_COOKIES_JSON: " /tmp/cookies.json " } as NodeJS.ProcessEnv)).toBe("/tmp/cookies.json");
+    expect(readGeminiWrapperPythonCommand({ PATCHPILOT_GEMINI_WRAPPER_PYTHON: "python" } as NodeJS.ProcessEnv)).toBe("python");
     expect(geminiWrapperRequiresApiKey("http://localhost:8787/v1")).toBe(false);
     expect(geminiWrapperRequiresApiKey("https://wrapper.example.com/v1")).toBe(true);
   });
 
-  it("requires an explicit wrapper URL and does not fall back to browser cookies", async () => {
+  it("requires explicit bridge auth and does not fall back to browser cookies", async () => {
     const client = new GeminiWrapperClient("", "");
     await expect(
       client.chat({
@@ -30,11 +42,11 @@ describe("GeminiWrapperClient", () => {
           }
         ]
       })
-    ).rejects.toThrow("does not collect browser cookies");
+    ).rejects.toThrow("PatchPilot will not scan browser cookies");
   });
 
   it("requires an explicit API key for remote wrapper URLs", async () => {
-    const client = new GeminiWrapperClient("https://wrapper.example.com/v1", "");
+    const client = new GeminiWrapperClient("https://wrapper.example.com/v1", "", undefined, "http");
     await expect(client.listModels()).rejects.toThrow("remote URLs require an explicit API key");
   });
 
@@ -69,10 +81,15 @@ describe("GeminiWrapperClient", () => {
       )
     );
 
-    const result = await new GeminiWrapperClient("https://wrapper.example.com/v1", "test-key", {
-      maxTokens: 256,
-      temperature: 0.2
-    }).chat({
+    const result = await new GeminiWrapperClient(
+      "https://wrapper.example.com/v1",
+      "test-key",
+      {
+        maxTokens: 256,
+        temperature: 0.2
+      },
+      "http"
+    ).chat({
       model: "gemini-2.5-flash",
       formatJson: true,
       messages: [
@@ -132,6 +149,6 @@ describe("GeminiWrapperClient", () => {
       )
     );
 
-    await expect(new GeminiWrapperClient("http://localhost:8787/v1").listModels()).resolves.toEqual(["gemini-2.5-flash"]);
+    await expect(new GeminiWrapperClient("http://localhost:8787/v1", "", undefined, "http").listModels()).resolves.toEqual(["gemini-2.5-flash"]);
   });
 });

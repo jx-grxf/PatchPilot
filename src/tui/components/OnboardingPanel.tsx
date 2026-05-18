@@ -30,6 +30,9 @@ export type OnboardingState =
       step: "gemini-wrapper-url";
     }
   | {
+      step: "gemini-wrapper-cookies";
+    }
+  | {
       step: "gemini-wrapper-key";
       baseUrl: string;
     }
@@ -99,7 +102,7 @@ export function OnboardingPanel(props: {
       ? 0
       : props.state.step === "host" || props.state.step === "host-input"
         ? 1
-        : props.state.step === "api-key-choice" || props.state.step === "gemini-key" || props.state.step === "gemini-wrapper-url" || props.state.step === "gemini-wrapper-key" || props.state.step === "openrouter-key" || props.state.step === "nvidia-key" || props.state.step === "codex-login"
+        : props.state.step === "api-key-choice" || props.state.step === "gemini-key" || props.state.step === "gemini-wrapper-url" || props.state.step === "gemini-wrapper-cookies" || props.state.step === "gemini-wrapper-key" || props.state.step === "openrouter-key" || props.state.step === "nvidia-key" || props.state.step === "codex-login"
           ? 2
           : 3;
   const visibleModels = props.state.step === "model" ? selectableModels(props.input, props.state.models) : [];
@@ -199,9 +202,19 @@ export function OnboardingPanel(props: {
       ) : null}
       {props.state.step === "gemini-wrapper-url" ? (
         <InputStep
-          title="Connect Gemini-Wrapper"
-          description="Enter an explicit OpenAI-compatible wrapper URL. PatchPilot will not scan browser cookies or web sessions."
+          title="Connect Gemini-Wrapper HTTP"
+          description="Optional advanced mode: enter an explicit OpenAI-compatible wrapper URL."
           prompt="url  > "
+          value={props.input}
+          onChange={props.onInputChange}
+          onSubmit={props.onInputSubmit}
+        />
+      ) : null}
+      {props.state.step === "gemini-wrapper-cookies" ? (
+        <InputStep
+          title="Connect Gemini-API bridge"
+          description="Enter a JSON cookie file with __Secure-1PSID. PatchPilot runs gemini_webapi itself and will not scan browsers."
+          prompt="file > "
           value={props.input}
           onChange={props.onInputChange}
           onSubmit={props.onInputSubmit}

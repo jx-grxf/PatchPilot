@@ -21,4 +21,4 @@ PatchPilot keeps file tools inside one workspace root, blocks common secret file
 
 Session logs are stored in `.patchpilot/sessions/` under the workspace and summarized in `~/.patchpilot/session-index.json`. Treat those logs as local project metadata: they may contain prompts, tool names, summaries, and clipped command output. Do not use cloud providers or trusted bypass in repositories containing secrets you do not want processed by external model providers.
 
-Gemini-Wrapper support only uses an explicit OpenAI-compatible URL from `PATCHPILOT_GEMINI_WRAPPER_BASE_URL` and an optional explicit wrapper key. PatchPilot must not scan browser profiles, cookies, Keychain items, or Google web-login sessions for provider auth.
+Gemini-Wrapper support runs either the installed `gemini_webapi` Python package with an explicit cookie source or an explicit OpenAI-compatible URL from `PATCHPILOT_GEMINI_WRAPPER_BASE_URL`. PatchPilot must not scan browser profiles, cookies, Keychain items, or Google web-login sessions for provider auth.

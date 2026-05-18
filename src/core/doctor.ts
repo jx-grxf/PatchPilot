@@ -2,7 +2,18 @@ import { spawn } from "node:child_process";
 import { describeComputeTarget } from "./compute.js";
 import { codexOAuthModels, hasCodexCliOAuth } from "./codex.js";
 import { GeminiClient, readGeminiApiKey } from "./gemini.js";
-import { GeminiWrapperClient, readGeminiWrapperApiKey, readGeminiWrapperBaseUrl, geminiWrapperRequiresApiKey } from "./geminiWrapper.js";
+import {
+  GeminiWrapperClient,
+  geminiWebApiInstallCommand,
+  geminiWrapperRequiresApiKey,
+  isGeminiWebApiInstalled,
+  readGeminiWrapperApiKey,
+  readGeminiWrapperBaseUrl,
+  readGeminiWrapperCookiesJson,
+  readGeminiWrapperMode,
+  readGeminiWrapperPythonCommand,
+  readGeminiWrapperSecure1psid
+} from "./geminiWrapper.js";
 import { NvidiaClient, readNvidiaApiKey } from "./nvidia.js";
 import { OllamaClient } from "./ollama.js";
 import { OpenRouterClient, readOpenRouterApiKey } from "./openrouter.js";
@@ -239,6 +250,11 @@ async function checkGemini(model?: string): Promise<DoctorResult[]> {
 async function checkGeminiWrapper(model?: string): Promise<DoctorResult[]> {
   const baseUrl = readGeminiWrapperBaseUrl();
   const apiKey = readGeminiWrapperApiKey();
+  const mode = readGeminiWrapperMode();
+  if (mode === "python" || (!baseUrl && mode === "auto")) {
+    return await checkGeminiApiBridge(model);
+  }
+
   const results: DoctorResult[] = [
     {
       name: "gemini-wrapper-url",
@@ -279,6 +295,54 @@ async function checkGeminiWrapper(model?: string): Promise<DoctorResult[]> {
         name: "gemini-wrapper-model",
         ok: models.includes(model),
         details: models.includes(model) ? `${model} is available` : `${model} is not listed by the wrapper models API`
+      });
+    }
+  } catch (error) {
+    results.push({
+      name: "gemini-wrapper",
+      ok: false,
+      details: error instanceof Error ? error.message : String(error)
+    });
+  }
+
+  return results;
+}
+
+async function checkGeminiApiBridge(model?: string): Promise<DoctorResult[]> {
+  const pythonCommand = readGeminiWrapperPythonCommand();
+  const hasExplicitAuth = Boolean(readGeminiWrapperCookiesJson() || readGeminiWrapperSecure1psid());
+  const isInstalled = await isGeminiWebApiInstalled(pythonCommand);
+  const results: DoctorResult[] = [
+    {
+      name: "gemini-api-bridge",
+      ok: isInstalled,
+      details: isInstalled ? `gemini_webapi import works through ${pythonCommand}` : `missing. Run: ${geminiWebApiInstallCommand}`
+    },
+    {
+      name: "gemini-api-auth",
+      ok: hasExplicitAuth,
+      details: hasExplicitAuth
+        ? "explicit cookie auth is configured"
+        : "missing. Set PATCHPILOT_GEMINI_WRAPPER_COOKIES_JSON or GEMINI_SECURE_1PSID. PatchPilot does not scan browser cookies."
+    }
+  ];
+
+  if (!isInstalled || !hasExplicitAuth) {
+    return results;
+  }
+
+  try {
+    const models = await new GeminiWrapperClient().listModels();
+    results.push({
+      name: "gemini-wrapper",
+      ok: true,
+      details: `Python bridge ready. Models: ${models.join(", ")}`
+    });
+    if (model) {
+      results.push({
+        name: "gemini-wrapper-model",
+        ok: models.includes(model),
+        details: models.includes(model) ? `${model} is available` : `${model} is not in the bridge default model list`
       });
     }
   } catch (error) {
