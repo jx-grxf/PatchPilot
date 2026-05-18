@@ -1,18 +1,18 @@
 # Gemini-Wrapper Setup
 
-PatchPilot can use the installed `gemini_webapi` Python wrapper through the `gemini-wrapper` provider. PatchPilot starts the bridge command itself. It does not scan browser profiles or read cookies automatically.
+PatchPilot can use `gemini_webapi` through the `gemini-wrapper` provider. PatchPilot creates a managed Python venv, installs the wrapper there, and starts the bridge command itself. It does not scan browser profiles or read cookies automatically.
 
-## 1. Install the Python wrapper
+## 1. Let PatchPilot install the wrapper
 
-```sh
-python3 -m pip install -U gemini_webapi
-```
+Do not run `python3 -m pip install -U gemini_webapi` against Homebrew Python. Homebrew blocks that with PEP 668.
 
-Check it:
+PatchPilot uses this managed venv instead:
 
 ```sh
-python3 -c "import gemini_webapi; print('ok')"
+~/.patchpilot/gemini-wrapper-venv
 ```
+
+It creates the venv and installs `gemini_webapi` automatically when `patchpilot doctor --provider gemini-wrapper` or Gemini-Wrapper onboarding needs it.
 
 ## 2. Get the cookie values manually
 
@@ -64,7 +64,7 @@ patchpilot doctor --provider gemini-wrapper --check-model gemini-2.5-flash
 Expected checks:
 
 - Node and Git are available.
-- `gemini_webapi` imports through `python3`.
+- `gemini_webapi` imports through `~/.patchpilot/gemini-wrapper-venv/bin/python`.
 - explicit cookie auth is configured.
 - the bridge lists Gemini models.
 

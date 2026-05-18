@@ -241,13 +241,13 @@ PatchPilot reads provider cache telemetry when the provider reports it, for exam
 
 Reasoning support is provider and model dependent. Codex accepts fixed reasoning levels. OpenRouter receives `reasoning.effort` only for models whose metadata advertises reasoning support. Gemini uses Thinking configuration where the selected model exposes it; some Gemini models cannot disable thinking. Gemini-Wrapper stays on wrapper defaults because wrapper compatibility varies. Ollama only receives native `think` values for known thinking model families. NVIDIA reasoning effort is limited to supported GPT-OSS NIM routes.
 
-Gemini-Wrapper is intentionally explicit. In default `python` bridge mode, PatchPilot checks that the installed Python package imports with:
+Gemini-Wrapper is intentionally explicit. In default `python` bridge mode, PatchPilot creates a managed Python venv and installs the wrapper there:
 
 ```sh
-python3 -m pip install -U gemini_webapi
+~/.patchpilot/gemini-wrapper-venv
 ```
 
-Then PatchPilot runs the bridge command itself for model discovery and chat requests. Use `/onboarding`, choose Gemini-Wrapper, paste `__Secure-1PSID`, and optionally paste `__Secure-1PSIDTS`. PatchPilot writes `~/.patchpilot/gemini-cookies.json` with owner-only permissions and stores the file path in `~/.patchpilot/.env`.
+This avoids Homebrew Python's externally-managed-environment / PEP 668 block. Then PatchPilot runs the bridge command itself for model discovery and chat requests. Use `/onboarding`, choose Gemini-Wrapper, paste `__Secure-1PSID`, and optionally paste `__Secure-1PSIDTS`. PatchPilot writes `~/.patchpilot/gemini-cookies.json` with owner-only permissions and stores the file path in `~/.patchpilot/.env`.
 
 ```sh
 PATCHPILOT_PROVIDER=gemini-wrapper

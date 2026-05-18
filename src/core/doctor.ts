@@ -4,6 +4,7 @@ import { codexOAuthModels, hasCodexCliOAuth } from "./codex.js";
 import { GeminiClient, readGeminiApiKey } from "./gemini.js";
 import {
   GeminiWrapperClient,
+  ensureGeminiWebApiInstalled,
   geminiWebApiInstallCommand,
   geminiWrapperRequiresApiKey,
   isGeminiWebApiInstalled,
@@ -311,12 +312,15 @@ async function checkGeminiWrapper(model?: string): Promise<DoctorResult[]> {
 async function checkGeminiApiBridge(model?: string): Promise<DoctorResult[]> {
   const pythonCommand = readGeminiWrapperPythonCommand();
   const hasExplicitAuth = Boolean(readGeminiWrapperCookiesJson() || readGeminiWrapperSecure1psid());
-  const isInstalled = await isGeminiWebApiInstalled(pythonCommand);
+  const isInstalledBefore = await isGeminiWebApiInstalled(pythonCommand);
+  const isInstalled = isInstalledBefore || (await ensureGeminiWebApiInstalled(pythonCommand));
   const results: DoctorResult[] = [
     {
       name: "gemini-api-bridge",
       ok: isInstalled,
-      details: isInstalled ? `gemini_webapi import works through ${pythonCommand}` : `missing. Run: ${geminiWebApiInstallCommand}`
+      details: isInstalled
+        ? `${isInstalledBefore ? "gemini_webapi import works" : "installed gemini_webapi into PatchPilot managed venv"} through ${pythonCommand}`
+        : `missing. PatchPilot tried the managed venv install. Manual fallback: ${geminiWebApiInstallCommand}`
     },
     {
       name: "gemini-api-auth",

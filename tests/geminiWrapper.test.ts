@@ -6,8 +6,11 @@ import {
   GeminiWrapperClient,
   geminiWrapperRequiresApiKey,
   getDefaultGeminiWrapperCookiesPath,
+  getGeminiWrapperVenvDir,
+  getManagedGeminiWrapperPythonPath,
   readGeminiWrapperApiKey,
   readGeminiWrapperBaseUrl,
+  readGeminiWrapperBootstrapPythonCommand,
   readGeminiWrapperCookiesJson,
   readGeminiWrapperMode,
   readGeminiWrapperPythonCommand,
@@ -31,8 +34,17 @@ describe("GeminiWrapperClient", () => {
     expect(readGeminiWrapperMode({ PATCHPILOT_GEMINI_WRAPPER_MODE: "invalid" } as NodeJS.ProcessEnv)).toBe("auto");
     expect(readGeminiWrapperCookiesJson({ PATCHPILOT_GEMINI_WRAPPER_COOKIES_JSON: " /tmp/cookies.json " } as NodeJS.ProcessEnv)).toBe("/tmp/cookies.json");
     expect(readGeminiWrapperPythonCommand({ PATCHPILOT_GEMINI_WRAPPER_PYTHON: "python" } as NodeJS.ProcessEnv)).toBe("python");
+    expect(readGeminiWrapperBootstrapPythonCommand({ PATCHPILOT_GEMINI_WRAPPER_BOOTSTRAP_PYTHON: "python3.12" } as NodeJS.ProcessEnv)).toBe("python3.12");
     expect(geminiWrapperRequiresApiKey("http://localhost:8787/v1")).toBe(false);
     expect(geminiWrapperRequiresApiKey("https://wrapper.example.com/v1")).toBe(true);
+  });
+
+  it("defaults Python bridge execution to PatchPilot's managed venv", () => {
+    const env = {
+      PATCHPILOT_CONFIG_DIR: "/tmp/patchpilot-test-config"
+    } as NodeJS.ProcessEnv;
+    expect(getGeminiWrapperVenvDir(env)).toBe("/tmp/patchpilot-test-config/gemini-wrapper-venv");
+    expect(readGeminiWrapperPythonCommand(env)).toBe(getManagedGeminiWrapperPythonPath(env));
   });
 
   it("writes pasted Gemini cookies into PatchPilot config with owner-only permissions", async () => {

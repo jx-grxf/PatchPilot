@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { ModelChatOptions, ModelChatResult, ModelTelemetry } from "./types.js";
 import { getPatchPilotConfigDir } from "./env.js";
@@ -7,7 +7,7 @@ import { fetchWithTimeout } from "./http.js";
 import { attachTokenCost, estimateTokens } from "./tokenAccounting.js";
 
 export const defaultGeminiWrapperModel = "gemini-2.5-flash";
-export const geminiWebApiInstallCommand = "python3 -m pip install -U gemini_webapi";
+export const geminiWebApiInstallCommand = "PatchPilot managed install: python3 -m venv ~/.patchpilot/gemini-wrapper-venv && ~/.patchpilot/gemini-wrapper-venv/bin/python -m pip install -U gemini_webapi";
 
 type GeminiWrapperModelsResponse = {
   data?: Array<{
@@ -239,9 +239,9 @@ export class GeminiWrapperClient {
       );
     }
 
-    const installed = await isGeminiWebApiInstalled(this.pythonCommand);
+    const installed = await ensureGeminiWebApiInstalled(this.pythonCommand);
     if (!installed) {
-      throw new Error(`Gemini-API Python wrapper is not installed for ${this.pythonCommand}. Run: ${geminiWebApiInstallCommand}`);
+      throw new Error(`Gemini-API Python wrapper is not installed for ${this.pythonCommand}. PatchPilot tried the managed venv install but it failed. Manual fallback: ${geminiWebApiInstallCommand}`);
     }
   }
 }
@@ -310,7 +310,19 @@ export function saveGeminiWrapperCookieFile(
 }
 
 export function readGeminiWrapperPythonCommand(env: NodeJS.ProcessEnv = process.env): string {
-  return env.PATCHPILOT_GEMINI_WRAPPER_PYTHON?.trim() || "python3";
+  return env.PATCHPILOT_GEMINI_WRAPPER_PYTHON?.trim() || getManagedGeminiWrapperPythonPath(env);
+}
+
+export function readGeminiWrapperBootstrapPythonCommand(env: NodeJS.ProcessEnv = process.env): string {
+  return env.PATCHPILOT_GEMINI_WRAPPER_BOOTSTRAP_PYTHON?.trim() || "python3";
+}
+
+export function getGeminiWrapperVenvDir(env: NodeJS.ProcessEnv = process.env): string {
+  return path.join(getPatchPilotConfigDir(env), "gemini-wrapper-venv");
+}
+
+export function getManagedGeminiWrapperPythonPath(env: NodeJS.ProcessEnv = process.env): string {
+  return path.join(getGeminiWrapperVenvDir(env), process.platform === "win32" ? "Scripts/python.exe" : "bin/python");
 }
 
 export function readGeminiWrapperSecure1psid(env: NodeJS.ProcessEnv = process.env): string {
@@ -326,14 +338,36 @@ export function geminiWrapperRequiresApiKey(baseUrl: string): boolean {
 }
 
 export async function isGeminiWebApiInstalled(pythonCommand = readGeminiWrapperPythonCommand()): Promise<boolean> {
-  return await new Promise((resolve) => {
-    const child = spawn(pythonCommand, ["-c", "import gemini_webapi"], {
-      stdio: "ignore",
-      windowsHide: true
+  const result = await runQuietCommand(pythonCommand, ["-c", "import gemini_webapi"], 20_000);
+  return result.ok;
+}
+
+export async function ensureGeminiWebApiInstalled(
+  pythonCommand = readGeminiWrapperPythonCommand(),
+  env: NodeJS.ProcessEnv = process.env
+): Promise<boolean> {
+  if (await isGeminiWebApiInstalled(pythonCommand)) {
+    return true;
+  }
+
+  const managedPython = getManagedGeminiWrapperPythonPath(env);
+  if (path.resolve(pythonCommand) === path.resolve(managedPython)) {
+    const venvDir = getGeminiWrapperVenvDir(env);
+    mkdirSync(getPatchPilotConfigDir(env), {
+      recursive: true,
+      mode: 0o700
     });
-    child.on("error", () => resolve(false));
-    child.on("close", (exitCode) => resolve(exitCode === 0));
-  });
+    tryChmod(getPatchPilotConfigDir(env), 0o700);
+    if (!existsSync(managedPython)) {
+      const venvResult = await runQuietCommand(readGeminiWrapperBootstrapPythonCommand(env), ["-m", "venv", venvDir], 120_000);
+      if (!venvResult.ok) {
+        return false;
+      }
+    }
+  }
+
+  const installResult = await runQuietCommand(pythonCommand, ["-m", "pip", "install", "-U", "gemini_webapi"], 180_000);
+  return installResult.ok && (await isGeminiWebApiInstalled(pythonCommand));
 }
 
 function isLocalWrapperUrl(baseUrl: string): boolean {
@@ -535,4 +569,41 @@ function tryChmod(filePath: string, mode: number): void {
   } catch {
     // Best-effort hardening for platforms that do not support POSIX permissions.
   }
+}
+
+function runQuietCommand(command: string, args: string[], timeoutMs: number): Promise<{ ok: boolean; output: string }> {
+  return new Promise((resolve) => {
+    const child = spawn(command, args, {
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true
+    });
+    const timeout = setTimeout(() => {
+      child.kill();
+      resolve({
+        ok: false,
+        output: `${command} ${args.join(" ")} timed out.`
+      });
+    }, timeoutMs);
+    let output = "";
+    child.stdout.on("data", (chunk: Buffer) => {
+      output += chunk.toString("utf8");
+    });
+    child.stderr.on("data", (chunk: Buffer) => {
+      output += chunk.toString("utf8");
+    });
+    child.on("error", (error) => {
+      clearTimeout(timeout);
+      resolve({
+        ok: false,
+        output: error.message
+      });
+    });
+    child.on("close", (exitCode) => {
+      clearTimeout(timeout);
+      resolve({
+        ok: exitCode === 0,
+        output: output.trim()
+      });
+    });
+  });
 }
