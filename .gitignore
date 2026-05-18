@@ -11,3 +11,4 @@ code_tests/
 *.tgz
 .DS_Store
 Thumbs.db
+.PATCHPILOT.md
