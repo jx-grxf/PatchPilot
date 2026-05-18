@@ -66,7 +66,7 @@ export type ToolRisk = "low" | "medium" | "high";
 
 export type ToolSideEffect = "none" | "write" | "shell";
 
-export type ToolPermission = "none" | "write" | "shell";
+export type ToolPermission = "none" | "write" | "shell" | "external_file";
 
 export type ToolCategory = "read" | "search" | "write" | "shell" | "git" | "test" | "document" | "memory";
 

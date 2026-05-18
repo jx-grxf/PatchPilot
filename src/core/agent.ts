@@ -384,6 +384,9 @@ function buildSystemPrompt(
     : permissions.hasApprovalHandler && permissions.mode === "build"
       ? "shell and test tools require interactive approval"
       : "shell and test tools are unavailable";
+  const bypassPolicy = permissions.allowWrite && permissions.allowShell
+    ? "Build+bypass mode may run write, script, test, or shell tools without per-tool approval. Keep actions narrow and avoid broad destructive commands."
+    : "Only explicitly enabled permission groups bypass approval. Unavailable tool groups stay blocked.";
   return [
     "You are PatchPilot, a local coding agent running inside a terminal TUI.",
     "You help inspect, edit, test, and explain code inside one workspace.",
@@ -395,7 +398,7 @@ function buildSystemPrompt(
     permissions.mode === "plan"
       ? "Plan mode is read-only: inspect files, explain findings, and return an implementation plan. Do not call write_file, apply_patch, run_script, run_tests, or run_shell."
       : permissions.mode === "bypass"
-        ? "Build+bypass mode may run write, script, test, or shell tools without per-tool approval. Keep actions narrow and avoid broad destructive commands."
+        ? bypassPolicy
         : "Build mode may request write, script, test, or shell tools when necessary. Prefer focused tool calls and keep risky actions easy to approve.",
     `All tool paths are relative to the workspace root. If the workspace is named "${workspaceLabel}", do not prefix paths with "${workspaceLabel}/". Use "." for the workspace root.`,
     "Treat short questions about this project, its language, stack, quality, architecture, dependencies, tests, or files as workspace questions.",

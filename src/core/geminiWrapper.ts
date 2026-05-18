@@ -7,7 +7,8 @@ import { fetchWithTimeout } from "./http.js";
 import { attachTokenCost, estimateTokens } from "./tokenAccounting.js";
 
 export const defaultGeminiWrapperModel = "auto";
-export const geminiWebApiInstallCommand = "PatchPilot managed install: python3 -m venv ~/.patchpilot/gemini-wrapper-venv && ~/.patchpilot/gemini-wrapper-venv/bin/python -m pip install -U gemini_webapi";
+export const geminiWebApiVersion = "2.0.0";
+export const geminiWebApiInstallCommand = `PatchPilot managed install: python3 -m venv ~/.patchpilot/gemini-wrapper-venv && ~/.patchpilot/gemini-wrapper-venv/bin/python -m pip install gemini_webapi==${geminiWebApiVersion}`;
 
 type GeminiWrapperModelsResponse = {
   data?: Array<{
@@ -296,9 +297,9 @@ export class GeminiWrapperClient {
       );
     }
 
-    const installed = await ensureGeminiWebApiInstalled(this.pythonCommand);
+    const installed = await isGeminiWebApiInstalled(this.pythonCommand);
     if (!installed) {
-      throw new Error(`Gemini-API Python wrapper is not installed for ${this.pythonCommand}. PatchPilot tried the managed venv install but it failed. Manual fallback: ${geminiWebApiInstallCommand}`);
+      throw new Error(`Gemini-API Python wrapper is not installed for ${this.pythonCommand}. Run /doctor fix or patchpilot doctor --fix to install the pinned managed bridge. Manual fallback: ${geminiWebApiInstallCommand}`);
     }
   }
 }
@@ -441,7 +442,7 @@ export async function ensureGeminiWebApiInstalled(
     }
   }
 
-  const installResult = await runQuietCommand(pythonCommand, ["-m", "pip", "install", "-U", "gemini_webapi"], 180_000);
+  const installResult = await runQuietCommand(pythonCommand, ["-m", "pip", "install", `gemini_webapi==${geminiWebApiVersion}`], 180_000);
   return installResult.ok && (await isGeminiWebApiInstalled(pythonCommand));
 }
 
@@ -668,7 +669,7 @@ function runGeminiWebApiBridge(pythonCommand: string, input: PythonBridgeInput, 
     });
     child.stdin.end(JSON.stringify({
       ...input,
-      timeoutSeconds: Math.max(30, Math.min(75, Math.floor(timeoutMs / 5000)))
+      timeoutSeconds: Math.max(30, Math.min(300, Math.floor(timeoutMs / 1000)))
     }));
   });
 }

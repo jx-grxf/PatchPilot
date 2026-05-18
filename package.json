@@ -1,6 +1,6 @@
 {
   "name": "@jx-grxf/patchpilot",
-  "version": "0.4.0",
+  "version": "1.0.0",
   "private": false,
   "description": "Local-first coding agent TUI for visible, permissioned repo changes.",
   "type": "module",
@@ -29,7 +29,7 @@
   "bugs": {
     "url": "https://github.com/jx-grxf/PatchPilot/issues"
   },
-  "homepage": "https://github.com/jx-grxf/PatchPilot#readme",
+  "homepage": "https://johannesgrof.me/projects/patchpilot/",
   "scripts": {
     "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
     "dev": "tsx src/cli.tsx",

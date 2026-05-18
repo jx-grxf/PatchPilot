@@ -151,7 +151,7 @@ export const toolSpecs: Record<AgentToolName, ToolSpec> = {
     description: "Store a durable memory for this workspace.",
     risk: "low",
     sideEffects: "write",
-    permission: "none",
+    permission: "write",
     category: "memory"
   },
   memory_search: {
@@ -483,7 +483,20 @@ export class WorkspaceTools {
       return denied(`inspect_document denied sensitive path: ${requestedPath}`);
     }
 
-    const absolutePath = await this.resolveDocumentPath(requestedPath);
+    const { absolutePath, external } = await this.resolveDocumentPath(requestedPath);
+    if (external) {
+      const approval = await this.requestApproval(
+        "inspect_document",
+        "external_file",
+        {
+          path: absolutePath
+        },
+        `Inspect external file: ${absolutePath}`
+      );
+      if (approval.decision === "deny") {
+        return denied("inspect_document denied by permission policy.", "inspect_document", approval);
+      }
+    }
     const extension = path.extname(absolutePath).toLowerCase();
     if (isLikelyTextFile(absolutePath)) {
       return await this.readTextDocument(absolutePath);
@@ -519,6 +532,21 @@ export class WorkspaceTools {
   private async memoryRemember(content: string, tags: string[]): Promise<ToolResult> {
     if (!this.memoryEnabled) {
       return denied("memory_remember requires /experimental memory.", "memory_remember");
+    }
+
+    if (!this.allowWrite) {
+      const approval = await this.requestApproval(
+        "memory_remember",
+        "write",
+        {
+          contentLength: content.length,
+          tags
+        },
+        `Store durable memory (${content.length} characters).`
+      );
+      if (approval.decision === "deny") {
+        return denied("memory_remember denied by permission policy.", "memory_remember", approval);
+      }
     }
 
     try {
@@ -764,7 +792,7 @@ export class WorkspaceTools {
           script: normalizedScript,
           command: scriptCommand
         },
-        previewPackageScript(normalizedScript, scriptCommand)
+        previewPackageScript(normalizedScript, scriptCommand, this.root)
       );
       if (approval.decision === "deny") {
         return denied("run_script denied by permission policy.", "run_script", approval);
@@ -778,7 +806,7 @@ export class WorkspaceTools {
       content: clip(output.output, 20_000),
       tool: "run_script",
       category: toolSpecs.run_script.category,
-      preview: previewPackageScript(normalizedScript, scriptCommand)
+      preview: previewPackageScript(normalizedScript, scriptCommand, this.root)
     };
   }
 
@@ -802,7 +830,7 @@ export class WorkspaceTools {
       return denied("run_shell requires a command.");
     }
 
-    const shellSafetyError = validateShellCommand(command);
+    const shellSafetyError = validateShellCommand(command, this.root);
     if (shellSafetyError) {
       return denied(`run_shell denied. ${shellSafetyError}`);
     }
@@ -888,10 +916,13 @@ export class WorkspaceTools {
     return resolvedPath;
   }
 
-  private async resolveDocumentPath(requestedPath: string): Promise<string> {
+  private async resolveDocumentPath(requestedPath: string): Promise<{ absolutePath: string; external: boolean }> {
     const trimmedPath = requestedPath.trim();
     if (!path.isAbsolute(trimmedPath)) {
-      return await this.resolveReadPath(trimmedPath);
+      return {
+        absolutePath: await this.resolveReadPath(trimmedPath),
+        external: false
+      };
     }
 
     if (isSensitivePath(trimmedPath)) {
@@ -900,7 +931,10 @@ export class WorkspaceTools {
 
     const relativePath = path.relative(this.root, trimmedPath);
     if (!relativePath.startsWith("..") && !path.isAbsolute(relativePath)) {
-      return await this.resolveReadPath(trimmedPath);
+      return {
+        absolutePath: await this.resolveReadPath(trimmedPath),
+        external: false
+      };
     }
 
     if (!this.allowExternalFileAnalysis) {
@@ -912,9 +946,17 @@ export class WorkspaceTools {
       throw new Error(`external file analysis does not support ${extension || "this file type"} yet.`);
     }
 
-    return await realpath(trimmedPath).catch((error: unknown) => {
+    const resolvedPath = await realpath(trimmedPath).catch((error: unknown) => {
       throw new Error(`file not found or unreadable: ${requestedPath} (${error instanceof Error ? error.message : String(error)})`);
     });
+    if (isSensitivePath(resolvedPath)) {
+      throw new Error(`inspect_document denied sensitive path: ${requestedPath}`);
+    }
+
+    return {
+      absolutePath: resolvedPath,
+      external: true
+    };
   }
 
   private async resolveWritePath(requestedPath: string): Promise<string> {
@@ -1478,7 +1520,7 @@ function previewPatch(patchContent: string): string {
   return `Apply patch to ${fileSummary} (+${added}/-${removed}).`;
 }
 
-function validateShellCommand(command: string): string | null {
+function validateShellCommand(command: string, workspaceRoot: string): string | null {
   const trimmedCommand = command.trim();
   if (/[;&<>`$\n\r]/.test(trimmedCommand)) {
     return "dangerous shell metacharacters are blocked; pipes are allowed, but command separators, redirects, expansion, and multiline commands are not.";
@@ -1493,25 +1535,14 @@ function validateShellCommand(command: string): string | null {
     return "command is empty.";
   }
 
-  const executable = stripQuotes(tokens[0] ?? "").toLowerCase();
-  const subcommand = stripQuotes(tokens[1] ?? "").toLowerCase();
-  if (["bash", "sh", "zsh", "fish", "pwsh", "powershell", "powershell.exe", "python", "python3", "node", "ruby", "perl"].includes(executable)) {
-    return `executable "${executable}" is blocked.`;
+  for (const segment of splitPipeline(tokens)) {
+    const segmentError = validateShellSegment(segment);
+    if (segmentError) {
+      return segmentError;
+    }
   }
 
-  if (["rm", "rmdir", "mv", "cp"].includes(executable) && tokens.some((token) => /^-.*[fRr]/.test(stripQuotes(token)))) {
-    return `destructive ${executable} flags are blocked.`;
-  }
-
-  if (executable === "git" && ["clean", "reset", "push", "checkout", "switch", "branch", "tag"].includes(subcommand)) {
-    return `git ${subcommand} is blocked in the shell tool.`;
-  }
-
-  if (executable === "npm" && ["publish", "unpublish", "dist-tag"].includes(subcommand)) {
-    return `npm ${subcommand} is blocked in the shell tool.`;
-  }
-
-  for (const token of tokens.slice(1)) {
+  for (const token of tokens.filter((value) => value !== "|")) {
     const normalizedToken = stripQuotes(token);
     if (isSensitivePath(normalizedToken)) {
       return "sensitive path arguments are blocked.";
@@ -1520,13 +1551,104 @@ function validateShellCommand(command: string): string | null {
     if (/(^|[\\/])\.\.([\\/]|$)/.test(normalizedToken)) {
       return "parent directory traversal is blocked.";
     }
+
+    const absolutePath = toAbsoluteShellPath(normalizedToken);
+    if (absolutePath) {
+      const relativePath = path.relative(workspaceRoot, absolutePath);
+      if (relativePath.startsWith("..") || path.isAbsolute(relativePath)) {
+        return "absolute path arguments outside the workspace are blocked. Use inspect_document with /experimental file-analysis for external files.";
+      }
+    }
   }
 
   return null;
 }
 
-function previewPackageScript(name: string, command: string): string {
-  const risk = validateShellCommand(command);
+function validateShellSegment(tokens: string[]): string | null {
+  if (tokens.length === 0) {
+    return "empty shell pipeline segment.";
+  }
+
+  const executable = stripQuotes(tokens[0] ?? "").toLowerCase();
+  const subcommand = findCommandSubcommand(executable, tokens.slice(1));
+  if (["bash", "sh", "zsh", "fish", "pwsh", "powershell", "powershell.exe", "python", "python3", "node", "ruby", "perl"].includes(executable)) {
+    return `executable "${executable}" is blocked.`;
+  }
+
+  if (["rm", "rmdir", "mv", "cp"].includes(executable) && tokens.some((token) => /^-.*[fRr]/.test(stripQuotes(token)))) {
+    return `destructive ${executable} flags are blocked.`;
+  }
+
+  if (executable === "git" && subcommand && ["clean", "reset", "push", "checkout", "switch", "branch", "tag"].includes(subcommand)) {
+    return `git ${subcommand} is blocked in the shell tool.`;
+  }
+
+  if (executable === "npm" && subcommand && ["publish", "unpublish", "dist-tag"].includes(subcommand)) {
+    return `npm ${subcommand} is blocked in the shell tool.`;
+  }
+
+  return null;
+}
+
+function splitPipeline(tokens: string[]): string[][] {
+  const segments: string[][] = [[]];
+  for (const token of tokens) {
+    if (token === "|") {
+      segments.push([]);
+      continue;
+    }
+
+    segments.at(-1)?.push(token);
+  }
+
+  return segments;
+}
+
+function findCommandSubcommand(executable: string, tokens: string[]): string | null {
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = stripQuotes(tokens[index] ?? "");
+    if (!token || token === "--") {
+      continue;
+    }
+
+    if (executable === "git" && ["-C", "-c", "--git-dir", "--work-tree"].includes(token)) {
+      index += 1;
+      continue;
+    }
+
+    if (executable === "npm" && ["--prefix", "--userconfig", "--cache"].includes(token)) {
+      index += 1;
+      continue;
+    }
+
+    if (token.startsWith("-")) {
+      continue;
+    }
+
+    return token.toLowerCase();
+  }
+
+  return null;
+}
+
+function toAbsoluteShellPath(value: string): string | null {
+  if (!value || value === "|" || value.startsWith("-")) {
+    return null;
+  }
+
+  if (path.isAbsolute(value)) {
+    return path.resolve(value);
+  }
+
+  if (value === "~" || value.startsWith("~/")) {
+    return path.resolve(process.env.HOME ?? "", value === "~" ? "." : value.slice(2));
+  }
+
+  return null;
+}
+
+function previewPackageScript(name: string, command: string, workspaceRoot: string): string {
+  const risk = validateShellCommand(command, workspaceRoot);
   const prefix = risk ? `Risky package script (${risk})` : "Run package script";
   return `${prefix}: npm run ${name} -> ${clip(command, 220)}`;
 }

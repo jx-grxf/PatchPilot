@@ -320,7 +320,7 @@ async function checkGeminiApiBridge(model?: string, options: { fix?: boolean } =
       name: "gemini-api-bridge",
       ok: isInstalled,
       details: isInstalled
-        ? `${isInstalledBefore ? "gemini_webapi import works" : "installed gemini_webapi into PatchPilot managed venv"} through ${pythonCommand}`
+        ? `${isInstalledBefore ? "gemini_webapi import works" : "installed pinned gemini_webapi into PatchPilot managed venv"} through ${pythonCommand}`
         : options.fix
           ? `missing. PatchPilot tried the managed venv install. Manual fallback: ${geminiWebApiInstallCommand}`
           : `missing. Run /doctor fix or patchpilot doctor --fix to install the managed bridge. Manual fallback: ${geminiWebApiInstallCommand}`,

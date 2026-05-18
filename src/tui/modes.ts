@@ -6,7 +6,11 @@ export type ModePermissions = {
 };
 
 export function initialAgentMode(permissions: ModePermissions): AgentMode {
-  return permissions.allowWrite || permissions.allowShell ? "bypass" : "plan";
+  if (permissions.allowWrite && permissions.allowShell) {
+    return "bypass";
+  }
+
+  return permissions.allowWrite || permissions.allowShell ? "build" : "plan";
 }
 
 export function nextAgentMode(currentMode: AgentMode): AgentMode {
@@ -28,7 +32,11 @@ export function permissionsForMode(mode: AgentMode): ModePermissions {
   };
 }
 
-export function modePermissionLabel(mode: AgentMode, permission: "write" | "shell"): string {
+export function modePermissionLabel(mode: AgentMode, permission: "write" | "shell", permissions?: ModePermissions): string {
+  if (permissions?.[permission === "write" ? "allowWrite" : "allowShell"]) {
+    return "on";
+  }
+
   if (mode === "plan") {
     return "off";
   }

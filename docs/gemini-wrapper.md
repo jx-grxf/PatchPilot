@@ -1,6 +1,6 @@
 # Gemini-Wrapper Setup
 
-PatchPilot can use `gemini_webapi` through the `gemini-wrapper` provider. PatchPilot creates a managed Python venv, installs the wrapper there, and starts the bridge command itself. It does not scan browser profiles or read cookies automatically.
+PatchPilot can use `gemini_webapi` through the `gemini-wrapper` provider. This is an advanced, unofficial Gemini Web bridge. PatchPilot creates a managed Python venv only when you explicitly run `/doctor fix` or `patchpilot doctor --fix`, installs the pinned wrapper there, and starts the bridge command itself. It does not scan browser profiles or read cookies automatically.
 
 ## 1. Let PatchPilot install the wrapper
 
@@ -12,7 +12,7 @@ PatchPilot uses this managed venv instead:
 ~/.patchpilot/gemini-wrapper-venv
 ```
 
-It creates the venv and installs `gemini_webapi` automatically when `patchpilot doctor --provider gemini-wrapper` or Gemini-Wrapper onboarding needs it.
+It creates the venv and installs the pinned `gemini_webapi` version when you explicitly approve `patchpilot doctor --fix` or `/doctor fix`. Normal chat startup does not install Python packages.
 
 ## 2. Get the cookie values manually
 

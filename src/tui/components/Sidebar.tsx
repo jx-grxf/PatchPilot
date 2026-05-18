@@ -87,8 +87,8 @@ function buildSidebarRows(props: {
     spacer(),
     section("Permissions"),
     muted(modeDescription(props.agentMode)),
-    row("write", modePermissionLabel(props.agentMode, "write"), permissionColor(props.agentMode)),
-    row("shell", modePermissionLabel(props.agentMode, "shell"), permissionColor(props.agentMode)),
+    row("write", modePermissionLabel(props.agentMode, "write", props), permissionColor(props.agentMode, props.allowWrite)),
+    row("shell", modePermissionLabel(props.agentMode, "shell", props), permissionColor(props.agentMode, props.allowShell)),
     spacer(),
     section("Model"),
     row("provider", props.provider, props.provider === "ollama" ? "green" : "cyan"),
@@ -144,8 +144,8 @@ function modeColor(agentMode: AgentMode): InkColor {
   return agentMode === "build" ? "yellow" : "green";
 }
 
-function permissionColor(agentMode: AgentMode): InkColor {
-  if (agentMode === "bypass") {
+function permissionColor(agentMode: AgentMode, enabled = false): InkColor {
+  if (enabled || agentMode === "bypass") {
     return "red";
   }
 

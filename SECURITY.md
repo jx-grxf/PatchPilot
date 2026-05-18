@@ -6,7 +6,11 @@ PatchPilot is public preview software. Security fixes target the latest publishe
 
 ## Reporting a Vulnerability
 
-Please report security issues through GitHub Security Advisories when available, or contact the maintainer privately with:
+Please report security issues through GitHub Security Advisories:
+
+https://github.com/jx-grxf/PatchPilot/security/advisories/new
+
+Include:
 
 - affected version or commit
 - reproduction steps

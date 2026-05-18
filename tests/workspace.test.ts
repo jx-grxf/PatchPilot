@@ -183,7 +183,8 @@ describe("WorkspaceTools", () => {
       root: tempRoot,
       allowWrite: false,
       allowShell: false,
-      allowExternalFileAnalysis: true
+      allowExternalFileAnalysis: true,
+      approvalHandler: async (request) => (request.permission === "external_file" ? "allow_once" : "deny")
     });
 
     const result = await tools.execute({
@@ -229,7 +230,8 @@ describe("WorkspaceTools", () => {
         root: tempRoot,
         allowWrite: false,
         allowShell: false,
-        memoryEnabled: true
+        memoryEnabled: true,
+        approvalHandler: async (request) => (request.tool === "memory_remember" ? "allow_once" : "deny")
       });
 
       const remember = await tools.execute({
@@ -575,7 +577,30 @@ describe("WorkspaceTools", () => {
     expect(approvals).toBe(0);
   });
 
-  it("allows approved shell pipes and absolute read paths", async () => {
+  it("allows approved shell pipes inside the workspace", async () => {
+    let approvals = 0;
+    const tools = new WorkspaceTools({
+      root: tempRoot,
+      allowWrite: false,
+      allowShell: false,
+      approvalHandler: async () => {
+        approvals += 1;
+        return "allow_once";
+      }
+    });
+
+    const result = await tools.execute({
+      name: "run_shell",
+      arguments: {
+        command: "printf hello | wc -c"
+      }
+    });
+
+    expect(approvals).toBe(1);
+    expect(result.summary).toContain("command exited");
+  });
+
+  it("blocks absolute shell path arguments outside the workspace before approval", async () => {
     let approvals = 0;
     const tools = new WorkspaceTools({
       root: tempRoot,
@@ -594,8 +619,36 @@ describe("WorkspaceTools", () => {
       }
     });
 
-    expect(approvals).toBe(1);
-    expect(result.summary).toContain("command exited");
+    expect(approvals).toBe(0);
+    expect(result.ok).toBe(false);
+    expect(result.summary).toContain("absolute path arguments outside the workspace are blocked");
+  });
+
+  it("blocks dangerous git and npm subcommands after global options", async () => {
+    const tools = new WorkspaceTools({
+      root: tempRoot,
+      allowWrite: false,
+      allowShell: false,
+      approvalHandler: async () => "allow_once"
+    });
+
+    const gitResult = await tools.execute({
+      name: "run_shell",
+      arguments: {
+        command: "git -C . reset --hard"
+      }
+    });
+    expect(gitResult.ok).toBe(false);
+    expect(gitResult.summary).toContain("git reset");
+
+    const npmResult = await tools.execute({
+      name: "run_shell",
+      arguments: {
+        command: "npm --prefix . publish"
+      }
+    });
+    expect(npmResult.ok).toBe(false);
+    expect(npmResult.summary).toContain("npm publish");
   });
 
   it("blocks sensitive shell path arguments before approval", async () => {

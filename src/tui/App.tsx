@@ -21,7 +21,7 @@ import { createModelClient } from "../core/modelClient.js";
 import { defaultNvidiaModel, readNvidiaApiKey } from "../core/nvidia.js";
 import { defaultOllamaModel, OllamaClient } from "../core/ollama.js";
 import { defaultOpenRouterModel, isOpenRouterFreeModel, readOpenRouterApiKey } from "../core/openrouter.js";
-import { ensurePatchPilotInstructions } from "../core/projectInit.js";
+import { ensurePatchPilotGitignore, patchPilotInitPrompt } from "../core/projectInit.js";
 import { formatReasoningSupport } from "../core/reasoning.js";
 import { buildSessionResumeContext, listWorkspaceSessions, loadSessionSummary, SessionStore } from "../core/session.js";
 import { addTelemetryToSession, emptySessionTelemetry, estimateTokens } from "../core/tokenAccounting.js";
@@ -189,6 +189,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       const permissions = permissionsForMode(nextMode);
       setAgentMode(nextMode);
       setBypassConfirmation(false);
+      grantedPermissionsRef.current = permissions;
       setSettings((currentSettings) => ({
         ...currentSettings,
         allowWrite: permissions.allowWrite,
@@ -226,6 +227,23 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
     setInput("");
     applyMode("bypass");
   }, [applyMode]);
+
+  const setExplicitPermission = useCallback(
+    (permission: "write" | "shell", enabled: boolean) => {
+      const nextPermissions = {
+        allowWrite: permission === "write" ? enabled : settings.allowWrite,
+        allowShell: permission === "shell" ? enabled : settings.allowShell
+      };
+      grantedPermissionsRef.current = nextPermissions;
+      setBypassConfirmation(false);
+      setAgentMode(nextPermissions.allowWrite && nextPermissions.allowShell ? "bypass" : nextPermissions.allowWrite || nextPermissions.allowShell ? "build" : "plan");
+      setSettings((currentSettings) => ({
+        ...currentSettings,
+        ...nextPermissions
+      }));
+    },
+    [settings.allowShell, settings.allowWrite]
+  );
 
   const cancelBypassMode = useCallback(() => {
     setInput("");
@@ -1001,7 +1019,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   );
 
   const runTask = useCallback(
-    async (task: string) => {
+    async (task: string, overrides: { mode?: AgentMode } = {}) => {
       if (!task.trim() || isRunning) {
         return;
       }
@@ -1024,17 +1042,18 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
 
         const abortController = new AbortController();
         abortControllerRef.current = abortController;
+        const effectiveMode = overrides.mode ?? agentMode;
         const taskRunner = new AgentRunner({
           ...runnableSettings,
           allowExternalFileAnalysis: experimentalFlags.fileAnalysis,
           memoryEnabled: experimentalFlags.memory,
-          mode: agentMode,
+          mode: effectiveMode,
           signal: abortController.signal,
           sessionStore: sessionStoreRef.current,
           resumeContext,
           approvalHandler: (request) =>
             new Promise<PermissionDecision>((resolve) => {
-              if (agentMode === "plan") {
+              if (effectiveMode === "plan") {
                 appendLine({
                   kind: "approval",
                   tone: "warning",
@@ -1049,7 +1068,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
                 return;
               }
 
-              if (agentMode === "bypass") {
+              if (effectiveMode === "bypass" && ((request.permission === "write" && runnableSettings.allowWrite) || (request.permission === "shell" && runnableSettings.allowShell))) {
                 resolve("allow_session");
                 return;
               }
@@ -1111,7 +1130,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         setIsRunning(false);
       }
     },
-    [agentMode, appendLine, isRunning, modelOptions, resumeContext, settings]
+    [agentMode, appendLine, experimentalFlags, isRunning, modelOptions, resumeContext, settings]
   );
 
   const handleSlashCommand = useCallback(
@@ -1277,33 +1296,21 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         case "write":
         case "apply": {
           const writeEnabled = readToggle(args[0], !settings.allowWrite);
-          if (writeEnabled) {
-            requestBypassMode();
-            return;
-          }
-
-          grantedPermissionsRef.current.allowWrite = writeEnabled;
-          applyMode("build", false);
+          setExplicitPermission("write", writeEnabled);
           appendLine({
             tone: "success",
             label: "write",
-            text: "workspace writes require approval in build mode"
+            text: writeEnabled ? "workspace writes are allowed; shell remains separately controlled" : "workspace writes disabled"
           });
           return;
         }
         case "shell": {
           const shellEnabled = readToggle(args[0], !settings.allowShell);
-          if (shellEnabled) {
-            requestBypassMode();
-            return;
-          }
-
-          grantedPermissionsRef.current.allowShell = shellEnabled;
-          applyMode("build", false);
+          setExplicitPermission("shell", shellEnabled);
           appendLine({
             tone: "success",
             label: "shell",
-            text: "shell commands require approval in build mode"
+            text: shellEnabled ? "shell commands are allowed; writes remain separately controlled" : "shell commands disabled"
           });
           return;
         }
@@ -1678,12 +1685,15 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           return;
         }
         case "init": {
-          const result = await ensurePatchPilotInstructions(settings.workspace);
+          await ensurePatchPilotGitignore(settings.workspace);
           appendLine({
-            tone: result.created ? "success" : "accent",
+            tone: "accent",
             label: "init",
-            text: `${result.created ? "created" : "found"} PATCHPILOT.md`,
-            detail: result.path
+            text: "starting model-driven project init",
+            detail: "PatchPilot will inspect the repository and create or update PATCHPILOT.md with approval-gated writes."
+          });
+          await runTask(patchPilotInitPrompt, {
+            mode: "build"
           });
           return;
         }
