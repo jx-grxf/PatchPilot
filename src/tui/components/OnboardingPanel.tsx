@@ -5,7 +5,7 @@ import type { ModelProvider } from "../../core/types.js";
 import type { OllamaHost } from "../hosts.js";
 import { selectableModels } from "../modelSelection.js";
 
-export type ApiKeyProvider = "gemini" | "openrouter" | "nvidia";
+export type ApiKeyProvider = "gemini" | "gemini-wrapper" | "openrouter" | "nvidia";
 
 export type OnboardingState =
   | {
@@ -25,6 +25,23 @@ export type OnboardingState =
     }
   | {
       step: "gemini-key";
+    }
+  | {
+      step: "gemini-wrapper-url";
+    }
+  | {
+      step: "gemini-wrapper-psid";
+    }
+  | {
+      step: "gemini-wrapper-psidts";
+      secure1psid: string;
+    }
+  | {
+      step: "gemini-wrapper-model-mode";
+    }
+  | {
+      step: "gemini-wrapper-key";
+      baseUrl: string;
     }
   | {
       step: "openrouter-key";
@@ -54,6 +71,10 @@ const entryOptions = [
   {
     label: "Gemini",
     description: "Use the Google Gemini API key from PatchPilot config"
+  },
+  {
+    label: "Gemini-Wrapper",
+    description: "Use the local Gemini-API Python bridge with pasted cookies"
   },
   {
     label: "OpenRouter",
@@ -88,7 +109,7 @@ export function OnboardingPanel(props: {
       ? 0
       : props.state.step === "host" || props.state.step === "host-input"
         ? 1
-        : props.state.step === "api-key-choice" || props.state.step === "gemini-key" || props.state.step === "openrouter-key" || props.state.step === "nvidia-key" || props.state.step === "codex-login"
+        : props.state.step === "api-key-choice" || props.state.step === "gemini-key" || props.state.step === "gemini-wrapper-url" || props.state.step === "gemini-wrapper-psid" || props.state.step === "gemini-wrapper-psidts" || props.state.step === "gemini-wrapper-model-mode" || props.state.step === "gemini-wrapper-key" || props.state.step === "openrouter-key" || props.state.step === "nvidia-key" || props.state.step === "codex-login"
           ? 2
           : 3;
   const visibleModels = props.state.step === "model" ? selectableModels(props.input, props.state.models) : [];
@@ -156,20 +177,20 @@ export function OnboardingPanel(props: {
       ) : null}
       {props.state.step === "api-key-choice" ? (
         <SelectionList
-          title={`${providerLabel(props.state.provider)} API key`}
-          subtitle="Use up/down and Enter. Existing keys stay in PatchPilot config."
+          title={props.state.provider === "gemini-wrapper" ? "Gemini-Wrapper bridge auth" : `${providerLabel(props.state.provider)} API key`}
+          subtitle={props.state.provider === "gemini-wrapper" ? "Use up/down and Enter. Saved cookies stay in PatchPilot config." : "Use up/down and Enter. Existing keys stay in PatchPilot config."}
           rows={[
             ...(props.state.hasExistingKey
               ? [
                   {
-                    label: "Use Existing Key",
-                    description: "Continue with the saved key"
+                    label: props.state.provider === "gemini-wrapper" ? "Use Saved Bridge" : "Use Existing Key",
+                    description: props.state.provider === "gemini-wrapper" ? "Continue with the saved cookie file" : "Continue with the saved key"
                   }
                 ]
               : []),
             {
-              label: "Enter New Key",
-              description: "Replace or add the key in PatchPilot config"
+              label: props.state.provider === "gemini-wrapper" ? "Paste Cookie" : "Enter New Key",
+              description: props.state.provider === "gemini-wrapper" ? "Replace the Gemini Web cookie file in PatchPilot config" : "Replace or add the key in PatchPilot config"
             }
           ]}
           selectedIndex={props.selectedIndex}
@@ -179,6 +200,66 @@ export function OnboardingPanel(props: {
         <InputStep
           title="Enter your Gemini API key"
           description="It will be stored in PatchPilot's config directory, not in the repository."
+          prompt="key  > "
+          value={props.input}
+          onChange={props.onInputChange}
+          onSubmit={props.onInputSubmit}
+          mask="*"
+        />
+      ) : null}
+      {props.state.step === "gemini-wrapper-url" ? (
+        <InputStep
+          title="Connect Gemini-Wrapper HTTP"
+          description="Optional advanced mode: enter an explicit OpenAI-compatible wrapper URL."
+          prompt="url  > "
+          value={props.input}
+          onChange={props.onInputChange}
+          onSubmit={props.onInputSubmit}
+        />
+      ) : null}
+      {props.state.step === "gemini-wrapper-psid" ? (
+        <InputStep
+          title="Connect Gemini-API bridge"
+          description="Paste __Secure-1PSID. PatchPilot stores it in ~/.patchpilot/gemini-cookies.json with owner-only permissions."
+          prompt="psid > "
+          value={props.input}
+          onChange={props.onInputChange}
+          onSubmit={props.onInputSubmit}
+          mask="*"
+        />
+      ) : null}
+      {props.state.step === "gemini-wrapper-psidts" ? (
+        <InputStep
+          title="Optional Gemini session timestamp"
+          description="Paste __Secure-1PSIDTS if you have it, or press Enter to skip."
+          prompt="ts   > "
+          value={props.input}
+          onChange={props.onInputChange}
+          onSubmit={props.onInputSubmit}
+          mask="*"
+        />
+      ) : null}
+      {props.state.step === "gemini-wrapper-model-mode" ? (
+        <SelectionList
+          title="Gemini-Wrapper model mode"
+          subtitle="Auto is fastest and most stable. Manual fetches models currently exposed by Gemini Web."
+          rows={[
+            {
+              label: "Auto",
+              description: "Let Gemini Web pick the current default model"
+            },
+            {
+              label: "Manual",
+              description: "Fetch available Gemini Web models and choose one"
+            }
+          ]}
+          selectedIndex={props.selectedIndex}
+        />
+      ) : null}
+      {props.state.step === "gemini-wrapper-key" ? (
+        <InputStep
+          title="Enter Gemini-Wrapper API key"
+          description="Required for remote wrapper URLs. Local wrapper URLs may leave this empty."
           prompt="key  > "
           value={props.input}
           onChange={props.onInputChange}
@@ -246,7 +327,7 @@ export function OnboardingPanel(props: {
 }
 
 function providerLabel(provider: ApiKeyProvider): string {
-  return provider === "openrouter" ? "OpenRouter" : provider === "nvidia" ? "NVIDIA" : "Gemini";
+  return provider === "openrouter" ? "OpenRouter" : provider === "nvidia" ? "NVIDIA" : provider === "gemini-wrapper" ? "Gemini-Wrapper" : "Gemini";
 }
 
 function InputStep(props: {
@@ -280,13 +361,16 @@ function SelectionList(props: {
 }): React.ReactElement {
   const startIndex = Math.max(0, Math.min(props.selectedIndex - 4, Math.max(0, props.rows.length - 8)));
   const visibleRows = props.rows.slice(startIndex, startIndex + 8);
+  const endIndex = startIndex + visibleRows.length;
 
   return (
     <Box flexDirection="column" marginTop={2}>
       <Text color="white" bold>
         {props.title}
       </Text>
-      <Text color="gray">{props.subtitle}</Text>
+      <Text color="gray">
+        {props.subtitle} {props.rows.length > 0 ? `${startIndex + 1}-${endIndex}/${props.rows.length}` : "0/0"}
+      </Text>
       {visibleRows.map((row, index) => {
         const absoluteIndex = startIndex + index;
         const isSelected = absoluteIndex === props.selectedIndex;

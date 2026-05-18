@@ -1,23 +1,36 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Box, useApp, useInput, useStdout } from "ink";
 import { AgentRunner, type AgentRunnerOptions } from "../core/agent.js";
+import { cleanupPatchPilot, readCleanupTarget } from "../core/cleanup.js";
 import { defaultCodexModel, hasCodexCliOAuth } from "../core/codex.js";
 import { describeComputeTarget } from "../core/compute.js";
 import { runDoctor } from "../core/doctor.js";
 import { savePatchPilotEnvValues } from "../core/env.js";
 import { defaultGeminiModel, readGeminiApiKey } from "../core/gemini.js";
+import {
+  defaultGeminiWrapperModel,
+  geminiWrapperRequiresApiKey,
+  readGeminiWrapperApiKey,
+  readGeminiWrapperBaseUrl,
+  readGeminiWrapperCookiesJson,
+  readGeminiWrapperMode,
+  readGeminiWrapperPythonCommand,
+  saveGeminiWrapperCookieFile
+} from "../core/geminiWrapper.js";
 import { createModelClient } from "../core/modelClient.js";
 import { defaultNvidiaModel, readNvidiaApiKey } from "../core/nvidia.js";
 import { defaultOllamaModel, OllamaClient } from "../core/ollama.js";
 import { defaultOpenRouterModel, isOpenRouterFreeModel, readOpenRouterApiKey } from "../core/openrouter.js";
+import { ensurePatchPilotGitignore, patchPilotInitPrompt } from "../core/projectInit.js";
 import { formatReasoningSupport } from "../core/reasoning.js";
-import { listWorkspaceSessions, loadSessionSummary, SessionStore } from "../core/session.js";
+import { buildSessionResumeContext, listWorkspaceSessions, loadSessionSummary, SessionStore } from "../core/session.js";
 import { addTelemetryToSession, emptySessionTelemetry, estimateTokens } from "../core/tokenAccounting.js";
 import type { AgentEvent, AgentWorkState, ApprovalRequest, ModelProvider, ModelTelemetry, PermissionDecision, SessionTelemetry } from "../core/types.js";
 import { WorkspaceTools } from "../core/workspace.js";
 import { ApprovalPanel } from "./components/ApprovalPanel.js";
 import { CommandSuggestions, type CommandSuggestionItem } from "./components/CommandSuggestions.js";
 import { Composer, FooterHints } from "./components/Composer.js";
+import { ExperimentalPanel, experimentalFlagAt, experimentalFlagCount, type ExperimentalFlags } from "./components/ExperimentalPanel.js";
 import { Header } from "./components/Header.js";
 import { OnboardingPanel, type ApiKeyProvider, type OnboardingState } from "./components/OnboardingPanel.js";
 import { Sidebar } from "./components/Sidebar.js";
@@ -51,6 +64,11 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   const abortControllerRef = useRef<AbortController | null>(null);
   const sessionStoreRef = useRef(new SessionStore({ workspace: props.workspace }));
   const approvalResolverRef = useRef<((decision: PermissionDecision) => void) | null>(null);
+  const runtimeStateRef = useRef({
+    isRunning: false,
+    hasPendingApproval: false,
+    lastSigintAt: 0
+  });
   const grantedPermissionsRef = useRef({
     allowWrite: props.allowWrite,
     allowShell: props.allowShell
@@ -66,6 +84,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   const [pendingApproval, setPendingApproval] = useState<ApprovalRequest | null>(null);
   const [telemetry, setTelemetry] = useState<ModelTelemetry | null>(null);
   const [sessionTelemetry, setSessionTelemetry] = useState<SessionTelemetry>(() => emptySessionTelemetry());
+  const [resumeContext, setResumeContext] = useState("");
   const [systemStats, setSystemStats] = useState<SystemStats>(() => readSystemStats().stats);
   const [gpuStats, setGpuStats] = useState<GpuStats | null>(null);
   const [agentMode, setAgentMode] = useState<AgentMode>(() => initialAgentMode({ allowWrite: props.allowWrite, allowShell: props.allowShell }));
@@ -76,6 +95,13 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   const [modelOptions, setModelOptions] = useState<string[]>([]);
   const [isLoadingModels, setIsLoadingModels] = useState(false);
   const [onboarding, setOnboarding] = useState<OnboardingState | null>(null);
+  const [experimentalOpen, setExperimentalOpen] = useState(false);
+  const [experimentalIndex, setExperimentalIndex] = useState(0);
+  const [experimentalFlags, setExperimentalFlags] = useState<ExperimentalFlags>({
+    fileAnalysis: readBooleanEnv(process.env.PATCHPILOT_EXPERIMENTAL_FILE_ANALYSIS, false),
+    memory: readBooleanEnv(process.env.PATCHPILOT_EXPERIMENTAL_MEMORY, false),
+    subagents: props.subagents
+  });
   const [onboardingIndex, setOnboardingIndex] = useState(0);
   const [onboardingInput, setOnboardingInput] = useState("");
   const [onboardingBusyMessage, setOnboardingBusyMessage] = useState<string | null>(null);
@@ -104,7 +130,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   const terminalRows = stdout.rows ?? 40;
   const terminalColumns = stdout.columns ?? 120;
   const paletteItems =
-    !isRunning && !onboarding
+    !isRunning && !onboarding && !experimentalOpen
       ? buildCommandSuggestionItems({
           input,
           provider: settings.provider,
@@ -118,9 +144,9 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   const rootHeight = Math.max(24, terminalRows);
   const headerReservedHeight = 5;
   const paletteReservedHeight = !onboarding && paletteItems.length > 0 ? Math.min(8, paletteItems.length) + 4 : 0;
-  const composerReservedHeight = onboarding ? 0 : 2;
-  const footerReservedHeight = onboarding ? 0 : 1;
-  const approvalReservedHeight = !onboarding && (pendingApproval || bypassConfirmation) ? 6 : 0;
+  const composerReservedHeight = onboarding || experimentalOpen ? 0 : 2;
+  const footerReservedHeight = onboarding || experimentalOpen ? 0 : 1;
+  const approvalReservedHeight = !onboarding && !experimentalOpen && (pendingApproval || bypassConfirmation) ? 6 : 0;
   const panelHeight = Math.max(8, rootHeight - headerReservedHeight - composerReservedHeight - paletteReservedHeight - footerReservedHeight - approvalReservedHeight);
   const transcriptWidth = Math.max(42, terminalColumns - 38);
   const scrollStep = Math.max(4, Math.floor(panelHeight * 0.8));
@@ -143,6 +169,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
 
       approvalResolverRef.current(decision);
       approvalResolverRef.current = null;
+      setInput("");
       appendLine({
         kind: "approval",
         tone: decision === "deny" ? "warning" : "success",
@@ -162,6 +189,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       const permissions = permissionsForMode(nextMode);
       setAgentMode(nextMode);
       setBypassConfirmation(false);
+      grantedPermissionsRef.current = permissions;
       setSettings((currentSettings) => ({
         ...currentSettings,
         allowWrite: permissions.allowWrite,
@@ -196,10 +224,29 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   }, [bypassConfirmation]);
 
   const confirmBypassMode = useCallback(() => {
+    setInput("");
     applyMode("bypass");
   }, [applyMode]);
 
+  const setExplicitPermission = useCallback(
+    (permission: "write" | "shell", enabled: boolean) => {
+      const nextPermissions = {
+        allowWrite: permission === "write" ? enabled : settings.allowWrite,
+        allowShell: permission === "shell" ? enabled : settings.allowShell
+      };
+      grantedPermissionsRef.current = nextPermissions;
+      setBypassConfirmation(false);
+      setAgentMode(nextPermissions.allowWrite && nextPermissions.allowShell ? "bypass" : nextPermissions.allowWrite || nextPermissions.allowShell ? "build" : "plan");
+      setSettings((currentSettings) => ({
+        ...currentSettings,
+        ...nextPermissions
+      }));
+    },
+    [settings.allowShell, settings.allowWrite]
+  );
+
   const cancelBypassMode = useCallback(() => {
+    setInput("");
     setBypassConfirmation(false);
     setStatus("idle");
     setWorkState("idle");
@@ -358,7 +405,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       setTelemetry(null);
       setOnboardingInput("");
       setOnboardingNotice(null);
-      setOnboardingBusyMessage(`Loading ${provider} models...`);
+      setOnboardingBusyMessage(null);
       const nextModel = defaultModelForProvider(provider, options.currentModel ?? settings.model);
       setSettings((currentSettings) => ({
         ...currentSettings,
@@ -366,6 +413,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         model: nextModel
       }));
 
+      setOnboardingBusyMessage(`Loading ${provider} models...`);
       try {
         const models = await loadAvailableModels(provider, options.ollamaUrl ?? settings.ollamaUrl, setModelOptions, true);
         if (models.length === 0) {
@@ -376,9 +424,13 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
                 ? "No Ollama models found on that host."
                 : provider === "gemini"
                   ? "No Gemini models listed. Check the API key."
+                  : provider === "gemini-wrapper"
+                    ? "No Gemini-Wrapper models listed. Check the bridge install and cookie setup."
                   : provider === "openrouter"
                     ? "No OpenRouter models listed. Check the API key."
-                    : "No Codex OAuth models listed.",
+                    : provider === "nvidia"
+                      ? "No NVIDIA models listed. Check the API key."
+                      : "No Codex OAuth models listed.",
             detail: "Use the back key to choose another provider or retry after fixing the provider setup."
           });
           return;
@@ -429,6 +481,11 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       case "host":
       case "api-key-choice":
       case "gemini-key":
+      case "gemini-wrapper-url":
+      case "gemini-wrapper-psid":
+      case "gemini-wrapper-psidts":
+      case "gemini-wrapper-model-mode":
+      case "gemini-wrapper-key":
       case "openrouter-key":
       case "nvidia-key":
       case "codex-login":
@@ -453,6 +510,13 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
 
         if (onboarding.provider === "gemini") {
           openApiKeyChoice("gemini", setOnboarding, setOnboardingIndex);
+          return;
+        }
+
+        if (onboarding.provider === "gemini-wrapper") {
+          setOnboarding({
+            step: "gemini-wrapper-model-mode"
+          });
           return;
         }
 
@@ -540,7 +604,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           return;
         }
 
-        if (selection === "gemini" || selection === "openrouter" || selection === "nvidia") {
+        if (selection === "gemini" || selection === "gemini-wrapper" || selection === "openrouter" || selection === "nvidia") {
           openApiKeyChoice(selection, setOnboarding, setOnboardingIndex);
           return;
         }
@@ -638,13 +702,22 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         }
 
         if (choice === 0 && onboarding.hasExistingKey) {
+          if (onboarding.provider === "gemini-wrapper") {
+            setOnboarding({
+              step: "gemini-wrapper-model-mode"
+            });
+            setOnboardingInput("");
+            setOnboardingIndex(0);
+            return;
+          }
+
           await openModelSelection(onboarding.provider, {
             currentModel: defaultModelForProvider(onboarding.provider, settings.model)
           });
           return;
         }
 
-        setOnboarding({
+        setOnboarding(onboarding.provider === "gemini-wrapper" ? { step: "gemini-wrapper-psid" } : {
           step: `${onboarding.provider}-key` as "gemini-key" | "openrouter-key" | "nvidia-key"
         });
         setOnboardingInput("");
@@ -674,6 +747,163 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         });
         await openModelSelection("gemini", {
           currentModel: defaultGeminiModel
+        });
+        return;
+      }
+
+      if (onboarding.step === "gemini-wrapper-psid") {
+        const secure1psid = value.trim();
+        if (!secure1psid) {
+          setOnboardingNotice({
+            tone: "warning",
+            text: "__Secure-1PSID cannot be empty.",
+            detail: "Paste the cookie value manually. PatchPilot will not scan browser profiles."
+          });
+          return;
+        }
+
+        setOnboarding({
+          step: "gemini-wrapper-psidts",
+          secure1psid
+        });
+        setOnboardingInput("");
+        setOnboardingIndex(0);
+        return;
+      }
+
+      if (onboarding.step === "gemini-wrapper-psidts") {
+        const secure1psidts = value.trim();
+        const cookiesPath = saveGeminiWrapperCookieFile({
+          secure1psid: onboarding.secure1psid,
+          secure1psidts
+        });
+
+        process.env.PATCHPILOT_GEMINI_WRAPPER_MODE = "python";
+        process.env.PATCHPILOT_GEMINI_WRAPPER_COOKIES_JSON = cookiesPath;
+        savePatchPilotEnvValues({
+          PATCHPILOT_PROVIDER: "gemini-wrapper",
+          PATCHPILOT_MODEL: defaultGeminiWrapperModel,
+          PATCHPILOT_GEMINI_WRAPPER_MODE: "python",
+          PATCHPILOT_GEMINI_WRAPPER_COOKIES_JSON: cookiesPath
+        });
+        setOnboardingNotice({
+          tone: "success",
+          text: "Gemini-API bridge cookies saved to PatchPilot config.",
+          detail: `${cookiesPath} was written with owner-only permissions. PatchPilot will run gemini_webapi through python3.`
+        });
+        setOnboarding({
+          step: "gemini-wrapper-model-mode"
+        });
+        setOnboardingInput("");
+        setOnboardingIndex(0);
+        return;
+      }
+
+      if (onboarding.step === "gemini-wrapper-model-mode") {
+        const choice = readIndexedSelection(value, onboardingIndex);
+        if (choice === null) {
+          return;
+        }
+
+        if (choice === 0) {
+          setTelemetry(null);
+          setModelOptions([defaultGeminiWrapperModel]);
+          setSettings((currentSettings) => ({
+            ...currentSettings,
+            provider: "gemini-wrapper",
+            model: defaultGeminiWrapperModel
+          }));
+          savePatchPilotEnvValues({
+            PATCHPILOT_PROVIDER: "gemini-wrapper",
+            PATCHPILOT_MODEL: defaultGeminiWrapperModel,
+            PATCHPILOT_ONBOARDING_COMPLETE: "1"
+          });
+          appendLine({
+            tone: "success",
+            label: "onboarding",
+            text: `ready: gemini-wrapper using ${defaultGeminiWrapperModel}`
+          });
+          closeOnboarding();
+          return;
+        }
+
+        await openModelSelection("gemini-wrapper", {
+          currentModel: settings.model
+        });
+        return;
+      }
+
+      if (onboarding.step === "gemini-wrapper-url") {
+        const baseUrl = value.trim().replace(/\/$/, "");
+        if (!baseUrl) {
+          setOnboardingNotice({
+            tone: "warning",
+            text: "Gemini-Wrapper URL cannot be empty."
+          });
+          return;
+        }
+
+        try {
+          new URL(baseUrl);
+        } catch {
+          setOnboardingNotice({
+            tone: "warning",
+            text: "Gemini-Wrapper URL must be a valid URL.",
+            detail: "Example: http://localhost:8787/v1"
+          });
+          return;
+        }
+
+        process.env.PATCHPILOT_GEMINI_WRAPPER_BASE_URL = baseUrl;
+        savePatchPilotEnvValues({
+          PATCHPILOT_PROVIDER: "gemini-wrapper",
+          PATCHPILOT_MODEL: defaultGeminiWrapperModel,
+          PATCHPILOT_GEMINI_WRAPPER_BASE_URL: baseUrl
+        });
+        setOnboardingNotice({
+          tone: "success",
+          text: "Gemini-Wrapper URL saved to PatchPilot config.",
+          detail: "PatchPilot uses only this explicit URL and never reads browser cookies."
+        });
+        if (geminiWrapperRequiresApiKey(baseUrl) && !readGeminiWrapperApiKey()) {
+          setOnboarding({
+            step: "gemini-wrapper-key",
+            baseUrl
+          });
+          setOnboardingInput("");
+          setOnboardingIndex(0);
+          return;
+        }
+
+        await openModelSelection("gemini-wrapper", {
+          currentModel: defaultGeminiWrapperModel
+        });
+        return;
+      }
+
+      if (onboarding.step === "gemini-wrapper-key") {
+        const apiKey = value.trim();
+        if (geminiWrapperRequiresApiKey(onboarding.baseUrl) && !apiKey) {
+          setOnboardingNotice({
+            tone: "warning",
+            text: "Gemini-Wrapper API key cannot be empty for remote wrapper URLs."
+          });
+          return;
+        }
+
+        process.env.PATCHPILOT_GEMINI_WRAPPER_API_KEY = apiKey;
+        savePatchPilotEnvValues({
+          PATCHPILOT_PROVIDER: "gemini-wrapper",
+          PATCHPILOT_MODEL: defaultGeminiWrapperModel,
+          PATCHPILOT_GEMINI_WRAPPER_BASE_URL: onboarding.baseUrl,
+          ...(apiKey ? { PATCHPILOT_GEMINI_WRAPPER_API_KEY: apiKey } : {})
+        });
+        setOnboardingNotice({
+          tone: "success",
+          text: apiKey ? "Gemini-Wrapper API key saved to PatchPilot config." : "Gemini-Wrapper local URL saved without an API key."
+        });
+        await openModelSelection("gemini-wrapper", {
+          currentModel: defaultGeminiWrapperModel
         });
         return;
       }
@@ -748,7 +978,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
 
       const visibleModels = selectableModels(onboardingInput, onboarding.models);
       const selectedModel = visibleModels[onboardingIndex] ?? selectModelFromInput(value, visibleModels, onboardingIndex, {
-        allowManual: onboarding.provider !== "ollama"
+        allowManual: onboarding.provider !== "ollama" && onboarding.provider !== "gemini-wrapper"
       });
       if (!selectedModel) {
         setOnboardingNotice({
@@ -789,7 +1019,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   );
 
   const runTask = useCallback(
-    async (task: string) => {
+    async (task: string, overrides: { mode?: AgentMode } = {}) => {
       if (!task.trim() || isRunning) {
         return;
       }
@@ -812,14 +1042,18 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
 
         const abortController = new AbortController();
         abortControllerRef.current = abortController;
+        const effectiveMode = overrides.mode ?? agentMode;
         const taskRunner = new AgentRunner({
           ...runnableSettings,
-          mode: agentMode,
+          allowExternalFileAnalysis: experimentalFlags.fileAnalysis,
+          memoryEnabled: experimentalFlags.memory,
+          mode: effectiveMode,
           signal: abortController.signal,
           sessionStore: sessionStoreRef.current,
+          resumeContext,
           approvalHandler: (request) =>
             new Promise<PermissionDecision>((resolve) => {
-              if (agentMode === "plan") {
+              if (effectiveMode === "plan") {
                 appendLine({
                   kind: "approval",
                   tone: "warning",
@@ -834,7 +1068,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
                 return;
               }
 
-              if (agentMode === "bypass") {
+              if (effectiveMode === "bypass" && ((request.permission === "write" && runnableSettings.allowWrite) || (request.permission === "shell" && runnableSettings.allowShell))) {
                 resolve("allow_session");
                 return;
               }
@@ -896,7 +1130,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         setIsRunning(false);
       }
     },
-    [agentMode, appendLine, isRunning, modelOptions, settings]
+    [agentMode, appendLine, experimentalFlags, isRunning, modelOptions, resumeContext, settings]
   );
 
   const handleSlashCommand = useCallback(
@@ -951,11 +1185,11 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           return;
         case "provider": {
           const nextProvider = args[0]?.toLowerCase();
-          if (nextProvider !== "ollama" && nextProvider !== "gemini" && nextProvider !== "codex" && nextProvider !== "openrouter" && nextProvider !== "nvidia") {
+          if (nextProvider !== "ollama" && nextProvider !== "gemini" && nextProvider !== "gemini-wrapper" && nextProvider !== "codex" && nextProvider !== "openrouter" && nextProvider !== "nvidia") {
             appendLine({
               tone: "accent",
               label: "provider",
-              text: `current ${settings.provider}. Use /provider ollama, gemini, openrouter, nvidia, or codex.`
+              text: `current ${settings.provider}. Use /provider ollama, gemini, gemini-wrapper, openrouter, nvidia, or codex.`
             });
             return;
           }
@@ -980,7 +1214,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
             label: "provider",
             text:
               needsApiKey(nextProvider) && !hasApiKey(nextProvider)
-                ? `${nextProvider} needs an API key. Setup opened.`
+                ? `${nextProvider} needs setup. Setup opened.`
                 : `switched to ${nextProvider} using ${nextModel}`
           });
           return;
@@ -998,6 +1232,10 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           const subagentsEnabled = readToggle(args[0], !settings.subagents);
           setSettings((currentSettings) => ({
             ...currentSettings,
+            subagents: subagentsEnabled
+          }));
+          setExperimentalFlags((currentFlags) => ({
+            ...currentFlags,
             subagents: subagentsEnabled
           }));
           appendLine({
@@ -1058,40 +1296,30 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         case "write":
         case "apply": {
           const writeEnabled = readToggle(args[0], !settings.allowWrite);
-          if (writeEnabled) {
-            requestBypassMode();
-            return;
-          }
-
-          grantedPermissionsRef.current.allowWrite = writeEnabled;
-          applyMode("build", false);
+          setExplicitPermission("write", writeEnabled);
           appendLine({
             tone: "success",
             label: "write",
-            text: "workspace writes require approval in build mode"
+            text: writeEnabled ? "workspace writes are allowed; shell remains separately controlled" : "workspace writes disabled"
           });
           return;
         }
         case "shell": {
           const shellEnabled = readToggle(args[0], !settings.allowShell);
-          if (shellEnabled) {
-            requestBypassMode();
-            return;
-          }
-
-          grantedPermissionsRef.current.allowShell = shellEnabled;
-          applyMode("build", false);
+          setExplicitPermission("shell", shellEnabled);
           appendLine({
             tone: "success",
             label: "shell",
-            text: "shell commands require approval in build mode"
+            text: shellEnabled ? "shell commands are allowed; writes remain separately controlled" : "shell commands disabled"
           });
           return;
         }
         case "model": {
           const requestedModel = normalizeModelAlias(args.join(" ").trim());
           if (!requestedModel) {
-            const models = await loadKnownOrAvailableModels(settings.provider, settings.ollamaUrl, modelOptions, setModelOptions, appendLine);
+            const models = await loadKnownOrAvailableModels(settings.provider, settings.ollamaUrl, modelOptions, setModelOptions, appendLine, {
+              refresh: settings.provider === "gemini-wrapper"
+            });
             if (!models) {
               return;
             }
@@ -1106,12 +1334,14 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           }
 
           {
-            const models = await loadKnownOrAvailableModels(settings.provider, settings.ollamaUrl, modelOptions, setModelOptions, appendLine);
+            const models = await loadKnownOrAvailableModels(settings.provider, settings.ollamaUrl, modelOptions, setModelOptions, appendLine, {
+              refresh: settings.provider === "gemini-wrapper"
+            });
             if (!models) {
               return;
             }
             const nextModel = selectModelFromInput(requestedModel, models, undefined, {
-              allowManual: settings.provider !== "ollama"
+              allowManual: settings.provider !== "ollama" && settings.provider !== "gemini-wrapper"
             });
             if (!nextModel) {
               appendLine({
@@ -1129,13 +1359,15 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         case "models": {
           const requestedModel = args.join(" ").trim();
           if (requestedModel) {
-            const installedModels = await loadKnownOrAvailableModels(settings.provider, settings.ollamaUrl, modelOptions, setModelOptions, appendLine);
+            const installedModels = await loadKnownOrAvailableModels(settings.provider, settings.ollamaUrl, modelOptions, setModelOptions, appendLine, {
+              refresh: settings.provider === "gemini-wrapper"
+            });
             if (!installedModels) {
               return;
             }
 
             const nextModel = selectModelFromInput(requestedModel, installedModels, undefined, {
-              allowManual: settings.provider !== "ollama"
+              allowManual: settings.provider !== "ollama" && settings.provider !== "gemini-wrapper"
             });
             if (!nextModel) {
               appendLine({
@@ -1218,11 +1450,26 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           const sessionId = args[0] ?? "";
           const sessions = await listWorkspaceSessions(settings.workspace);
           const selectedSession = sessionId ? await loadSessionSummary(settings.workspace, sessionId) : sessions[0] ?? null;
+          if (selectedSession) {
+            sessionStoreRef.current = new SessionStore({
+              workspace: settings.workspace,
+              sessionId: selectedSession.sessionId
+            });
+            await sessionStoreRef.current.append({
+              type: "session.resumed",
+              sessionId: selectedSession.sessionId,
+              workspace: settings.workspace,
+              resumedAt: new Date().toISOString()
+            });
+            setResumeContext(await buildSessionResumeContext(settings.workspace, selectedSession.sessionId));
+            setSessionTelemetry(emptySessionTelemetry());
+            setTelemetry(null);
+          }
           appendLine({
             kind: "status",
             tone: selectedSession ? "accent" : "warning",
             label: "resume",
-            text: selectedSession ? `Loaded session ${selectedSession.sessionId}` : "No session available to resume.",
+            text: selectedSession ? `Loaded session ${selectedSession.sessionId} and will inject its summary into the next run.` : "No session available to resume.",
             detail: selectedSession
               ? `workspace ${selectedSession.workspace}\nupdated ${selectedSession.updatedAt}\nmodel ${selectedSession.provider ?? "-"} ${selectedSession.model ?? "-"}\nlast task ${selectedSession.lastTask ?? "-"}`
               : "Run /sessions after at least one PatchPilot run."
@@ -1344,28 +1591,152 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           return;
         }
         case "doctor": {
+          const shouldFix = args.some((arg) => arg.toLowerCase() === "fix" || arg.toLowerCase() === "--fix");
           appendLine({
             tone: "muted",
             label: "doctor",
-            text: "checking local requirements..."
+            text: shouldFix ? "checking local requirements and applying safe fixes..." : "checking local requirements..."
           });
-          const doctorResults = await runDoctor(settings.provider, settings.ollamaUrl, settings.model);
+          const doctorResults = await runDoctor(settings.provider, settings.ollamaUrl, settings.model, {
+            fix: shouldFix
+          });
           for (const result of doctorResults) {
             appendLine({
               tone: result.ok ? "success" : "danger",
               label: result.name,
-              text: result.details
+              text: result.action && result.action !== "check" ? `${result.action}: ${result.details}` : result.details
             });
           }
+          if (!shouldFix && doctorResults.some((result) => result.action === "skipped")) {
+            appendLine({
+              tone: "accent",
+              label: "doctor",
+              text: "Some safe fixes are available. Run /doctor fix to approve them."
+            });
+          }
+          return;
+        }
+        case "cleanup": {
+          const target = readCleanupTarget(args[0]);
+          if (!target) {
+            appendLine({
+              tone: "accent",
+              label: "cleanup",
+              text: "Choose what to clean: /cleanup cache, /cleanup sessions, /cleanup temp, or /cleanup all.",
+              detail: "Sessions deletes saved workspace transcripts. Cache/temp are safe first choices."
+            });
+            return;
+          }
+
+          const removed = await cleanupPatchPilot(settings.workspace, target);
+          if (target === "sessions" || target === "all") {
+            sessionStoreRef.current = new SessionStore({
+              workspace: settings.workspace
+            });
+            await sessionStoreRef.current.create();
+            setResumeContext("");
+            setLines([]);
+            setAdvisorNotes([]);
+            setTelemetry(null);
+            setSessionTelemetry(emptySessionTelemetry());
+          }
+          appendLine({
+            tone: "success",
+            label: "cleanup",
+            text: `cleaned ${removed.join(", ") || target}`
+          });
+          return;
+        }
+        case "experimental": {
+          const requestedFlag = args[0]?.toLowerCase();
+          const requestedValue = args[1]?.toLowerCase();
+          if (!requestedFlag) {
+            setExperimentalOpen(true);
+            setExperimentalIndex(0);
+            setInput("");
+            return;
+          }
+
+          const enabled = readToggle(requestedValue, true);
+          if (requestedFlag === "subagents" || requestedFlag === "agents") {
+            setSettings((currentSettings) => ({
+              ...currentSettings,
+              subagents: enabled
+            }));
+          }
+          savePatchPilotEnvValues({
+            [`PATCHPILOT_EXPERIMENTAL_${requestedFlag.replace(/-/g, "_").toUpperCase()}`]: enabled ? "1" : "0"
+          });
+          setExperimentalFlags((currentFlags) => ({
+            ...currentFlags,
+            ...(requestedFlag === "file-analysis"
+              ? { fileAnalysis: enabled }
+              : requestedFlag === "memory"
+                ? { memory: enabled }
+                : requestedFlag === "subagents" || requestedFlag === "agents"
+                  ? { subagents: enabled }
+                  : {})
+          }));
+          appendLine({
+            tone: "success",
+            label: "experimental",
+            text: `${requestedFlag} ${enabled ? "enabled" : "disabled"}`
+          });
+          return;
+        }
+        case "init": {
+          await ensurePatchPilotGitignore(settings.workspace);
+          appendLine({
+            tone: "accent",
+            label: "init",
+            text: "starting model-driven project init",
+            detail: "PatchPilot will inspect the repository and create or update PATCHPILOT.md with approval-gated writes."
+          });
+          await runTask(patchPilotInitPrompt, {
+            mode: "build"
+          });
           return;
         }
         case "clear":
           setLines([]);
           setAdvisorNotes([]);
           setTelemetry(null);
+          setResumeContext("");
           setSessionTelemetry(emptySessionTelemetry());
           setTranscriptScrollOffset(0);
           setSessionScrollOffset(0);
+          return;
+        case "new":
+          if (isRunning) {
+            appendLine({
+              tone: "warning",
+              label: "new",
+              text: "Cannot start a new session while a run is active.",
+              detail: "Stop the current run first, then use /new again."
+            });
+            return;
+          }
+          sessionStoreRef.current = new SessionStore({
+            workspace: settings.workspace
+          });
+          await sessionStoreRef.current.create();
+          setLines([]);
+          setAdvisorNotes([]);
+          setTelemetry(null);
+          setSessionTelemetry(emptySessionTelemetry());
+          setPendingApproval(null);
+          approvalResolverRef.current = null;
+          setBypassConfirmation(false);
+          setInput("");
+          setTranscriptScrollOffset(0);
+          setSessionScrollOffset(0);
+          setStatus("idle");
+          setWorkState("idle");
+          appendLine({
+            tone: "success",
+            label: "new",
+            text: `started session ${sessionStoreRef.current.sessionId}`
+          });
           return;
         case "exit":
         case "quit":
@@ -1394,6 +1765,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       loadHostSuggestions,
       loadProviderModels,
       modelOptions,
+      isRunning,
       resolveApproval,
       sessionTelemetry,
       settings,
@@ -1449,6 +1821,11 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   useEffect(() => {
     void sessionStoreRef.current.create();
   }, []);
+
+  useEffect(() => {
+    runtimeStateRef.current.isRunning = isRunning;
+    runtimeStateRef.current.hasPendingApproval = Boolean(pendingApproval || bypassConfirmation);
+  }, [bypassConfirmation, isRunning, pendingApproval]);
 
   useEffect(() => {
     if (!props.initialTask || didRunInitialTask.current || onboarding || process.env.PATCHPILOT_ONBOARDING_COMPLETE !== "1") {
@@ -1553,6 +1930,49 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   }, [hostOptions.length, input, isLoadingHosts, isLoadingModels, isRunning, loadHostSuggestions, loadProviderModels, modelOptions.length, onboarding, settings.provider]);
 
   useInput((inputValue, key) => {
+    if (experimentalOpen) {
+      if (key.upArrow) {
+        setExperimentalIndex((currentIndex) => (currentIndex - 1 + experimentalFlagCount()) % experimentalFlagCount());
+        return;
+      }
+
+      if (key.downArrow) {
+        setExperimentalIndex((currentIndex) => (currentIndex + 1) % experimentalFlagCount());
+        return;
+      }
+
+      if (inputValue === " ") {
+        const flag = experimentalFlagAt(experimentalIndex);
+        setExperimentalFlags((currentFlags) => {
+          const nextFlags = {
+            ...currentFlags,
+            [flag]: !currentFlags[flag]
+          };
+          if (flag === "subagents") {
+            setSettings((currentSettings) => ({
+              ...currentSettings,
+              subagents: nextFlags.subagents
+            }));
+          }
+          savePatchPilotEnvValues({
+            PATCHPILOT_EXPERIMENTAL_FILE_ANALYSIS: nextFlags.fileAnalysis ? "1" : "0",
+            PATCHPILOT_EXPERIMENTAL_MEMORY: nextFlags.memory ? "1" : "0",
+            PATCHPILOT_EXPERIMENTAL_SUBAGENTS: nextFlags.subagents ? "1" : "0"
+          });
+          return nextFlags;
+        });
+        return;
+      }
+
+      if (key.return || key.escape || key.leftArrow) {
+        setExperimentalOpen(false);
+        setInput("");
+        return;
+      }
+
+      return;
+    }
+
     if (bypassConfirmation) {
       const normalizedInput = inputValue.toLowerCase();
       if (key.tab) {
@@ -1622,7 +2042,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         return;
       }
 
-      if (optionCount > 0 && key.return && onboarding.step !== "model") {
+      if (optionCount > 0 && key.return) {
         void handleOnboardingSubmit(String(onboardingIndex + 1));
         return;
       }
@@ -1653,6 +2073,18 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
     }
 
     const canUsePanelKeys = input.length === 0 || isRunning;
+    if (canUsePanelKeys && key.upArrow && paletteItems.length === 0) {
+      const setOffset = activeScrollPane === "session" ? setSessionScrollOffset : setTranscriptScrollOffset;
+      setOffset((currentOffset) => currentOffset + 1);
+      return;
+    }
+
+    if (canUsePanelKeys && key.downArrow && paletteItems.length === 0) {
+      const setOffset = activeScrollPane === "session" ? setSessionScrollOffset : setTranscriptScrollOffset;
+      setOffset((currentOffset) => Math.max(0, currentOffset - 1));
+      return;
+    }
+
     if (canUsePanelKeys && key.leftArrow) {
       setActiveScrollPane("session");
       return;
@@ -1688,20 +2120,47 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   });
 
   useEffect(() => {
+    const gracefulStopOrExit = (): void => {
+      const now = Date.now();
+      const state = runtimeStateRef.current;
+      if ((state.isRunning || state.hasPendingApproval) && now - state.lastSigintAt > 1500) {
+        state.lastSigintAt = now;
+        abortControllerRef.current?.abort();
+        approvalResolverRef.current?.("deny");
+        approvalResolverRef.current = null;
+        setPendingApproval(null);
+        setBypassConfirmation(false);
+        setInput("");
+        setStatus("stopping");
+        setWorkState("idle");
+        appendLine({
+          kind: "status",
+          tone: "warning",
+          label: "stop",
+          text: "Stopping current task. Press Ctrl-C again to quit."
+        });
+        return;
+      }
+
+      void unloadUsedOllamaModels(usedOllamaModelsRef.current).finally(() => {
+        process.exit(0);
+      });
+    };
+
     const unloadAndExit = (): void => {
       void unloadUsedOllamaModels(usedOllamaModelsRef.current).finally(() => {
         process.exit(0);
       });
     };
 
-    process.once("SIGINT", unloadAndExit);
-    process.once("SIGTERM", unloadAndExit);
+    process.on("SIGINT", gracefulStopOrExit);
+    process.on("SIGTERM", unloadAndExit);
     return () => {
-      process.off("SIGINT", unloadAndExit);
+      process.off("SIGINT", gracefulStopOrExit);
       process.off("SIGTERM", unloadAndExit);
       void unloadUsedOllamaModels(usedOllamaModelsRef.current);
     };
-  }, []);
+  }, [appendLine]);
 
   useEffect(() => {
     let previousSnapshot = readSystemStats().snapshot;
@@ -1760,7 +2219,13 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         activeHost={activeHost}
       />
 
-      {onboarding ? (
+      {experimentalOpen ? (
+        <ExperimentalPanel
+          flags={experimentalFlags}
+          selectedIndex={experimentalIndex}
+          height={panelHeight}
+        />
+      ) : onboarding ? (
         <OnboardingPanel
           state={onboarding}
           height={panelHeight}
@@ -1829,7 +2294,7 @@ async function loadAvailableModels(
   setModelOptions: React.Dispatch<React.SetStateAction<string[]>>,
   refresh = false
 ): Promise<string[]> {
-  const cacheKey = `${provider}:${provider === "ollama" ? ollamaUrl : "default"}`;
+  const cacheKey = modelCacheKey(provider, ollamaUrl);
   const cachedModels = modelCache.get(cacheKey);
   if (!refresh && cachedModels && cachedModels.expiresAt > Date.now()) {
     setModelOptions(cachedModels.models);
@@ -1848,15 +2313,36 @@ async function loadAvailableModels(
   return models;
 }
 
+function modelCacheKey(provider: ModelProvider, ollamaUrl: string): string {
+  if (provider === "ollama") {
+    return `${provider}:${ollamaUrl}`;
+  }
+
+  if (provider === "gemini-wrapper") {
+    return [
+      provider,
+      readGeminiWrapperMode(),
+      readGeminiWrapperBaseUrl() || "python",
+      readGeminiWrapperPythonCommand(),
+      readGeminiWrapperCookiesJson()
+    ].join(":");
+  }
+
+  return `${provider}:default`;
+}
+
 async function loadKnownOrAvailableModels(
   provider: ModelProvider,
   ollamaUrl: string,
   modelOptions: string[],
   setModelOptions: React.Dispatch<React.SetStateAction<string[]>>,
-  appendLine: (line: LogLineInput) => void
+  appendLine: (line: LogLineInput) => void,
+  options: {
+    refresh?: boolean;
+  } = {}
 ): Promise<string[] | null> {
   try {
-    return modelOptions.length > 0 ? modelOptions : await loadAvailableModels(provider, ollamaUrl, setModelOptions);
+    return !options.refresh && modelOptions.length > 0 ? modelOptions : await loadAvailableModels(provider, ollamaUrl, setModelOptions, options.refresh);
   } catch (error) {
     appendLine({
       tone: "danger",
@@ -1893,7 +2379,7 @@ async function switchModel(
     return;
   }
 
-  if (!installedModels.includes(nextModel) && !(provider !== "ollama" && isPlausibleCloudModelId(nextModel))) {
+  if (!installedModels.includes(nextModel) && !canUseUnverifiedCloudModel(provider, nextModel)) {
     appendLine({
       tone: "warning",
       label: "model",
@@ -1905,7 +2391,9 @@ async function switchModel(
         ? "No models installed on the selected host."
         : provider === "gemini"
           ? "Check GEMINI_API_KEY in PatchPilot config."
-          : provider === "openrouter"
+            : provider === "gemini-wrapper"
+              ? "Check PATCHPILOT_GEMINI_WRAPPER_BASE_URL in PatchPilot config."
+            : provider === "openrouter"
             ? "Check OPENROUTER_API_KEY in PatchPilot config."
             : "Run codex login first."
     });
@@ -1957,7 +2445,7 @@ async function resolveRunnableSettings(
     return null;
   }
 
-  if (installedModels.includes(settings.model) || (settings.provider !== "ollama" && isPlausibleCloudModelId(settings.model))) {
+  if (installedModels.includes(settings.model) || canUseUnverifiedCloudModel(settings.provider, settings.model)) {
     if (!installedModels.includes(settings.model)) {
       appendLine({
         tone: "warning",
@@ -1980,6 +2468,8 @@ async function resolveRunnableSettings(
           ? "No models installed on the selected host."
           : settings.provider === "gemini"
             ? "No Gemini models listed. Check GEMINI_API_KEY in PatchPilot config."
+            : settings.provider === "gemini-wrapper"
+              ? "No Gemini-Wrapper models listed. Check gemini_webapi install and PATCHPILOT_GEMINI_WRAPPER_COOKIES_JSON in PatchPilot config."
             : settings.provider === "openrouter"
               ? "No OpenRouter models listed. Check OPENROUTER_API_KEY in PatchPilot config."
               : "Codex OAuth is not ready. Run codex login."
@@ -2002,7 +2492,6 @@ function buildCommandSuggestionItems(options: {
 
   const trimmedInput = options.input.trimStart().toLowerCase();
   const items: PaletteSuggestion[] = filterSlashCommands(options.input)
-    .slice(0, 6)
     .map((command) => {
       const baseCommand = `/${command.name}`;
       return {
@@ -2040,7 +2529,7 @@ function buildCommandSuggestionItems(options: {
     }
   }
 
-  if (trimmedInput === "/models" || trimmedInput.startsWith("/models") || trimmedInput === "/model" || trimmedInput.startsWith("/model")) {
+  if (trimmedInput.startsWith("/models ") || trimmedInput.startsWith("/model ")) {
     const modelQuery = trimmedInput.replace(/^\/models?/, "").trim();
     if (options.isLoadingModels) {
       items.unshift({
@@ -2065,17 +2554,19 @@ function buildCommandSuggestionItems(options: {
     }
   }
 
-  return items.slice(0, 8);
+  return items;
 }
 
 function getOnboardingOptionCount(onboarding: OnboardingState): number {
   switch (onboarding.step) {
     case "entry":
-      return 6;
+      return 7;
     case "host":
       return onboarding.hosts.length + 1;
     case "api-key-choice":
       return onboarding.hasExistingKey ? 2 : 1;
+    case "gemini-wrapper-model-mode":
+      return 2;
     case "model":
       return onboarding.models.length;
     default:
@@ -2083,10 +2574,10 @@ function getOnboardingOptionCount(onboarding: OnboardingState): number {
   }
 }
 
-function readEntrySelection(value: string, selectedIndex: number): "local" | "host" | "gemini" | "openrouter" | "nvidia" | "codex" | null {
+function readEntrySelection(value: string, selectedIndex: number): "local" | "host" | "gemini" | "gemini-wrapper" | "openrouter" | "nvidia" | "codex" | null {
   const normalizedValue = value.trim().toLowerCase();
   if (!normalizedValue) {
-    return ["local", "host", "gemini", "openrouter", "nvidia", "codex"][selectedIndex] as "local" | "host" | "gemini" | "openrouter" | "nvidia" | "codex";
+    return ["local", "host", "gemini", "gemini-wrapper", "openrouter", "nvidia", "codex"][selectedIndex] as "local" | "host" | "gemini" | "gemini-wrapper" | "openrouter" | "nvidia" | "codex";
   }
 
   if (normalizedValue === "1" || normalizedValue === "local" || normalizedValue === "this device") {
@@ -2101,19 +2592,40 @@ function readEntrySelection(value: string, selectedIndex: number): "local" | "ho
     return "gemini";
   }
 
-  if (normalizedValue === "4" || normalizedValue === "openrouter" || normalizedValue === "open-router") {
+  if (normalizedValue === "4" || normalizedValue === "gemini-wrapper" || normalizedValue === "geminiwrapper" || normalizedValue === "google-wrapper") {
+    return "gemini-wrapper";
+  }
+
+  if (normalizedValue === "5" || normalizedValue === "openrouter" || normalizedValue === "open-router") {
     return "openrouter";
   }
 
-  if (normalizedValue === "5" || normalizedValue === "nvidia" || normalizedValue === "nim") {
+  if (normalizedValue === "6" || normalizedValue === "nvidia" || normalizedValue === "nim") {
     return "nvidia";
   }
 
-  if (normalizedValue === "6" || normalizedValue === "codex") {
+  if (normalizedValue === "7" || normalizedValue === "codex") {
     return "codex";
   }
 
   return null;
+}
+
+function readBooleanEnv(value: string | undefined, fallback: boolean): boolean {
+  if (!value) {
+    return fallback;
+  }
+
+  const normalizedValue = value.trim().toLowerCase();
+  if (["1", "true", "yes", "on", "enabled"].includes(normalizedValue)) {
+    return true;
+  }
+
+  if (["0", "false", "no", "off", "disabled"].includes(normalizedValue)) {
+    return false;
+  }
+
+  return fallback;
 }
 
 function readIndexedSelection(value: string, selectedIndex: number): number | null {
@@ -2157,6 +2669,10 @@ function isPlausibleCloudModelId(value: string): boolean {
   return /^[A-Za-z0-9][A-Za-z0-9._:/+-]*$/.test(value) && value.length >= 3;
 }
 
+function canUseUnverifiedCloudModel(provider: ModelProvider, model: string): boolean {
+  return provider !== "ollama" && provider !== "gemini-wrapper" && isPlausibleCloudModelId(model);
+}
+
 function defaultModelForProvider(provider: ModelProvider, currentModel: string): string {
   if (provider === "nvidia") {
     return currentModel.includes("/") && !currentModel.startsWith("openrouter/") ? currentModel : defaultNvidiaModel;
@@ -2164,6 +2680,10 @@ function defaultModelForProvider(provider: ModelProvider, currentModel: string):
 
   if (provider === "openrouter") {
     return currentModel.includes("/") ? currentModel : defaultOpenRouterModel;
+  }
+
+  if (provider === "gemini-wrapper") {
+    return currentModel === defaultGeminiWrapperModel || currentModel.startsWith("gemini-3-") ? currentModel : defaultGeminiWrapperModel;
   }
 
   if (provider === "gemini") {
@@ -2191,12 +2711,16 @@ function openApiKeyChoice(
 }
 
 function needsApiKey(provider: ModelProvider): provider is ApiKeyProvider {
-  return provider === "gemini" || provider === "openrouter" || provider === "nvidia";
+  return provider === "gemini" || provider === "gemini-wrapper" || provider === "openrouter" || provider === "nvidia";
 }
 
 function hasApiKey(provider: ApiKeyProvider): boolean {
   if (provider === "gemini") {
     return Boolean(readGeminiApiKey());
+  }
+
+  if (provider === "gemini-wrapper") {
+    return Boolean(readGeminiWrapperBaseUrl() || readGeminiWrapperCookiesJson());
   }
 
   if (provider === "openrouter") {

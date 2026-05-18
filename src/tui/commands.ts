@@ -29,14 +29,14 @@ export const slashCommands: SlashCommand[] = [
     description: "Enable or disable explorer/planner/reviewer subagents.",
     category: "session",
     aliases: ["subagents"],
-    detail: "Advisor subagents add short explorer/planner/reviewer briefs before larger workspace tasks. Turn them off with /agents off when you want less noise or lower latency."
+    detail: "Advisor subagents add short explorer/planner/reviewer briefs before larger workspace tasks. They are off by default; turn them on with /agents on when you want extra review context."
   },
   {
     name: "provider",
-    usage: "/provider ollama|gemini|openrouter|nvidia|codex",
-    description: "Switch between Ollama, Gemini, OpenRouter, NVIDIA, and Codex inference.",
+    usage: "/provider ollama|gemini|gemini-wrapper|openrouter|nvidia|codex",
+    description: "Switch between Ollama, Gemini, Gemini-Wrapper, OpenRouter, NVIDIA, and Codex inference.",
     category: "model",
-    detail: "Provider controls where inference runs. Ollama can be local or remote. Gemini, OpenRouter, NVIDIA, and Codex are cloud providers."
+    detail: "Provider controls where inference runs. Gemini-Wrapper runs the installed gemini_webapi bridge with a pasted cookie value and never scans browser profiles."
   },
   {
     name: "think",
@@ -58,6 +58,13 @@ export const slashCommands: SlashCommand[] = [
     usage: "/onboarding",
     description: "Choose provider, configure API key, and select a model.",
     category: "model"
+  },
+  {
+    name: "new",
+    usage: "/new",
+    description: "Start a fresh PatchPilot session and clear the current context.",
+    category: "session",
+    detail: "Clears the visible transcript, telemetry, advisor notes, approvals, and starts a new session file. Provider, model, mode, and permissions stay unchanged."
   },
   {
     name: "write",
@@ -169,9 +176,31 @@ export const slashCommands: SlashCommand[] = [
   },
   {
     name: "doctor",
-    usage: "/doctor",
+    usage: "/doctor [fix]",
     description: "Check Node, Git, and active provider diagnostics.",
-    category: "utility"
+    category: "utility",
+    detail: "/doctor checks requirements without changing the machine. /doctor fix applies safe repairs such as installing the managed Gemini-API bridge."
+  },
+  {
+    name: "cleanup",
+    usage: "/cleanup cache|sessions|temp|all",
+    description: "Clean PatchPilot cache, saved sessions, temp files, or all workspace state.",
+    category: "utility",
+    detail: "Use cache/temp for safe cleanup. sessions/all delete saved workspace transcripts and start a fresh session."
+  },
+  {
+    name: "experimental",
+    usage: "/experimental [file-analysis|memory|subagents] [on|off]",
+    description: "Open or update experimental feature toggles.",
+    category: "utility",
+    detail: "Run /experimental to open the checkbox menu. Use space to toggle file-analysis, memory, and subagents."
+  },
+  {
+    name: "init",
+    usage: "/init",
+    description: "Create PATCHPILOT.md workspace instructions.",
+    category: "utility",
+    detail: "Creates a PATCHPILOT.md file similar to AGENTS.md or CLAUDE.md and ensures .patchpilot/ stays ignored."
   },
   {
     name: "clear",

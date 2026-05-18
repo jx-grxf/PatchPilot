@@ -1,5 +1,6 @@
 import { CodexCliClient } from "./codex.js";
 import { GeminiClient } from "./gemini.js";
+import { GeminiWrapperClient } from "./geminiWrapper.js";
 import { NvidiaClient } from "./nvidia.js";
 import { OllamaClient } from "./ollama.js";
 import { OpenRouterClient } from "./openrouter.js";
@@ -12,6 +13,10 @@ export function createModelClient(options: {
 }): ModelClient {
   if (options.provider === "gemini") {
     return new GeminiClient();
+  }
+
+  if (options.provider === "gemini-wrapper") {
+    return new GeminiWrapperClient();
   }
 
   if (options.provider === "codex") {
@@ -39,6 +44,10 @@ export function normalizeModelProvider(value: string): ModelProvider {
   const normalizedValue = value.trim().toLowerCase();
   if (normalizedValue === "gemini" || normalizedValue === "google") {
     return "gemini";
+  }
+
+  if (normalizedValue === "gemini-wrapper" || normalizedValue === "geminiwrapper" || normalizedValue === "google-wrapper") {
+    return "gemini-wrapper";
   }
 
   if (normalizedValue === "codex" || normalizedValue === "openai" || normalizedValue === "openai-codex") {

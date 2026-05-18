@@ -1,11 +1,15 @@
 <div align="center">
 
+<img src="https://raw.githubusercontent.com/jx-grxf/PatchPilot/main/docs/showcase/patchpilot-logo.png" alt="PatchPilot logo" width="112">
+
 # PatchPilot
 
 **A local-first coding-agent TUI that makes repo changes visible, permissioned, and easy to review across local, remote, and cloud model routes.**
 
 [![CI](https://github.com/jx-grxf/PatchPilot/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/jx-grxf/PatchPilot/actions/workflows/ci.yml)
-![Status](https://img.shields.io/badge/status-preview%20agent-0ea5e9)
+[![npm](https://img.shields.io/npm/v/@jx-grxf/patchpilot?logo=npm&color=cb3837)](https://www.npmjs.com/package/@jx-grxf/patchpilot)
+[![npm downloads](https://img.shields.io/npm/dm/@jx-grxf/patchpilot?logo=npm&color=0ea5e9)](https://www.npmjs.com/package/@jx-grxf/patchpilot)
+![Status](https://img.shields.io/badge/status-v1.0.0-0ea5e9)
 ![TypeScript](https://img.shields.io/badge/TypeScript-5.9-3178C6?logo=typescript&logoColor=white)
 ![Node](https://img.shields.io/badge/Node.js-22%2B-339933?logo=node.js&logoColor=white)
 ![Ink](https://img.shields.io/badge/TUI-Ink-111827)
@@ -13,22 +17,29 @@
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 <p>
-  <strong>Visible tools.</strong> Explicit permissions. Local Ollama. Remote Ollama. Gemini. OpenRouter. NVIDIA. Codex.
+  <strong>Visible tools.</strong> Explicit permissions. Local Ollama. Remote Ollama. Gemini. Gemini-Wrapper. OpenRouter. NVIDIA. Codex.
 </p>
 
 </div>
 
 ---
 
-## Showcase
+## Product Visual
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/jx-grxf/PatchPilot/main/docs/showcase/patchpilot-banner.png" alt="PatchPilot product visual" width="920">
+</p>
+
+## Current TUI Screenshot
 
 <p align="center">
   <img src="docs/showcase/patchpilot-showcase.svg" alt="PatchPilot terminal interface overview" width="920">
 </p>
 
-PatchPilot is a terminal interface for running coding-agent tasks inside a repository. It shows what the agent is doing, keeps risky actions behind explicit permissions, and supports local Ollama, remote Ollama, Google Gemini, OpenRouter, NVIDIA NIM-compatible endpoints, and Codex CLI OAuth.
+PatchPilot is a terminal interface for running coding-agent tasks inside a repository. It shows what the agent is doing, keeps risky actions behind explicit permissions, and supports local Ollama, remote Ollama, Google Gemini, experimental Gemini Web wrapper routing, OpenRouter, NVIDIA NIM-compatible endpoints, and Codex CLI OAuth.
 
-PatchPilot is still preview software. The v0.4 line focuses on making the TUI, approvals, and provider selection reliable enough for real project use; it is not a finished autonomous PR bot or a v1 desktop product.
+> [!IMPORTANT]
+> PatchPilot v1.0.0 is the first stable CLI release for visible, permissioned coding-agent runs. Experimental provider and memory/file-analysis features remain opt-in.
 
 ---
 
@@ -36,6 +47,7 @@ PatchPilot is still preview software. The v0.4 line focuses on making the TUI, a
 
 - [Highlights](#highlights)
 - [Why This Exists](#why-this-exists)
+- [Current Workflow](#current-workflow)
 - [Requirements](#requirements)
 - [Quick Start](#quick-start)
 - [Usage](#usage)
@@ -55,7 +67,7 @@ PatchPilot is still preview software. The v0.4 line focuses on making the TUI, a
 |---|---|
 | Local-first by default | Uses Ollama on your own machine unless you choose another route. |
 | Remote GPU workflow | Connect your laptop TUI to an Ollama host on a desktop, LAN, or Tailscale machine. |
-| Cloud provider routes | Gemini, OpenRouter, NVIDIA, and Codex CLI OAuth are available from one TUI. |
+| Cloud provider routes | Gemini, Gemini-Wrapper, OpenRouter, NVIDIA, and Codex CLI OAuth are available from one TUI. |
 | Guided onboarding | First-run setup walks through local/remote mode, provider auth, host discovery, and model choice. |
 | Observable agent loop | Transcript, tool calls, telemetry, token counts, provider cache hits, latency, and cost estimates are visible. |
 | Explicit permissions | Risky tools show a sticky approval box unless trusted bypass is explicitly accepted. |
@@ -68,6 +80,8 @@ PatchPilot is still preview software. The v0.4 line focuses on making the TUI, a
 ## Why This Exists
 
 Most local coding-agent experiments fall into one of two traps: they are either raw scripts that feel painful to use, or polished tools that hide too much of what is happening. PatchPilot aims for the middle: a practical TUI where every file read, search, proposed write, command, model route, and token/cost signal stays visible.
+
+## Current Workflow
 
 The core workflow is intentionally simple:
 
@@ -86,7 +100,7 @@ Mode behavior is intentionally explicit: `plan` is read-only, `build` keeps writ
 | Node.js 22 or newer | Required for the published CLI and source builds. |
 | Git | Required for repository context and normal development workflows. |
 | Ollama | Optional, only needed for local or remote Ollama inference. |
-| Provider API key | Optional, only needed for Gemini, OpenRouter, or NVIDIA routes. |
+| Provider API key | Optional, only needed for Gemini, Gemini-Wrapper remote URLs, OpenRouter, or NVIDIA routes. |
 | Codex CLI login | Optional, only needed for the Codex provider route. |
 
 ## Quick Start
@@ -136,6 +150,9 @@ patchpilot "find likely test gaps in this repo"
 
 Use bypass permissions only when you intentionally want PatchPilot to modify files or run commands without per-tool approval:
 
+> [!WARNING]
+> `--apply --allow-shell` bypasses per-tool approval. Use it only in trusted workspaces and review `/diff` before committing.
+
 ```bash
 patchpilot "add tests for the parser" --apply --allow-shell
 ```
@@ -156,15 +173,16 @@ patchpilot resume [session-id] [--workspace <path>]
 | Option | Description |
 |---|---|
 | `--workspace <path>` | Project root the agent may inspect. Defaults to the current directory. |
-| `--provider <name>` | Model provider route. Supports `ollama`, `gemini`/`google`, `openrouter`/`open-router`, `nvidia`/`nim`, and `codex`/`openai`/`openai-codex`. |
+| `--provider <name>` | Model provider route. Supports `ollama`, `gemini`/`google`, `gemini-wrapper`/`geminiwrapper`, `openrouter`/`open-router`, `nvidia`/`nim`, and `codex`/`openai`/`openai-codex`. |
 | `--model <name>` | Model name for the selected provider. |
 | `--ollama-url <url>` | Ollama base URL. Defaults to `http://127.0.0.1:11434`. |
 | `--steps <count>` | Maximum agent loop steps before stopping. |
-| `--thinking <mode>` | Step-budget mode: `fixed` or `adaptive`. |
+| `--thinking <mode>` | Step-budget mode: `fixed` or `adaptive`. Defaults to `adaptive`. |
 | `--reasoning <effort>` | Provider reasoning effort: `none`, `low`, `medium`, `high`, `xhigh`, or `adaptive`. Unsupported provider/model combinations fall back to provider defaults. |
 | `--apply` | Allows file writes inside the workspace. |
 | `--allow-shell` | Allows shell commands inside the workspace. |
-| `--no-subagents` | Disables explorer/planner/reviewer advisor calls for faster runs. |
+| `--subagents` | Enables explorer/planner/reviewer advisor calls. Defaults to off. |
+| `--no-subagents` | Disables explorer/planner/reviewer advisor calls. |
 
 Useful slash commands inside the TUI:
 
@@ -180,7 +198,7 @@ Useful slash commands inside the TUI:
 | `/write on\|off` | Requests trusted bypass for direct writes, or returns to approval-gated build mode. |
 | `/shell on\|off` | Requests trusted bypass for direct shell commands, or returns to approval-gated build mode. |
 | `/agents on\|off` | Enable or disable advisor subagents. |
-| `/provider ollama\|gemini\|openrouter\|nvidia\|codex` | Switch inference provider. |
+| `/provider ollama\|gemini\|gemini-wrapper\|openrouter\|nvidia\|codex` | Switch inference provider. |
 | `/model <query>` | Search and switch the model for the current provider. |
 | `/models [query\|number]` | Refresh, search, browse, or select provider models. |
 | `/connect` | Scan LAN/Tailscale for reachable Ollama hosts. |
@@ -188,8 +206,13 @@ Useful slash commands inside the TUI:
 | `/eject [model\|all]` | Unload Ollama model(s) from the active host. |
 | `/hosts` | Re-scan reachable Ollama hosts. |
 | `/doctor` | Run provider diagnostics from inside the TUI. |
+| `/doctor fix` | Apply safe doctor repairs, such as installing the managed Gemini-API bridge. |
+| `/cleanup cache\|sessions\|temp\|all` | Clean PatchPilot workspace state. |
+| `/experimental` | Open the experimental checkbox menu; use Space to toggle file-analysis, memory, and subagents. |
+| `/init` | Ask the selected model to inspect the repository and create or update `PATCHPILOT.md`. |
+| `/new` | Start a fresh session and clear current context. |
 | `/sessions` | List recent sessions for the current workspace. |
-| `/resume [session-id]` | Load a previous session summary. |
+| `/resume [session-id]` | Resume a previous session and inject its compact summary into the next run. |
 | `/diff` | Show the current Git diff. |
 | `/approve once\|session` | Approve a pending risky tool request. |
 | `/deny` | Deny a pending risky tool request. |
@@ -198,6 +221,8 @@ Useful slash commands inside the TUI:
 
 The transcript and sidebar have internal scroll areas. With an empty prompt, use left/right to choose the sidebar or transcript, then Page Up/Page Down and Home/End to navigate long sessions.
 
+Experimental file analysis allows `inspect_document` to read supported files outside the workspace after per-path approval when the user provides an absolute path, including PNG/JPEG/WebP/GIF metadata, PDFs, DOCX, Markdown, and text/code files. Experimental memory stores durable workspace notes in `~/.patchpilot/memory.sqlite`; `memory_remember` requires write approval and `memory_search` is read-only.
+
 ## Providers
 
 | Provider route | Accepted values | Default model | Best for | Setup |
@@ -205,6 +230,7 @@ The transcript and sidebar have internal scroll areas. With an empty prompt, use
 | Ollama local | `ollama` | `qwen2.5-coder:7b` | Private local coding work and offline experiments. | Install Ollama, pull a model, run `patchpilot`. |
 | Ollama remote | `ollama` with `--ollama-url` or `/connect` | Host model inventory | Laptop editing with a stronger desktop/server GPU. | Expose Ollama on the host, then use `/connect` or `--ollama-url`. |
 | Google Gemini | `gemini`, `google` | `gemini-2.5-flash` | Fast cloud inference through a Gemini API key. | Store `GEMINI_API_KEY` in `~/.patchpilot/.env` or use onboarding. |
+| Gemini-Wrapper | `gemini-wrapper`, `geminiwrapper` | `auto` | Experimental advanced bridge to the pinned `gemini_webapi` Python wrapper, with optional HTTP-wrapper mode. | Use onboarding to paste `__Secure-1PSID`, then run `/doctor fix` to approve the pinned managed bridge install. PatchPilot creates `~/.patchpilot/gemini-cookies.json`, asks the WebAPI for real available models, and never scans browser cookies. |
 | OpenRouter | `openrouter`, `open-router` | `openrouter/auto` | Broad model routing, auto model selection, and free variants. | Store `OPENROUTER_API_KEY` in `~/.patchpilot/.env` or use onboarding. |
 | NVIDIA | `nvidia`, `nim` | `meta/llama-3.1-70b-instruct` | NVIDIA NIM OpenAI-compatible endpoints. | Store `NVIDIA_API_KEY` in `~/.patchpilot/.env` or use onboarding. |
 | Codex CLI | `codex`, `openai`, `openai-codex` | `gpt-5.5` | Using an existing Codex CLI OAuth login. | Run `codex login`, then `patchpilot --provider codex`. |
@@ -214,6 +240,7 @@ Examples:
 ```bash
 patchpilot --provider ollama --model qwen2.5-coder:7b
 patchpilot --provider gemini --model gemini-2.5-flash
+patchpilot --provider gemini-wrapper --model auto
 patchpilot --provider openrouter --model openrouter/auto
 patchpilot --provider nvidia --model meta/llama-3.1-70b-instruct
 patchpilot --provider codex --model gpt-5.5
@@ -227,6 +254,7 @@ Provider diagnostics:
 ```bash
 patchpilot doctor --provider ollama
 patchpilot doctor --provider gemini
+patchpilot doctor --provider gemini-wrapper
 patchpilot doctor --provider openrouter
 patchpilot doctor --provider nvidia
 patchpilot doctor --provider codex
@@ -236,7 +264,33 @@ PatchPilot caches model discovery for a short TTL inside the running TUI, so nor
 
 PatchPilot reads provider cache telemetry when the provider reports it, for example Codex cached input tokens or OpenRouter `prompt_tokens_details.cached_tokens`, then displays cache hit rate as `cached / input`.
 
-Reasoning support is provider and model dependent. Codex accepts fixed reasoning levels. OpenRouter receives `reasoning.effort` only for models whose metadata advertises reasoning support. Gemini uses Thinking configuration where the selected model exposes it; some Gemini models cannot disable thinking. Ollama only receives native `think` values for known thinking model families. NVIDIA reasoning effort is limited to supported GPT-OSS NIM routes.
+Reasoning support is provider and model dependent. Codex accepts fixed reasoning levels. OpenRouter receives `reasoning.effort` only for models whose metadata advertises reasoning support. Gemini uses Thinking configuration where the selected model exposes it; some Gemini models cannot disable thinking. Gemini-Wrapper stays on wrapper defaults because wrapper compatibility varies. Ollama only receives native `think` values for known thinking model families. NVIDIA reasoning effort is limited to supported GPT-OSS NIM routes.
+
+Gemini-Wrapper is intentionally explicit and unofficial. In default `python` bridge mode, PatchPilot creates a managed Python venv and installs the pinned wrapper there only after `/doctor fix` or `patchpilot doctor --fix` approval:
+
+> [!CAUTION]
+> `__Secure-1PSID` acts like a Google session token. Never paste it into issues, logs, chats, or commits.
+
+```sh
+~/.patchpilot/gemini-wrapper-venv
+```
+
+This avoids Homebrew Python's externally-managed-environment / PEP 668 block. Then PatchPilot runs the bridge command itself for model discovery and chat requests. Use `/onboarding`, choose Gemini-Wrapper, paste `__Secure-1PSID`, and optionally paste `__Secure-1PSIDTS`. PatchPilot writes `~/.patchpilot/gemini-cookies.json` with owner-only permissions and stores the file path in `~/.patchpilot/.env`.
+
+```sh
+PATCHPILOT_PROVIDER=gemini-wrapper
+PATCHPILOT_MODEL=auto
+PATCHPILOT_GEMINI_WRAPPER_MODE=python
+PATCHPILOT_GEMINI_WRAPPER_COOKIES_JSON=/Users/you/.patchpilot/gemini-cookies.json
+PATCHPILOT_GEMINI_WRAPPER_MIN_INTERVAL_MS=1500
+PATCHPILOT_GEMINI_WRAPPER_TIMEOUT_MS=180000
+```
+
+The cookie JSON must contain `__Secure-1PSID`; `__Secure-1PSIDTS` is optional for some accounts. If the optional timestamp expires, PatchPilot retries once without it. Transient WebAPI network timeouts are retried inside the bridge. `auto` lets Gemini Web pick its default model and avoids relying on brittle Web model headers. Env alternatives are `GEMINI_SECURE_1PSID` and `GEMINI_SECURE_1PSIDTS`. See [docs/gemini-wrapper.md](docs/gemini-wrapper.md) for the exact setup steps.
+
+PatchPilot also sets `GEMINI_COOKIE_PATH` to `~/.patchpilot/gemini-webapi-cache` for the Python process so refreshed wrapper cookies stay in a local owner-only cache instead of a temporary directory.
+
+PatchPilot does not inspect Chrome, Safari, Firefox, Arc, Edge, Brave, Keychain, or browser cookie stores, and it does not reuse Google web-login sessions automatically. Advanced users can still set `PATCHPILOT_GEMINI_WRAPPER_MODE=http` plus `PATCHPILOT_GEMINI_WRAPPER_BASE_URL` for an explicit OpenAI-compatible `/v1` endpoint.
 
 OpenRouter `:free` models are rate-limited by OpenRouter. PatchPilot warns when a selected model ID ends in `:free`, and OpenRouter credit or rate-limit failures are surfaced as explicit provider errors.
 
@@ -313,7 +367,7 @@ PatchPilot now has sticky approval prompts and a Git diff command, but it still 
 | TUI | Ink, React, ink-text-input |
 | Agent protocol | JSON command envelope validated with Zod |
 | Sessions | Append-only JSONL in `.patchpilot/sessions` plus global index in `~/.patchpilot` |
-| Providers | Ollama chat API, Gemini generateContent API, OpenRouter OpenAI-compatible API, NVIDIA OpenAI-compatible API, Codex CLI OAuth backend |
+| Providers | Ollama chat API, Gemini generateContent API, Gemini-Wrapper OpenAI-compatible API, OpenRouter OpenAI-compatible API, NVIDIA OpenAI-compatible API, Codex CLI OAuth backend |
 | Tests | Vitest |
 | CI | GitHub Actions |
 
@@ -355,6 +409,7 @@ Release notes are kept in [docs/releases](docs/releases).
 
 | Version | Notes |
 |---|---|
+| `v1.0.0` | [Release notes](docs/releases/v1.0.0.md) |
 | `v0.4.0` | [Release notes](docs/releases/v0.4.0.md) |
 | `v0.3.1-beta` | [Release notes](docs/releases/v0.3.1-beta.md) |
 | `v0.3.0` | [Release notes](docs/releases/v0.3.0.md) |

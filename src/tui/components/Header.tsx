@@ -42,8 +42,8 @@ export function Header(props: {
       <Text color={modelHint.color} wrap="truncate">
         {props.provider}/{shortenMiddle(props.model, 34)} <Text color="gray">on</Text> {shortenMiddle(hostLabel, 20)} <Text color="gray">mode</Text>{" "}
         <Text color={modeColor(props.agentMode)}>{formatMode(props.agentMode)}</Text>{" "}
-        <Text color="gray">write</Text> <Text color={permissionColor(props.agentMode)}>{modePermissionLabel(props.agentMode, "write")}</Text>{" "}
-        <Text color="gray">shell</Text> <Text color={permissionColor(props.agentMode)}>{modePermissionLabel(props.agentMode, "shell")}</Text>
+        <Text color="gray">write</Text> <Text color={permissionColor(props.agentMode, props.allowWrite)}>{modePermissionLabel(props.agentMode, "write", props)}</Text>{" "}
+        <Text color="gray">shell</Text> <Text color={permissionColor(props.agentMode, props.allowShell)}>{modePermissionLabel(props.agentMode, "shell", props)}</Text>
       </Text>
       <Text color="gray" wrap="truncate">
         {shortenMiddle(props.status, 58)}  {formatSessionTokens(props.sessionTelemetry)}  {formatCost(props.sessionTelemetry.estimatedCostUsd)}  {formatSpeed(props.telemetry)} {formatLatency(props.telemetry)}
@@ -64,8 +64,8 @@ function modeColor(agentMode: AgentMode): InkColor {
   return agentMode === "build" ? "yellow" : "green";
 }
 
-function permissionColor(agentMode: AgentMode): InkColor {
-  if (agentMode === "bypass") {
+function permissionColor(agentMode: AgentMode, enabled = false): InkColor {
+  if (enabled || agentMode === "bypass") {
     return "red";
   }
 

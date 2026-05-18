@@ -5,7 +5,7 @@ export type ChatMessage = {
   content: string;
 };
 
-export type ModelProvider = "ollama" | "gemini" | "codex" | "openrouter" | "nvidia";
+export type ModelProvider = "ollama" | "gemini" | "gemini-wrapper" | "codex" | "openrouter" | "nvidia";
 export type ReasoningEffort = "low" | "medium" | "high" | "xhigh";
 export type ProviderReasoningEffort = ReasoningEffort | "none";
 
@@ -45,6 +45,8 @@ export type AgentToolName =
   | "file_info"
   | "search_text"
   | "inspect_document"
+  | "memory_remember"
+  | "memory_search"
   | "git_status"
   | "git_diff"
   | "list_changed_files"
@@ -64,9 +66,9 @@ export type ToolRisk = "low" | "medium" | "high";
 
 export type ToolSideEffect = "none" | "write" | "shell";
 
-export type ToolPermission = "none" | "write" | "shell";
+export type ToolPermission = "none" | "write" | "shell" | "external_file";
 
-export type ToolCategory = "read" | "search" | "write" | "shell" | "git" | "test" | "document";
+export type ToolCategory = "read" | "search" | "write" | "shell" | "git" | "test" | "document" | "memory";
 
 export type ToolSpec = {
   name: AgentToolName;
@@ -172,6 +174,12 @@ export type SessionEvent =
       sessionId: string;
       workspace: string;
       createdAt: string;
+    }
+  | {
+      type: "session.resumed";
+      sessionId: string;
+      workspace: string;
+      resumedAt: string;
     }
   | {
       type: "run.started";

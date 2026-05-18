@@ -175,6 +175,92 @@ describe("WorkspaceTools", () => {
     expect(result.content).toContain("Hallo aus DOCX");
   });
 
+  it("inspects external images when experimental file analysis is enabled", async () => {
+    const outsideRoot = await mkdtemp(path.join(tmpdir(), "patchpilot-image-"));
+    const imagePath = path.join(outsideRoot, "sample.png");
+    await writeFile(imagePath, Buffer.from("89504e470d0a1a0a0000000d4948445200000002000000030802000000", "hex"));
+    const tools = new WorkspaceTools({
+      root: tempRoot,
+      allowWrite: false,
+      allowShell: false,
+      allowExternalFileAnalysis: true,
+      approvalHandler: async (request) => (request.permission === "external_file" ? "allow_once" : "deny")
+    });
+
+    const result = await tools.execute({
+      name: "inspect_document",
+      arguments: {
+        path: imagePath
+      }
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.content).toContain("dimensions: 2x3");
+    await rm(outsideRoot, { recursive: true, force: true });
+  });
+
+  it("blocks external files when experimental file analysis is disabled", async () => {
+    const outsideRoot = await mkdtemp(path.join(tmpdir(), "patchpilot-external-"));
+    const filePath = path.join(outsideRoot, "note.md");
+    await writeFile(filePath, "# outside\n");
+    const tools = new WorkspaceTools({
+      root: tempRoot,
+      allowWrite: false,
+      allowShell: false
+    });
+
+    const result = await tools.execute({
+      name: "inspect_document",
+      arguments: {
+        path: filePath
+      }
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.summary).toContain("file-analysis");
+    await rm(outsideRoot, { recursive: true, force: true });
+  });
+
+  it("stores and searches workspace memory when experimental memory is enabled", async () => {
+    const configRoot = await mkdtemp(path.join(tmpdir(), "patchpilot-memory-config-"));
+    const previousConfigDir = process.env.PATCHPILOT_CONFIG_DIR;
+    process.env.PATCHPILOT_CONFIG_DIR = configRoot;
+    try {
+      const tools = new WorkspaceTools({
+        root: tempRoot,
+        allowWrite: false,
+        allowShell: false,
+        memoryEnabled: true,
+        approvalHandler: async (request) => (request.tool === "memory_remember" ? "allow_once" : "deny")
+      });
+
+      const remember = await tools.execute({
+        name: "memory_remember",
+        arguments: {
+          content: "Gemini wrapper should default to auto mode.",
+          tags: ["provider"]
+        }
+      });
+      expect(remember.ok).toBe(true);
+
+      const search = await tools.execute({
+        name: "memory_search",
+        arguments: {
+          query: "gemini auto"
+        }
+      });
+      expect(search.ok).toBe(true);
+      expect(search.content).toContain("Gemini wrapper");
+    } finally {
+      if (previousConfigDir === undefined) {
+        delete process.env.PATCHPILOT_CONFIG_DIR;
+      } else {
+        process.env.PATCHPILOT_CONFIG_DIR = previousConfigDir;
+      }
+      await rm(configRoot, { recursive: true, force: true });
+    }
+  });
+
   it("rejects unknown tool calls with an explicit error", async () => {
     const tools = new WorkspaceTools({
       root: tempRoot,
@@ -413,6 +499,10 @@ describe("WorkspaceTools", () => {
     await writeFile(path.join(tempRoot, ".npmrc"), "//registry.npmjs.org/:_authToken=secret-npm\n");
     await writeFile(path.join(tempRoot, "nested", ".env.local"), "OPENROUTER_API_KEY=secret-nested\n");
     await writeFile(path.join(tempRoot, ".patchpilot", "sessions", "session.jsonl"), "secret-session\n");
+    await mkdir(path.join(tempRoot, "Library", "Application Support", "Google", "Chrome", "Default", "Network"), {
+      recursive: true
+    });
+    await writeFile(path.join(tempRoot, "Library", "Application Support", "Google", "Chrome", "Default", "Network", "Cookies"), "secret-browser-cookie\n");
     await writeFile(path.join(tempRoot, "note.txt"), "ordinary secret word\n");
 
     const tools = new WorkspaceTools({
@@ -434,6 +524,7 @@ describe("WorkspaceTools", () => {
     expect(result.content).not.toContain("secret-npm");
     expect(result.content).not.toContain("secret-nested");
     expect(result.content).not.toContain("secret-session");
+    expect(result.content).not.toContain("secret-browser-cookie");
   });
 
   it("blocks destructive simple shell commands even when shell is enabled", async () => {
@@ -483,6 +574,104 @@ describe("WorkspaceTools", () => {
 
     expect(result.ok).toBe(false);
     expect(result.summary).toContain("destructive rm");
+    expect(approvals).toBe(0);
+  });
+
+  it("allows approved shell pipes inside the workspace", async () => {
+    let approvals = 0;
+    const tools = new WorkspaceTools({
+      root: tempRoot,
+      allowWrite: false,
+      allowShell: false,
+      approvalHandler: async () => {
+        approvals += 1;
+        return "allow_once";
+      }
+    });
+
+    const result = await tools.execute({
+      name: "run_shell",
+      arguments: {
+        command: "printf hello | wc -c"
+      }
+    });
+
+    expect(approvals).toBe(1);
+    expect(result.summary).toContain("command exited");
+  });
+
+  it("blocks absolute shell path arguments outside the workspace before approval", async () => {
+    let approvals = 0;
+    const tools = new WorkspaceTools({
+      root: tempRoot,
+      allowWrite: false,
+      allowShell: false,
+      approvalHandler: async () => {
+        approvals += 1;
+        return "allow_once";
+      }
+    });
+
+    const result = await tools.execute({
+      name: "run_shell",
+      arguments: {
+        command: "cat /etc/shells | head -n 1"
+      }
+    });
+
+    expect(approvals).toBe(0);
+    expect(result.ok).toBe(false);
+    expect(result.summary).toContain("absolute path arguments outside the workspace are blocked");
+  });
+
+  it("blocks dangerous git and npm subcommands after global options", async () => {
+    const tools = new WorkspaceTools({
+      root: tempRoot,
+      allowWrite: false,
+      allowShell: false,
+      approvalHandler: async () => "allow_once"
+    });
+
+    const gitResult = await tools.execute({
+      name: "run_shell",
+      arguments: {
+        command: "git -C . reset --hard"
+      }
+    });
+    expect(gitResult.ok).toBe(false);
+    expect(gitResult.summary).toContain("git reset");
+
+    const npmResult = await tools.execute({
+      name: "run_shell",
+      arguments: {
+        command: "npm --prefix . publish"
+      }
+    });
+    expect(npmResult.ok).toBe(false);
+    expect(npmResult.summary).toContain("npm publish");
+  });
+
+  it("blocks sensitive shell path arguments before approval", async () => {
+    let approvals = 0;
+    const tools = new WorkspaceTools({
+      root: tempRoot,
+      allowWrite: false,
+      allowShell: false,
+      approvalHandler: async () => {
+        approvals += 1;
+        return "allow_once";
+      }
+    });
+
+    const result = await tools.execute({
+      name: "run_shell",
+      arguments: {
+        command: "cat ~/.npmrc"
+      }
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.summary).toContain("sensitive path");
     expect(approvals).toBe(0);
   });
 

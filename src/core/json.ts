@@ -8,6 +8,8 @@ const toolNameSchema = z.enum([
   "file_info",
   "search_text",
   "inspect_document",
+  "memory_remember",
+  "memory_search",
   "git_status",
   "git_diff",
   "list_changed_files",
@@ -37,7 +39,8 @@ const agentResponseSchema = z.discriminatedUnion("action", [
 ]);
 
 export function parseAgentResponse(rawContent: string): AgentResponse {
-  const parsed = normalizeModelJson(JSON.parse(extractJson(rawContent)));
+  const jsonContent = extractJson(rawContent);
+  const parsed = normalizeModelJson(parseJsonWithControlCharRepair(jsonContent));
   return agentResponseSchema.parse(parsed);
 }
 
@@ -74,6 +77,76 @@ function extractJson(rawContent: string): string {
   }
 
   throw new Error("Model response did not contain a JSON object.");
+}
+
+function parseJsonWithControlCharRepair(jsonContent: string): unknown {
+  try {
+    return JSON.parse(jsonContent);
+  } catch (error) {
+    if (!isControlCharacterJsonError(error)) {
+      throw error;
+    }
+
+    return JSON.parse(escapeControlCharactersInsideStrings(jsonContent));
+  }
+}
+
+function isControlCharacterJsonError(error: unknown): boolean {
+  return error instanceof SyntaxError && /control character|bad escaped character|bad character/i.test(error.message);
+}
+
+function escapeControlCharactersInsideStrings(jsonContent: string): string {
+  let repaired = "";
+  let insideString = false;
+  let escaped = false;
+
+  for (const character of jsonContent) {
+    if (!insideString) {
+      if (character.charCodeAt(0) < 0x20) {
+        continue;
+      }
+      repaired += character;
+      if (character === "\"") {
+        insideString = true;
+      }
+      continue;
+    }
+
+    if (escaped) {
+      repaired += character;
+      escaped = false;
+      continue;
+    }
+
+    if (character === "\\") {
+      repaired += character;
+      escaped = true;
+      continue;
+    }
+
+    if (character === "\"") {
+      repaired += character;
+      insideString = false;
+      continue;
+    }
+
+    switch (character) {
+      case "\n":
+        repaired += "\\n";
+        break;
+      case "\r":
+        repaired += "\\r";
+        break;
+      case "\t":
+        repaired += "\\t";
+        break;
+      default:
+        repaired += character.charCodeAt(0) < 0x20 ? `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}` : character;
+        break;
+    }
+  }
+
+  return repaired;
 }
 
 function normalizeModelJson(parsed: unknown): unknown {

@@ -2,9 +2,10 @@ import { describe, expect, it } from "vitest";
 import { initialAgentMode, modePermissionLabel, nextAgentMode, permissionsForMode } from "../src/tui/modes.js";
 
 describe("agent modes", () => {
-  it("starts in bypass when global write or shell permissions are already enabled", () => {
-    expect(initialAgentMode({ allowWrite: true, allowShell: false })).toBe("bypass");
-    expect(initialAgentMode({ allowWrite: false, allowShell: true })).toBe("bypass");
+  it("starts in build for partial permissions and bypass only when both write and shell are enabled", () => {
+    expect(initialAgentMode({ allowWrite: true, allowShell: false })).toBe("build");
+    expect(initialAgentMode({ allowWrite: false, allowShell: true })).toBe("build");
+    expect(initialAgentMode({ allowWrite: true, allowShell: true })).toBe("bypass");
     expect(initialAgentMode({ allowWrite: false, allowShell: false })).toBe("plan");
   });
 

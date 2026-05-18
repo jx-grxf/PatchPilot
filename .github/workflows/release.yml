@@ -39,14 +39,28 @@ jobs:
             exit 1
           fi
 
+      - name: Verify release notes
+        run: |
+          RELEASE_NOTES="docs/releases/${GITHUB_REF_NAME}.md"
+          if [ ! -f "$RELEASE_NOTES" ]; then
+            echo "Release notes file $RELEASE_NOTES is missing."
+            exit 1
+          fi
+
       - name: Test
         run: npm test
 
       - name: Build
         run: npm run build
 
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=moderate
+
+      - name: Verify npm signatures
+        run: npm audit signatures
+
       - name: Pack CLI artifact
-        run: npm pack
+        run: npm pack --dry-run && npm pack
 
       - name: Publish to npm
         env:
@@ -74,10 +88,6 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           RELEASE_NOTES="docs/releases/${GITHUB_REF_NAME}.md"
-          if [ ! -f "$RELEASE_NOTES" ]; then
-            echo "Release notes file $RELEASE_NOTES is missing."
-            exit 1
-          fi
           RELEASE_FLAGS=()
           if [[ "$GITHUB_REF_NAME" == *-* ]]; then
             RELEASE_FLAGS+=(--prerelease)

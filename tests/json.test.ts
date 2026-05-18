@@ -47,4 +47,18 @@ describe("parseAgentResponse", () => {
       ]
     });
   });
+
+  it("repairs raw control characters inside JSON strings", () => {
+    expect(parseAgentResponse('{"action":"final","message":"first line\nsecond line"}')).toEqual({
+      action: "final",
+      message: "first line\nsecond line"
+    });
+  });
+
+  it("strips stray control characters outside JSON strings", () => {
+    expect(parseAgentResponse('\u0000{"action":"final","message":"done"}\u0000')).toEqual({
+      action: "final",
+      message: "done"
+    });
+  });
 });

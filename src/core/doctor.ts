@@ -2,6 +2,19 @@ import { spawn } from "node:child_process";
 import { describeComputeTarget } from "./compute.js";
 import { codexOAuthModels, hasCodexCliOAuth } from "./codex.js";
 import { GeminiClient, readGeminiApiKey } from "./gemini.js";
+import {
+  GeminiWrapperClient,
+  ensureGeminiWebApiInstalled,
+  geminiWebApiInstallCommand,
+  geminiWrapperRequiresApiKey,
+  isGeminiWebApiInstalled,
+  readGeminiWrapperApiKey,
+  readGeminiWrapperBaseUrl,
+  readGeminiWrapperCookiesJson,
+  readGeminiWrapperMode,
+  readGeminiWrapperPythonCommand,
+  readGeminiWrapperSecure1psid
+} from "./geminiWrapper.js";
 import { NvidiaClient, readNvidiaApiKey } from "./nvidia.js";
 import { OllamaClient } from "./ollama.js";
 import { OpenRouterClient, readOpenRouterApiKey } from "./openrouter.js";
@@ -11,9 +24,10 @@ export type DoctorResult = {
   name: string;
   ok: boolean;
   details: string;
+  action?: "check" | "fix" | "skipped";
 };
 
-export async function runDoctor(provider: ModelProvider, ollamaUrl: string, model?: string): Promise<DoctorResult[]> {
+export async function runDoctor(provider: ModelProvider, ollamaUrl: string, model?: string, options: { fix?: boolean } = {}): Promise<DoctorResult[]> {
   const results: DoctorResult[] = [];
 
   results.push(await checkCommand("node", ["--version"]));
@@ -21,6 +35,11 @@ export async function runDoctor(provider: ModelProvider, ollamaUrl: string, mode
 
   if (provider === "gemini") {
     results.push(...(await checkGemini(model)));
+    return results;
+  }
+
+  if (provider === "gemini-wrapper") {
+    results.push(...(await checkGeminiWrapper(model, options)));
     return results;
   }
 
@@ -222,6 +241,128 @@ async function checkGemini(model?: string): Promise<DoctorResult[]> {
   } catch (error) {
     results.push({
       name: "gemini",
+      ok: false,
+      details: error instanceof Error ? error.message : String(error)
+    });
+  }
+
+  return results;
+}
+
+async function checkGeminiWrapper(model?: string, options: { fix?: boolean } = {}): Promise<DoctorResult[]> {
+  const baseUrl = readGeminiWrapperBaseUrl();
+  const apiKey = readGeminiWrapperApiKey();
+  const mode = readGeminiWrapperMode();
+  if (mode === "python" || (!baseUrl && mode === "auto")) {
+    return await checkGeminiApiBridge(model, options);
+  }
+
+  const results: DoctorResult[] = [
+    {
+      name: "gemini-wrapper-url",
+      ok: Boolean(baseUrl),
+      details: baseUrl
+        ? `using explicit wrapper URL ${baseUrl}`
+        : "missing. Set PATCHPILOT_GEMINI_WRAPPER_BASE_URL. PatchPilot does not collect browser cookies or reuse web login sessions."
+    }
+  ];
+
+  if (!baseUrl) {
+    return results;
+  }
+
+  results.push({
+    name: "gemini-wrapper-key",
+    ok: !geminiWrapperRequiresApiKey(baseUrl) || Boolean(apiKey),
+    details: apiKey
+      ? "explicit wrapper API key is configured"
+      : geminiWrapperRequiresApiKey(baseUrl)
+        ? "missing for remote wrapper URL. Set PATCHPILOT_GEMINI_WRAPPER_API_KEY or GEMINI_WRAPPER_API_KEY."
+        : "not required for local wrapper URL"
+  });
+
+  if (geminiWrapperRequiresApiKey(baseUrl) && !apiKey) {
+    return results;
+  }
+
+  try {
+    const models = await new GeminiWrapperClient().listModels();
+    results.push({
+      name: "gemini-wrapper",
+      ok: true,
+      details: models.length > 0 ? `available models: ${models.slice(0, 12).join(", ")}` : "wrapper reachable, no models listed"
+    });
+    if (model) {
+      results.push({
+        name: "gemini-wrapper-model",
+        ok: models.includes(model),
+        details: models.includes(model) ? `${model} is available` : `${model} is not listed by the wrapper models API`
+      });
+    }
+  } catch (error) {
+    results.push({
+      name: "gemini-wrapper",
+      ok: false,
+      details: error instanceof Error ? error.message : String(error)
+    });
+  }
+
+  return results;
+}
+
+async function checkGeminiApiBridge(model?: string, options: { fix?: boolean } = {}): Promise<DoctorResult[]> {
+  const pythonCommand = readGeminiWrapperPythonCommand();
+  const hasExplicitAuth = Boolean(readGeminiWrapperCookiesJson() || readGeminiWrapperSecure1psid());
+  const isInstalledBefore = await isGeminiWebApiInstalled(pythonCommand);
+  const isInstalled = isInstalledBefore || (options.fix ? await ensureGeminiWebApiInstalled(pythonCommand) : false);
+  const results: DoctorResult[] = [
+    {
+      name: "gemini-api-bridge",
+      ok: isInstalled,
+      details: isInstalled
+        ? `${isInstalledBefore ? "gemini_webapi import works" : "installed pinned gemini_webapi into PatchPilot managed venv"} through ${pythonCommand}`
+        : options.fix
+          ? `missing. PatchPilot tried the managed venv install. Manual fallback: ${geminiWebApiInstallCommand}`
+          : `missing. Run /doctor fix or patchpilot doctor --fix to install the managed bridge. Manual fallback: ${geminiWebApiInstallCommand}`,
+      action: isInstalledBefore ? "check" : options.fix && isInstalled ? "fix" : "skipped"
+    },
+    {
+      name: "gemini-api-auth",
+      ok: hasExplicitAuth,
+      details: hasExplicitAuth
+        ? "explicit cookie auth is configured"
+        : "missing. Set PATCHPILOT_GEMINI_WRAPPER_COOKIES_JSON or GEMINI_SECURE_1PSID. PatchPilot does not scan browser cookies."
+    }
+  ];
+
+  if (!isInstalled || !hasExplicitAuth) {
+    return results;
+  }
+
+  try {
+    const client = new GeminiWrapperClient();
+    await client.checkBridgeAuth();
+    const models = await client.listModels();
+    results.push({
+      name: "gemini-api-auth-check",
+      ok: true,
+      details: "Gemini-API bridge auth initializes successfully"
+    });
+    results.push({
+      name: "gemini-wrapper",
+      ok: true,
+      details: `Python bridge ready. Models: ${models.join(", ")}`
+    });
+    if (model) {
+      results.push({
+        name: "gemini-wrapper-model",
+        ok: models.includes(model),
+        details: models.includes(model) ? `${model} is available` : `${model} is not in the bridge default model list`
+      });
+    }
+  } catch (error) {
+    results.push({
+      name: "gemini-wrapper",
       ok: false,
       details: error instanceof Error ? error.message : String(error)
     });

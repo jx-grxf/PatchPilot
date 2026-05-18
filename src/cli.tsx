@@ -5,11 +5,14 @@ import React from "react";
 import { render } from "ink";
 import { Command } from "commander";
 import { defaultCodexModel } from "./core/codex.js";
+import { cleanupPatchPilot, readCleanupTarget } from "./core/cleanup.js";
 import { loadPatchPilotEnv } from "./core/env.js";
 import { defaultGeminiModel } from "./core/gemini.js";
+import { defaultGeminiWrapperModel } from "./core/geminiWrapper.js";
 import { normalizeModelProvider, readModelProvider } from "./core/modelClient.js";
 import { defaultNvidiaModel } from "./core/nvidia.js";
 import { runDoctor } from "./core/doctor.js";
+import { ensurePatchPilotInstructions } from "./core/projectInit.js";
 import { defaultOllamaModel, resolveOllamaBaseUrl } from "./core/ollama.js";
 import { defaultOpenRouterModel } from "./core/openrouter.js";
 import { listIndexedSessions, listWorkspaceSessions, loadSessionSummary } from "./core/session.js";
@@ -23,6 +26,8 @@ const defaultModel =
   process.env.PATCHPILOT_MODEL ??
   (defaultProvider === "gemini"
     ? defaultGeminiModel
+    : defaultProvider === "gemini-wrapper"
+      ? defaultGeminiWrapperModel
     : defaultProvider === "openrouter"
       ? defaultOpenRouterModel
       : defaultProvider === "nvidia"
@@ -40,24 +45,55 @@ program
   .version(readPackageVersion());
 
 program
+  .command("init")
+  .description("Create PATCHPILOT.md workspace instructions.")
+  .option("--workspace <path>", "Workspace root", process.cwd())
+  .action(async (options: { workspace: string }) => {
+    const result = await ensurePatchPilotInstructions(path.resolve(options.workspace));
+    console.log(`${result.created ? "created" : "exists"} ${result.path}`);
+  });
+
+program
+  .command("cleanup")
+  .description("Clean PatchPilot workspace cache, sessions, temp files, or all.")
+  .argument("[target]", "cache, sessions, temp, or all", "cache")
+  .option("--workspace <path>", "Workspace root", process.cwd())
+  .action(async (target: string, options: { workspace: string }) => {
+    const cleanupTarget = readCleanupTarget(target);
+    if (!cleanupTarget) {
+      console.error("Use one of: cache, sessions, temp, all");
+      process.exitCode = 1;
+      return;
+    }
+
+    const removed = await cleanupPatchPilot(path.resolve(options.workspace), cleanupTarget);
+    console.log(`cleaned ${removed.join(", ") || cleanupTarget}`);
+  });
+
+program
   .command("doctor")
   .description("Check local PatchPilot requirements.")
-  .option("--provider <name>", "Model provider: ollama, gemini, openrouter, nvidia, or codex.", defaultProvider)
+  .option("--provider <name>", "Model provider: ollama, gemini, gemini-wrapper, openrouter, nvidia, or codex.", defaultProvider)
   .option("--check-url <url>", "Ollama base URL to verify", defaultOllamaUrl)
   .option("--ollama-url <url>", "Alias for --check-url.")
   .option("--check-model <name>", "Model name to verify", defaultModel)
   .option("--model <name>", "Alias for --check-model.")
+  .option("--fix", "Apply safe doctor fixes, such as installing the managed Gemini-API bridge.", false)
   .action(async (options: {
       provider: string;
       checkUrl: string;
       ollamaUrl?: string;
       checkModel: string;
       model?: string;
+      fix?: boolean;
     }) => {
-    const results = await runDoctor(normalizeModelProvider(options.provider), options.ollamaUrl ?? options.checkUrl, options.model ?? options.checkModel);
+    const results = await runDoctor(normalizeModelProvider(options.provider), options.ollamaUrl ?? options.checkUrl, options.model ?? options.checkModel, {
+      fix: Boolean(options.fix)
+    });
     for (const result of results) {
       const marker = result.ok ? "ok" : "fail";
-      console.log(`${marker.padEnd(5)} ${result.name}: ${result.details}`);
+      const action = result.action ? ` ${result.action}` : "";
+      console.log(`${marker.padEnd(5)} ${result.name}${action}: ${result.details}`);
     }
 
     process.exitCode = results.every((result) => result.ok) ? 0 : 1;
@@ -104,14 +140,15 @@ program
 program
   .argument("[task...]", "Task for the local coding agent.")
   .option("--workspace <path>", "Workspace root", process.cwd())
-  .option("--provider <name>", "Model provider: ollama, gemini, openrouter, nvidia, or codex.", defaultProvider)
+  .option("--provider <name>", "Model provider: ollama, gemini, gemini-wrapper, openrouter, nvidia, or codex.", defaultProvider)
   .option("--model <name>", "Model name", defaultModel)
   .option("--ollama-url <url>", "Ollama base URL", defaultOllamaUrl)
   .option("--steps <count>", "Maximum agent steps", "8")
-  .option("--thinking <mode>", "Thinking budget mode: fixed or adaptive.", process.env.PATCHPILOT_THINKING_MODE ?? "fixed")
+  .option("--thinking <mode>", "Thinking budget mode: fixed or adaptive.", process.env.PATCHPILOT_THINKING_MODE ?? "adaptive")
   .option("--reasoning <effort>", "Provider reasoning effort: none, low, medium, high, xhigh, or adaptive.", process.env.PATCHPILOT_REASONING_EFFORT ?? "medium")
   .option("--apply", "Allow file writes inside the workspace.", false)
   .option("--allow-shell", "Allow shell commands inside the workspace.", false)
+  .option("--subagents", "Enable planner and reviewer subagents.", readBooleanEnv(process.env.PATCHPILOT_SUBAGENTS, false))
   .option("--no-subagents", "Disable planner and reviewer subagents for faster local runs.")
   .action((taskParts: string[], options: Record<string, unknown>) => {
     const workspace = path.resolve(String(options.workspace));
@@ -129,7 +166,7 @@ program
         maxSteps={Number.isFinite(maxSteps) ? maxSteps : 8}
         thinkingMode={String(options.thinking) === "adaptive" ? "adaptive" : "fixed"}
         reasoningEffort={readReasoningEffort(String(options.reasoning))}
-        subagents={options.subagents !== false}
+        subagents={Boolean(options.subagents)}
       />
     );
   });
@@ -142,6 +179,21 @@ function readReasoningEffort(value: string): "none" | "low" | "medium" | "high" 
     : value === "low" || value === "medium" || value === "high" || value === "xhigh" || value === "adaptive"
       ? value
       : "medium";
+}
+
+function readBooleanEnv(value: string | undefined, fallback: boolean): boolean {
+  if (!value) {
+    return fallback;
+  }
+
+  const normalized = value.trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(normalized)) {
+    return true;
+  }
+  if (["0", "false", "no", "off"].includes(normalized)) {
+    return false;
+  }
+  return fallback;
 }
 
 function readPackageVersion(): string {
