@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -6,6 +6,7 @@ import {
   GeminiWrapperClient,
   geminiWrapperRequiresApiKey,
   getDefaultGeminiWrapperCookiesPath,
+  getGeminiWrapperCookieCacheDir,
   getGeminiWrapperVenvDir,
   getManagedGeminiWrapperPythonPath,
   readGeminiWrapperApiKey,
@@ -44,6 +45,7 @@ describe("GeminiWrapperClient", () => {
       PATCHPILOT_CONFIG_DIR: "/tmp/patchpilot-test-config"
     } as NodeJS.ProcessEnv;
     expect(getGeminiWrapperVenvDir(env)).toBe("/tmp/patchpilot-test-config/gemini-wrapper-venv");
+    expect(getGeminiWrapperCookieCacheDir(env)).toBe("/tmp/patchpilot-test-config/gemini-webapi-cache");
     expect(readGeminiWrapperPythonCommand(env)).toBe(getManagedGeminiWrapperPythonPath(env));
   });
 
@@ -66,6 +68,91 @@ describe("GeminiWrapperClient", () => {
       await expect(readFile(cookiesPath, "utf8")).resolves.toContain("psidts-value");
       expect((await stat(cookiesPath)).mode & 0o777).toBe(0o600);
     } finally {
+      await rm(tempRoot, {
+        recursive: true,
+        force: true
+      });
+    }
+  });
+
+  it("retries the Python bridge without a stale optional session timestamp", async () => {
+    const tempRoot = await mkdtemp(path.join(tmpdir(), "patchpilot-gemini-bridge-"));
+    const originalConfigDir = process.env.PATCHPILOT_CONFIG_DIR;
+    try {
+      process.env.PATCHPILOT_CONFIG_DIR = tempRoot;
+      const modulePath = path.join(tempRoot, "gemini_webapi.py");
+      const pythonShimPath = path.join(tempRoot, "python-shim");
+      const cookiesPath = path.join(tempRoot, "cookies.json");
+
+      await writeFile(
+        modulePath,
+        [
+          "class Response:",
+          "    text = 'ok after timestamp retry'",
+          "",
+          "class GeminiClient:",
+          "    def __init__(self, secure_1psid, secure_1psidts='', cookies=None, proxy=None):",
+          "        self.secure_1psidts = secure_1psidts",
+          "",
+          "    async def init(self, timeout=90, auto_refresh=False, verbose=False):",
+          "        if self.secure_1psidts:",
+          "            raise Exception('Failed to initialize client after 1 attempts. SECURE_1PSIDTS could get expired frequently')",
+          "",
+          "    async def generate_content(self, prompt, model='gemini-3-flash', temporary=True):",
+          "        return Response()",
+          "",
+          "    async def close(self):",
+          "        pass",
+          ""
+        ].join("\n"),
+        "utf8"
+      );
+      await writeFile(
+        pythonShimPath,
+        `#!/bin/sh\nPYTHONPATH="${tempRoot}" python3 "$@"\n`,
+        "utf8"
+      );
+      await chmod(pythonShimPath, 0o755);
+      await writeFile(
+        cookiesPath,
+        JSON.stringify({
+          cookies: {
+            "__Secure-1PSID": "psid-value",
+            "__Secure-1PSIDTS": "stale-ts"
+          }
+        }),
+        "utf8"
+      );
+
+      const result = await new GeminiWrapperClient(
+        "",
+        "",
+        {
+          maxTokens: 256,
+          temperature: 0.2,
+          bridgeMinIntervalMs: 0
+        },
+        "python",
+        pythonShimPath,
+        cookiesPath
+      ).chat({
+        model: "gemini-3-flash",
+        messages: [
+          {
+            role: "user",
+            content: "hello"
+          }
+        ]
+      });
+
+      expect(result.content).toBe("ok after timestamp retry");
+      expect((await stat(getGeminiWrapperCookieCacheDir())).mode & 0o777).toBe(0o700);
+    } finally {
+      if (originalConfigDir === undefined) {
+        delete process.env.PATCHPILOT_CONFIG_DIR;
+      } else {
+        process.env.PATCHPILOT_CONFIG_DIR = originalConfigDir;
+      }
       await rm(tempRoot, {
         recursive: true,
         force: true

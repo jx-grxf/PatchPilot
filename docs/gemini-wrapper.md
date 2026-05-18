@@ -53,7 +53,18 @@ PATCHPILOT_PROVIDER=gemini-wrapper
 PATCHPILOT_MODEL=gemini-3-flash
 PATCHPILOT_GEMINI_WRAPPER_MODE=python
 PATCHPILOT_GEMINI_WRAPPER_COOKIES_JSON=/Users/you/.patchpilot/gemini-cookies.json
+PATCHPILOT_GEMINI_WRAPPER_MIN_INTERVAL_MS=1500
 ```
+
+If a pasted `__Secure-1PSIDTS` expires, PatchPilot retries the bridge request once without that optional timestamp. Bridge calls are also serialized with a small default delay so advisor or agent requests do not hit the wrapper at the same instant. Set `PATCHPILOT_GEMINI_WRAPPER_MIN_INTERVAL_MS=0` only for debugging.
+
+The Python wrapper stores refreshed Google cookies in a PatchPilot-owned cache:
+
+```text
+~/.patchpilot/gemini-webapi-cache
+```
+
+PatchPilot creates that directory with owner-only permissions (`0700`) and passes it to `gemini_webapi` as `GEMINI_COOKIE_PATH`.
 
 ## 4. Verify
 

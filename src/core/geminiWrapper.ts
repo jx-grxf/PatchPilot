@@ -41,14 +41,15 @@ type GeminiWrapperChatResponse = {
 type GeminiWrapperRuntimeOptions = {
   maxTokens: number;
   temperature: number;
+  bridgeMinIntervalMs?: number;
 };
 
 type GeminiWrapperMode = "auto" | "http" | "python";
 
 type PythonBridgeInput = {
-  command: "chat";
+  command: "authCheck" | "chat";
   model: string;
-  prompt: string;
+  prompt?: string;
   cookiesJson?: string;
   secure1psid?: string;
   secure1psidts?: string;
@@ -165,6 +166,26 @@ export class GeminiWrapperClient {
     return models.length > 0 ? models : [defaultGeminiWrapperModel];
   }
 
+  async checkBridgeAuth(): Promise<void> {
+    await this.assertPythonBridgeReady();
+    const result = await runThrottledGeminiWebApiBridge(
+      this.pythonCommand,
+      {
+        command: "authCheck",
+        model: defaultGeminiWrapperModel,
+        cookiesJson: this.cookiesJson || undefined,
+        secure1psid: readGeminiWrapperSecure1psid() || undefined,
+        secure1psidts: readGeminiWrapperSecure1psidts() || undefined,
+        proxy: process.env.HTTPS_PROXY ?? process.env.https_proxy ?? process.env.HTTP_PROXY ?? process.env.http_proxy
+      },
+      undefined,
+      this.runtimeOptions.bridgeMinIntervalMs
+    );
+    if (result.error) {
+      throw new Error(result.error);
+    }
+  }
+
   private async fetchGeminiWrapper(path: string, init?: RequestInit): Promise<Response> {
     try {
       return await fetchWithTimeout(`${this.baseUrl}${path}`, init, {
@@ -211,7 +232,7 @@ export class GeminiWrapperClient {
     await this.assertPythonBridgeReady();
     const startedAt = Date.now();
     const prompt = toBridgePrompt(options.messages, options.formatJson);
-    const result = await runGeminiWebApiBridge(
+    const result = await runThrottledGeminiWebApiBridge(
       this.pythonCommand,
       {
         command: "chat",
@@ -222,7 +243,8 @@ export class GeminiWrapperClient {
         secure1psidts: readGeminiWrapperSecure1psidts() || undefined,
         proxy: process.env.HTTPS_PROXY ?? process.env.https_proxy ?? process.env.HTTP_PROXY ?? process.env.http_proxy
       },
-      options.signal
+      options.signal,
+      this.runtimeOptions.bridgeMinIntervalMs
     );
     const durationMs = Date.now() - startedAt;
     const content = result.content?.trim() ?? "";
@@ -325,6 +347,10 @@ export function getGeminiWrapperVenvDir(env: NodeJS.ProcessEnv = process.env): s
   return path.join(getPatchPilotConfigDir(env), "gemini-wrapper-venv");
 }
 
+export function getGeminiWrapperCookieCacheDir(env: NodeJS.ProcessEnv = process.env): string {
+  return path.join(getPatchPilotConfigDir(env), "gemini-webapi-cache");
+}
+
 export function getManagedGeminiWrapperPythonPath(env: NodeJS.ProcessEnv = process.env): string {
   return path.join(getGeminiWrapperVenvDir(env), process.platform === "win32" ? "Scripts/python.exe" : "bin/python");
 }
@@ -409,7 +435,8 @@ function isLikelyGeminiWrapperChatModel(model: string): boolean {
 function readGeminiWrapperRuntimeOptions(env: NodeJS.ProcessEnv = process.env): GeminiWrapperRuntimeOptions {
   return {
     maxTokens: readPositiveInteger(env.PATCHPILOT_NUM_PREDICT, 1024),
-    temperature: readTemperature(env.PATCHPILOT_TEMPERATURE, 0.1)
+    temperature: readTemperature(env.PATCHPILOT_TEMPERATURE, 0.1),
+    bridgeMinIntervalMs: readNonNegativeInteger(env.PATCHPILOT_GEMINI_WRAPPER_MIN_INTERVAL_MS, 1500)
   };
 }
 
@@ -462,9 +489,39 @@ function toEstimatedTelemetry(prompt: string, content: string, durationMs: numbe
   );
 }
 
+let geminiBridgeQueue: Promise<unknown> = Promise.resolve();
+let lastGeminiBridgeStartedAt = 0;
+
+function runThrottledGeminiWebApiBridge(pythonCommand: string, input: PythonBridgeInput, signal: AbortSignal | undefined, minIntervalMs = readGeminiWrapperRuntimeOptions().bridgeMinIntervalMs): Promise<PythonBridgeOutput> {
+  const run = async () => {
+    const intervalMs = minIntervalMs ?? 0;
+    const waitMs = Math.max(0, intervalMs - (Date.now() - lastGeminiBridgeStartedAt));
+    if (waitMs > 0) {
+      await sleep(waitMs, signal);
+    }
+    lastGeminiBridgeStartedAt = Date.now();
+    return await runGeminiWebApiBridge(pythonCommand, input, signal);
+  };
+
+  const result = geminiBridgeQueue.then(run, run);
+  geminiBridgeQueue = result.catch(() => undefined);
+  return result;
+}
+
 function runGeminiWebApiBridge(pythonCommand: string, input: PythonBridgeInput, signal?: AbortSignal): Promise<PythonBridgeOutput> {
   return new Promise((resolve, reject) => {
+    const cookieCacheDir = getGeminiWrapperCookieCacheDir();
+    mkdirSync(cookieCacheDir, {
+      recursive: true,
+      mode: 0o700
+    });
+    tryChmod(cookieCacheDir, 0o700);
+
     const child = spawn(pythonCommand, ["-c", geminiWebApiBridgeScript], {
+      env: {
+        ...process.env,
+        GEMINI_COOKIE_PATH: cookieCacheDir
+      },
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true
     });
@@ -543,14 +600,32 @@ async def main():
         return
 
     extra = {key: value for key, value in cookies.items() if key not in {"__Secure-1PSID", "__Secure-1PSIDTS"}}
-    client = GeminiClient(secure_1psid=psid, secure_1psidts=psidts, cookies=extra or None, proxy=payload.get("proxy"))
-    await client.init(timeout=90, auto_refresh=False, verbose=False)
+
+    async def generate_with_timestamp(psidts_value):
+        client = GeminiClient(secure_1psid=psid, secure_1psidts=psidts_value, cookies=extra or None, proxy=payload.get("proxy"))
+        await client.init(timeout=90, auto_refresh=False, verbose=False)
+        try:
+            if payload.get("command") == "authCheck":
+                return "ok"
+            response = await client.generate_content(payload.get("prompt") or "", model=payload.get("model") or "gemini-3-flash", temporary=True)
+            text = getattr(response, "text", None) or str(response)
+            return text
+        finally:
+            await client.close()
+
     try:
-        response = await client.generate_content(payload["prompt"], model=payload.get("model") or "gemini-3-flash", temporary=True)
-        text = getattr(response, "text", None) or str(response)
+        text = await generate_with_timestamp(psidts)
+    except Exception as exc:
+        message = str(exc)
+        if psidts and ("__Secure-1PSIDTS" in message or "SECURE_1PSIDTS" in message):
+            text = await generate_with_timestamp("")
+        else:
+            raise
+    else:
         print(json.dumps({"content": text}))
-    finally:
-        await client.close()
+        return
+
+    print(json.dumps({"content": text, "warning": "Retried without stale __Secure-1PSIDTS."}))
 
 try:
     asyncio.run(main())
@@ -575,9 +650,39 @@ function readPositiveInteger(value: string | undefined, fallback: number): numbe
   return Number.isFinite(parsedValue) && parsedValue > 0 ? parsedValue : fallback;
 }
 
+function readNonNegativeInteger(value: string | undefined, fallback: number): number {
+  const parsedValue = Number.parseInt(value ?? "", 10);
+  return Number.isFinite(parsedValue) && parsedValue >= 0 ? parsedValue : fallback;
+}
+
 function readTemperature(value: string | undefined, fallback: number): number {
   const parsedValue = Number.parseFloat(value ?? "");
   return Number.isFinite(parsedValue) && parsedValue >= 0 ? parsedValue : fallback;
+}
+
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  if (ms <= 0) {
+    return Promise.resolve();
+  }
+
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new Error("Gemini-API bridge request aborted."));
+      return;
+    }
+
+    const timeout = setTimeout(() => {
+      signal?.removeEventListener("abort", abort);
+      resolve();
+    }, ms);
+    const abort = () => {
+      clearTimeout(timeout);
+      reject(new Error("Gemini-API bridge request aborted."));
+    };
+    signal?.addEventListener("abort", abort, {
+      once: true
+    });
+  });
 }
 
 function tryChmod(filePath: string, mode: number): void {

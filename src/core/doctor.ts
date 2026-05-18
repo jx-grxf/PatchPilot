@@ -336,7 +336,14 @@ async function checkGeminiApiBridge(model?: string): Promise<DoctorResult[]> {
   }
 
   try {
-    const models = await new GeminiWrapperClient().listModels();
+    const client = new GeminiWrapperClient();
+    await client.checkBridgeAuth();
+    const models = await client.listModels();
+    results.push({
+      name: "gemini-api-auth-check",
+      ok: true,
+      details: "Gemini-API bridge auth initializes successfully"
+    });
     results.push({
       name: "gemini-wrapper",
       ok: true,
