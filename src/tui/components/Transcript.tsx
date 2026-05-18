@@ -37,6 +37,9 @@ export function Transcript(props: {
       overflowY="hidden"
       flexGrow={1}
     >
+      {Array.from({ length: Math.max(0, contentRowCount - visibleRows.length) }).map((_, index) => (
+        <Text key={`pad-${index}`}> </Text>
+      ))}
       {visibleRows.map((row, index) => (
         <TranscriptRowView key={`${index}-${row.marker}-${row.label}-${row.text}`} row={row} />
       ))}
@@ -102,7 +105,7 @@ function buildTranscriptRows(lines: LogLine[], width: number): TranscriptRow[] {
         label: "",
         text,
         color: "gray" as const,
-        dim: line.kind !== "approval" && line.kind !== "error"
+        dim: false
       }))
     );
 

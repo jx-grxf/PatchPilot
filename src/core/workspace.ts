@@ -5,6 +5,7 @@ import { platform } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { inflateRawSync } from "node:zlib";
+import { MemoryStore } from "./memory.js";
 import type { AgentToolCall, AgentToolName, ApprovalRequest, PermissionDecision, ToolCategory, ToolPermission, ToolResult, ToolRisk, ToolSpec } from "./types.js";
 
 const execFileAsync = promisify(execFile);
@@ -89,6 +90,8 @@ export type WorkspaceToolsOptions = {
   root: string;
   allowWrite: boolean;
   allowShell: boolean;
+  allowExternalFileAnalysis?: boolean;
+  memoryEnabled?: boolean;
   timeoutMs?: number;
   signal?: AbortSignal;
   approvalHandler?: (request: ApprovalRequest) => Promise<PermissionDecision>;
@@ -142,6 +145,22 @@ export const toolSpecs: Record<AgentToolName, ToolSpec> = {
     sideEffects: "none",
     permission: "none",
     category: "document"
+  },
+  memory_remember: {
+    name: "memory_remember",
+    description: "Store a durable memory for this workspace.",
+    risk: "low",
+    sideEffects: "write",
+    permission: "none",
+    category: "memory"
+  },
+  memory_search: {
+    name: "memory_search",
+    description: "Search durable workspace memories.",
+    risk: "low",
+    sideEffects: "none",
+    permission: "none",
+    category: "memory"
   },
   git_status: {
     name: "git_status",
@@ -226,6 +245,8 @@ export class WorkspaceTools {
   private readonly rootRealPath: Promise<string>;
   private readonly allowWrite: boolean;
   private readonly allowShell: boolean;
+  private readonly allowExternalFileAnalysis: boolean;
+  private readonly memoryEnabled: boolean;
   private readonly timeoutMs: number;
   private readonly signal?: AbortSignal;
   private readonly approvalHandler?: (request: ApprovalRequest) => Promise<PermissionDecision>;
@@ -236,6 +257,8 @@ export class WorkspaceTools {
     this.rootRealPath = realpath(this.root).catch(() => this.root);
     this.allowWrite = options.allowWrite;
     this.allowShell = options.allowShell;
+    this.allowExternalFileAnalysis = Boolean(options.allowExternalFileAnalysis);
+    this.memoryEnabled = Boolean(options.memoryEnabled);
     this.timeoutMs = options.timeoutMs ?? 60_000;
     this.signal = options.signal;
     this.approvalHandler = options.approvalHandler;
@@ -260,6 +283,10 @@ export class WorkspaceTools {
           return await this.searchText(readString(call.arguments.query, ""));
         case "inspect_document":
           return await this.inspectDocument(readString(call.arguments.path, ""));
+        case "memory_remember":
+          return await this.memoryRemember(readString(call.arguments.content, ""), readStringArray(call.arguments.tags));
+        case "memory_search":
+          return await this.memorySearch(readString(call.arguments.query, ""), readNumber(call.arguments.limit, 8));
         case "git_status":
           return await this.gitStatus();
         case "git_diff":
@@ -456,10 +483,10 @@ export class WorkspaceTools {
       return denied(`inspect_document denied sensitive path: ${requestedPath}`);
     }
 
-    const absolutePath = await this.resolveReadPath(requestedPath);
+    const absolutePath = await this.resolveDocumentPath(requestedPath);
     const extension = path.extname(absolutePath).toLowerCase();
     if (isLikelyTextFile(absolutePath)) {
-      return await this.readFile(requestedPath);
+      return await this.readTextDocument(absolutePath);
     }
 
     if (extension === ".pdf") {
@@ -470,7 +497,61 @@ export class WorkspaceTools {
       return await extractDocxText(absolutePath);
     }
 
+    if (isImageFile(absolutePath)) {
+      return await inspectImageFile(absolutePath);
+    }
+
     return denied(`inspect_document does not support ${extension || "this file type"} yet.`);
+  }
+
+  private async readTextDocument(absolutePath: string): Promise<ToolResult> {
+    const content = await readFile(absolutePath, "utf8");
+    const relativePath = path.relative(this.root, absolutePath);
+    return {
+      ok: true,
+      summary: `inspected ${relativePath.startsWith("..") || path.isAbsolute(relativePath) ? absolutePath : relativePath}`,
+      content: clip(content, 20_000),
+      tool: "inspect_document",
+      category: toolSpecs.inspect_document.category
+    };
+  }
+
+  private async memoryRemember(content: string, tags: string[]): Promise<ToolResult> {
+    if (!this.memoryEnabled) {
+      return denied("memory_remember requires /experimental memory.", "memory_remember");
+    }
+
+    try {
+      const store = new MemoryStore();
+      const entry = store.remember(this.root, content, tags);
+      store.close();
+      return {
+        ok: true,
+        summary: `remembered memory #${entry.id}`,
+        content: `Stored memory #${entry.id}: ${entry.content}`,
+        tool: "memory_remember",
+        category: toolSpecs.memory_remember.category
+      };
+    } catch (error) {
+      return denied(error instanceof Error ? error.message : String(error), "memory_remember");
+    }
+  }
+
+  private async memorySearch(query: string, limit: number): Promise<ToolResult> {
+    if (!this.memoryEnabled) {
+      return denied("memory_search requires /experimental memory.", "memory_search");
+    }
+
+    const store = new MemoryStore();
+    const matches = store.search(this.root, query, limit);
+    store.close();
+    return {
+      ok: true,
+      summary: `found ${matches.length} memory match${matches.length === 1 ? "" : "es"}`,
+      content: matches.map((match) => `#${match.id} score ${match.score} ${match.createdAt}\n${match.content}`).join("\n\n") || "No matching memories.",
+      tool: "memory_search",
+      category: toolSpecs.memory_search.category
+    };
   }
 
   private async searchText(query: string): Promise<ToolResult> {
@@ -807,6 +888,35 @@ export class WorkspaceTools {
     return resolvedPath;
   }
 
+  private async resolveDocumentPath(requestedPath: string): Promise<string> {
+    const trimmedPath = requestedPath.trim();
+    if (!path.isAbsolute(trimmedPath)) {
+      return await this.resolveReadPath(trimmedPath);
+    }
+
+    if (isSensitivePath(trimmedPath)) {
+      throw new Error(`inspect_document denied sensitive path: ${requestedPath}`);
+    }
+
+    const relativePath = path.relative(this.root, trimmedPath);
+    if (!relativePath.startsWith("..") && !path.isAbsolute(relativePath)) {
+      return await this.resolveReadPath(trimmedPath);
+    }
+
+    if (!this.allowExternalFileAnalysis) {
+      throw new Error(`Path escapes workspace: ${requestedPath}. Enable /experimental file-analysis to inspect external files.`);
+    }
+
+    const extension = path.extname(trimmedPath).toLowerCase();
+    if (!isLikelyTextFile(trimmedPath) && extension !== ".pdf" && extension !== ".docx" && !isImageFile(trimmedPath)) {
+      throw new Error(`external file analysis does not support ${extension || "this file type"} yet.`);
+    }
+
+    return await realpath(trimmedPath).catch((error: unknown) => {
+      throw new Error(`file not found or unreadable: ${requestedPath} (${error instanceof Error ? error.message : String(error)})`);
+    });
+  }
+
   private async resolveWritePath(requestedPath: string): Promise<string> {
     const absolutePath = this.resolveInsideWorkspace(requestedPath);
     const rootRealPath = await this.rootRealPath;
@@ -1116,6 +1226,18 @@ function readNumber(value: unknown, fallback: number): number {
   return fallback;
 }
 
+function readStringArray(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value.filter((item): item is string => typeof item === "string");
+  }
+
+  if (typeof value === "string") {
+    return value.split(",").map((item) => item.trim()).filter(Boolean);
+  }
+
+  return [];
+}
+
 function isPlaceholderPath(value: string): boolean {
   const normalizedValue = value.trim().toLowerCase().replaceAll("\\", "/");
   return ["relative/path", "path/to/file", "file/path", "<path>", "<file>", "filename"].includes(normalizedValue);
@@ -1160,6 +1282,66 @@ function denied(
 
 function isLikelyTextFile(filePath: string): boolean {
   return textFileExtensions.has(path.extname(filePath).toLowerCase());
+}
+
+function isImageFile(filePath: string): boolean {
+  return [".png", ".jpg", ".jpeg", ".webp", ".gif"].includes(path.extname(filePath).toLowerCase());
+}
+
+async function inspectImageFile(filePath: string): Promise<ToolResult> {
+  const buffer = await readFile(filePath);
+  const dimensions = readImageDimensions(buffer, path.extname(filePath).toLowerCase());
+  return {
+    ok: true,
+    summary: `inspected image ${path.basename(filePath)}`,
+    content: [
+      `image: ${path.basename(filePath)}`,
+      `type: ${path.extname(filePath).toLowerCase().replace(".", "") || "unknown"}`,
+      `size: ${buffer.length} bytes`,
+      dimensions ? `dimensions: ${dimensions.width}x${dimensions.height}` : "dimensions: unknown"
+    ].join("\n"),
+    tool: "inspect_document",
+    category: toolSpecs.inspect_document.category
+  };
+}
+
+function readImageDimensions(buffer: Buffer, extension: string): { width: number; height: number } | null {
+  if (extension === ".png" && buffer.length >= 24 && buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) {
+    return {
+      width: buffer.readUInt32BE(16),
+      height: buffer.readUInt32BE(20)
+    };
+  }
+
+  if ((extension === ".jpg" || extension === ".jpeg") && buffer.length >= 4) {
+    let offset = 2;
+    while (offset + 9 < buffer.length) {
+      if (buffer[offset] !== 0xff) {
+        return null;
+      }
+      const marker = buffer[offset + 1];
+      const length = buffer.readUInt16BE(offset + 2);
+      if (marker >= 0xc0 && marker <= 0xc3) {
+        return {
+          height: buffer.readUInt16BE(offset + 5),
+          width: buffer.readUInt16BE(offset + 7)
+        };
+      }
+      offset += 2 + length;
+    }
+  }
+
+  if (extension === ".webp" && buffer.length >= 30 && buffer.subarray(0, 4).toString("ascii") === "RIFF" && buffer.subarray(8, 12).toString("ascii") === "WEBP") {
+    const chunk = buffer.subarray(12, 16).toString("ascii");
+    if (chunk === "VP8X") {
+      return {
+        width: 1 + buffer.readUIntLE(24, 3),
+        height: 1 + buffer.readUIntLE(27, 3)
+      };
+    }
+  }
+
+  return null;
 }
 
 async function extractPdfText(filePath: string, timeoutMs: number, signal?: AbortSignal): Promise<ToolResult> {
@@ -1298,8 +1480,12 @@ function previewPatch(patchContent: string): string {
 
 function validateShellCommand(command: string): string | null {
   const trimmedCommand = command.trim();
-  if (/[;&|><`$\n\r]/.test(trimmedCommand)) {
-    return "shell metacharacters are blocked; run a single simple command.";
+  if (/[;&<>`$\n\r]/.test(trimmedCommand)) {
+    return "dangerous shell metacharacters are blocked; pipes are allowed, but command separators, redirects, expansion, and multiline commands are not.";
+  }
+
+  if (/(^|\s)\|\|(\s|$)/.test(trimmedCommand)) {
+    return "shell command separators are blocked; use a single pipeline.";
   }
 
   const tokens = trimmedCommand.match(/"[^"]*"|'[^']*'|\S+/g) ?? [];
@@ -1327,8 +1513,8 @@ function validateShellCommand(command: string): string | null {
 
   for (const token of tokens.slice(1)) {
     const normalizedToken = stripQuotes(token);
-    if (normalizedToken.startsWith("/") || normalizedToken.startsWith("~")) {
-      return "absolute and home-relative paths are blocked.";
+    if (isSensitivePath(normalizedToken)) {
+      return "sensitive path arguments are blocked.";
     }
 
     if (/(^|[\\/])\.\.([\\/]|$)/.test(normalizedToken)) {

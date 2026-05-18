@@ -12,6 +12,8 @@
     ".env.example",
     "docs/gemini-wrapper.md",
     "docs/releases",
+    "docs/showcase/patchpilot-banner.png",
+    "docs/showcase/patchpilot-logo.png",
     "docs/showcase/patchpilot-showcase.svg",
     "README.md",
     "SECURITY.md",

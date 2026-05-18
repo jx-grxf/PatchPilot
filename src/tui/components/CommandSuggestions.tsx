@@ -17,11 +17,19 @@ export function CommandSuggestions(props: {
     return null;
   }
 
+  const maxRows = 8;
+  const startIndex = Math.max(0, Math.min(props.selectedIndex - Math.floor(maxRows / 2), Math.max(0, props.items.length - maxRows)));
+  const visibleItems = props.items.slice(startIndex, startIndex + maxRows);
+  const endIndex = startIndex + visibleItems.length;
+
   return (
-    <Box borderStyle="round" borderColor="cyan" flexDirection="column" paddingX={1} height={Math.min(8, props.items.length) + 4} overflowY="hidden">
-      <Text color="gray">Use up/down to pick, Enter to apply, Escape to clear.</Text>
-      {props.items.slice(0, 8).map((item, index) => {
-        const isSelected = index === props.selectedIndex;
+    <Box borderStyle="round" borderColor="cyan" flexDirection="column" paddingX={1} height={Math.min(maxRows, props.items.length) + 4} overflowY="hidden">
+      <Text color="gray">
+        Use up/down to pick, Enter to apply, Escape to clear. {startIndex + 1}-{endIndex}/{props.items.length}
+      </Text>
+      {visibleItems.map((item, index) => {
+        const absoluteIndex = startIndex + index;
+        const isSelected = absoluteIndex === props.selectedIndex;
         return (
           <Box key={item.key} marginTop={index === 0 ? 1 : 0}>
             <Box width={2}>

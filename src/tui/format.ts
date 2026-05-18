@@ -49,27 +49,27 @@ export function formatOllamaHost(value: string): string {
 
 export function formatTokens(telemetry: ModelTelemetry | null): string {
   if (!telemetry) {
-    return "-";
+    return "last request -";
   }
 
   const cacheSuffix =
     telemetry.cachedPromptTokens > 0 && telemetry.promptTokens > 0
-      ? `/${telemetry.cachedPromptTokens} cached ${formatCacheHitRate(telemetry.cachedPromptTokens, telemetry.promptTokens)}`
+      ? `, ${telemetry.cachedPromptTokens} cached (${formatCacheHitRate(telemetry.cachedPromptTokens, telemetry.promptTokens)})`
       : "";
   const sourceSuffix = telemetry.tokenSource === "estimated" ? " est" : "";
-  return `${telemetry.promptTokens} in${cacheSuffix}/${telemetry.responseTokens} out/${telemetry.totalTokens} total${sourceSuffix}`;
+  return `last ${telemetry.promptTokens} in${cacheSuffix}, ${telemetry.responseTokens} out (${telemetry.totalTokens} total${sourceSuffix})`;
 }
 
 export function formatSessionTokens(session: SessionTelemetry): string {
   if (session.requests === 0) {
-    return "-";
+    return "session -";
   }
 
   const cacheSuffix =
     session.cachedPromptTokens > 0 && session.promptTokens > 0
-      ? `/${session.cachedPromptTokens} cached ${formatCacheHitRate(session.cachedPromptTokens, session.promptTokens)}`
+      ? `, ${session.cachedPromptTokens} cached (${formatCacheHitRate(session.cachedPromptTokens, session.promptTokens)})`
       : "";
-  return `${session.requests} req ${session.promptTokens} in${cacheSuffix}/${session.responseTokens} out`;
+  return `session ${session.requests} req, ${session.promptTokens} in${cacheSuffix}, ${session.responseTokens} out`;
 }
 
 function formatCacheHitRate(cachedTokens: number, promptTokens: number): string {
@@ -82,7 +82,7 @@ export function formatCost(value: number | null): string {
   }
 
   if (value === 0) {
-    return "$0 local";
+    return "$0 local / saved";
   }
 
   if (value > 0 && value < 0.0001) {

@@ -175,6 +175,90 @@ describe("WorkspaceTools", () => {
     expect(result.content).toContain("Hallo aus DOCX");
   });
 
+  it("inspects external images when experimental file analysis is enabled", async () => {
+    const outsideRoot = await mkdtemp(path.join(tmpdir(), "patchpilot-image-"));
+    const imagePath = path.join(outsideRoot, "sample.png");
+    await writeFile(imagePath, Buffer.from("89504e470d0a1a0a0000000d4948445200000002000000030802000000", "hex"));
+    const tools = new WorkspaceTools({
+      root: tempRoot,
+      allowWrite: false,
+      allowShell: false,
+      allowExternalFileAnalysis: true
+    });
+
+    const result = await tools.execute({
+      name: "inspect_document",
+      arguments: {
+        path: imagePath
+      }
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.content).toContain("dimensions: 2x3");
+    await rm(outsideRoot, { recursive: true, force: true });
+  });
+
+  it("blocks external files when experimental file analysis is disabled", async () => {
+    const outsideRoot = await mkdtemp(path.join(tmpdir(), "patchpilot-external-"));
+    const filePath = path.join(outsideRoot, "note.md");
+    await writeFile(filePath, "# outside\n");
+    const tools = new WorkspaceTools({
+      root: tempRoot,
+      allowWrite: false,
+      allowShell: false
+    });
+
+    const result = await tools.execute({
+      name: "inspect_document",
+      arguments: {
+        path: filePath
+      }
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.summary).toContain("file-analysis");
+    await rm(outsideRoot, { recursive: true, force: true });
+  });
+
+  it("stores and searches workspace memory when experimental memory is enabled", async () => {
+    const configRoot = await mkdtemp(path.join(tmpdir(), "patchpilot-memory-config-"));
+    const previousConfigDir = process.env.PATCHPILOT_CONFIG_DIR;
+    process.env.PATCHPILOT_CONFIG_DIR = configRoot;
+    try {
+      const tools = new WorkspaceTools({
+        root: tempRoot,
+        allowWrite: false,
+        allowShell: false,
+        memoryEnabled: true
+      });
+
+      const remember = await tools.execute({
+        name: "memory_remember",
+        arguments: {
+          content: "Gemini wrapper should default to auto mode.",
+          tags: ["provider"]
+        }
+      });
+      expect(remember.ok).toBe(true);
+
+      const search = await tools.execute({
+        name: "memory_search",
+        arguments: {
+          query: "gemini auto"
+        }
+      });
+      expect(search.ok).toBe(true);
+      expect(search.content).toContain("Gemini wrapper");
+    } finally {
+      if (previousConfigDir === undefined) {
+        delete process.env.PATCHPILOT_CONFIG_DIR;
+      } else {
+        process.env.PATCHPILOT_CONFIG_DIR = previousConfigDir;
+      }
+      await rm(configRoot, { recursive: true, force: true });
+    }
+  });
+
   it("rejects unknown tool calls with an explicit error", async () => {
     const tools = new WorkspaceTools({
       root: tempRoot,
@@ -488,6 +572,53 @@ describe("WorkspaceTools", () => {
 
     expect(result.ok).toBe(false);
     expect(result.summary).toContain("destructive rm");
+    expect(approvals).toBe(0);
+  });
+
+  it("allows approved shell pipes and absolute read paths", async () => {
+    let approvals = 0;
+    const tools = new WorkspaceTools({
+      root: tempRoot,
+      allowWrite: false,
+      allowShell: false,
+      approvalHandler: async () => {
+        approvals += 1;
+        return "allow_once";
+      }
+    });
+
+    const result = await tools.execute({
+      name: "run_shell",
+      arguments: {
+        command: "cat /etc/shells | head -n 1"
+      }
+    });
+
+    expect(approvals).toBe(1);
+    expect(result.summary).toContain("command exited");
+  });
+
+  it("blocks sensitive shell path arguments before approval", async () => {
+    let approvals = 0;
+    const tools = new WorkspaceTools({
+      root: tempRoot,
+      allowWrite: false,
+      allowShell: false,
+      approvalHandler: async () => {
+        approvals += 1;
+        return "allow_once";
+      }
+    });
+
+    const result = await tools.execute({
+      name: "run_shell",
+      arguments: {
+        command: "cat ~/.npmrc"
+      }
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.summary).toContain("sensitive path");
     expect(approvals).toBe(0);
   });
 

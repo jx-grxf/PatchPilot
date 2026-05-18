@@ -576,19 +576,66 @@ function runGeminiWebApiBridge(pythonCommand: string, input: PythonBridgeInput, 
         GEMINI_COOKIE_PATH: cookieCacheDir
       },
       stdio: ["pipe", "pipe", "pipe"],
+      detached: process.platform !== "win32",
       windowsHide: true
     });
+    let settled = false;
+    let pendingKillError: Error | null = null;
+    let killTimer: NodeJS.Timeout | null = null;
+
+    const cleanup = () => {
+      clearTimeout(timeout);
+      if (killTimer) {
+        clearTimeout(killTimer);
+      }
+      signal?.removeEventListener("abort", abort);
+    };
+    const settleReject = (error: Error) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      cleanup();
+      reject(error);
+    };
+    const settleResolve = (output: PythonBridgeOutput) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      cleanup();
+      resolve(output);
+    };
+    const killChild = (signalName: NodeJS.Signals): void => {
+      if (child.pid && process.platform !== "win32") {
+        try {
+          process.kill(-child.pid, signalName);
+          return;
+        } catch {
+          // Fall through to killing the child directly.
+        }
+      }
+      child.kill(signalName);
+    };
+    const terminateChild = (error: Error) => {
+      if (settled || pendingKillError) {
+        return;
+      }
+      pendingKillError = error;
+      killChild("SIGTERM");
+      killTimer = setTimeout(() => {
+        killChild("SIGKILL");
+      }, 1500);
+    };
     const abort = () => {
-      child.kill();
-      reject(new Error("Gemini-API bridge request aborted."));
+      terminateChild(new Error("Gemini-API bridge request aborted."));
     };
     signal?.addEventListener("abort", abort, {
       once: true
     });
 
     const timeout = setTimeout(() => {
-      child.kill();
-      reject(new Error(`Gemini-API bridge timed out after ${Math.round(timeoutMs / 1000)}s.`));
+      terminateChild(new Error(`Gemini-API bridge timed out after ${Math.round(timeoutMs / 1000)}s.`));
     }, timeoutMs);
 
     let stdout = "";
@@ -600,27 +647,28 @@ function runGeminiWebApiBridge(pythonCommand: string, input: PythonBridgeInput, 
       stderr += chunk.toString("utf8");
     });
     child.on("error", (error) => {
-      clearTimeout(timeout);
-      signal?.removeEventListener("abort", abort);
-      reject(error);
+      settleReject(error);
     });
     child.on("close", (exitCode) => {
-      clearTimeout(timeout);
-      signal?.removeEventListener("abort", abort);
+      if (pendingKillError) {
+        settleReject(pendingKillError);
+        return;
+      }
+
       if (exitCode !== 0) {
-        reject(new Error(stderr.trim() || `Gemini-API bridge exited with ${exitCode}.`));
+        settleReject(new Error(stderr.trim() || `Gemini-API bridge exited with ${exitCode}.`));
         return;
       }
 
       try {
-        resolve(JSON.parse(stdout) as PythonBridgeOutput);
+        settleResolve(JSON.parse(stdout) as PythonBridgeOutput);
       } catch {
-        reject(new Error(`Gemini-API bridge returned invalid JSON.${stderr.trim() ? ` ${stderr.trim()}` : ""}`));
+        settleReject(new Error(`Gemini-API bridge returned invalid JSON.${stderr.trim() ? ` ${stderr.trim()}` : ""}`));
       }
     });
     child.stdin.end(JSON.stringify({
       ...input,
-      timeoutSeconds: Math.max(45, Math.min(90, Math.floor(timeoutMs / 4000)))
+      timeoutSeconds: Math.max(30, Math.min(75, Math.floor(timeoutMs / 5000)))
     }));
   });
 }

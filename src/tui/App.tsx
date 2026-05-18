@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Box, useApp, useInput, useStdout } from "ink";
 import { AgentRunner, type AgentRunnerOptions } from "../core/agent.js";
+import { cleanupPatchPilot, readCleanupTarget } from "../core/cleanup.js";
 import { defaultCodexModel, hasCodexCliOAuth } from "../core/codex.js";
 import { describeComputeTarget } from "../core/compute.js";
 import { runDoctor } from "../core/doctor.js";
@@ -20,14 +21,16 @@ import { createModelClient } from "../core/modelClient.js";
 import { defaultNvidiaModel, readNvidiaApiKey } from "../core/nvidia.js";
 import { defaultOllamaModel, OllamaClient } from "../core/ollama.js";
 import { defaultOpenRouterModel, isOpenRouterFreeModel, readOpenRouterApiKey } from "../core/openrouter.js";
+import { ensurePatchPilotInstructions } from "../core/projectInit.js";
 import { formatReasoningSupport } from "../core/reasoning.js";
-import { listWorkspaceSessions, loadSessionSummary, SessionStore } from "../core/session.js";
+import { buildSessionResumeContext, listWorkspaceSessions, loadSessionSummary, SessionStore } from "../core/session.js";
 import { addTelemetryToSession, emptySessionTelemetry, estimateTokens } from "../core/tokenAccounting.js";
 import type { AgentEvent, AgentWorkState, ApprovalRequest, ModelProvider, ModelTelemetry, PermissionDecision, SessionTelemetry } from "../core/types.js";
 import { WorkspaceTools } from "../core/workspace.js";
 import { ApprovalPanel } from "./components/ApprovalPanel.js";
 import { CommandSuggestions, type CommandSuggestionItem } from "./components/CommandSuggestions.js";
 import { Composer, FooterHints } from "./components/Composer.js";
+import { ExperimentalPanel, experimentalFlagAt, experimentalFlagCount, type ExperimentalFlags } from "./components/ExperimentalPanel.js";
 import { Header } from "./components/Header.js";
 import { OnboardingPanel, type ApiKeyProvider, type OnboardingState } from "./components/OnboardingPanel.js";
 import { Sidebar } from "./components/Sidebar.js";
@@ -61,6 +64,11 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   const abortControllerRef = useRef<AbortController | null>(null);
   const sessionStoreRef = useRef(new SessionStore({ workspace: props.workspace }));
   const approvalResolverRef = useRef<((decision: PermissionDecision) => void) | null>(null);
+  const runtimeStateRef = useRef({
+    isRunning: false,
+    hasPendingApproval: false,
+    lastSigintAt: 0
+  });
   const grantedPermissionsRef = useRef({
     allowWrite: props.allowWrite,
     allowShell: props.allowShell
@@ -76,6 +84,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   const [pendingApproval, setPendingApproval] = useState<ApprovalRequest | null>(null);
   const [telemetry, setTelemetry] = useState<ModelTelemetry | null>(null);
   const [sessionTelemetry, setSessionTelemetry] = useState<SessionTelemetry>(() => emptySessionTelemetry());
+  const [resumeContext, setResumeContext] = useState("");
   const [systemStats, setSystemStats] = useState<SystemStats>(() => readSystemStats().stats);
   const [gpuStats, setGpuStats] = useState<GpuStats | null>(null);
   const [agentMode, setAgentMode] = useState<AgentMode>(() => initialAgentMode({ allowWrite: props.allowWrite, allowShell: props.allowShell }));
@@ -86,6 +95,13 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   const [modelOptions, setModelOptions] = useState<string[]>([]);
   const [isLoadingModels, setIsLoadingModels] = useState(false);
   const [onboarding, setOnboarding] = useState<OnboardingState | null>(null);
+  const [experimentalOpen, setExperimentalOpen] = useState(false);
+  const [experimentalIndex, setExperimentalIndex] = useState(0);
+  const [experimentalFlags, setExperimentalFlags] = useState<ExperimentalFlags>({
+    fileAnalysis: readBooleanEnv(process.env.PATCHPILOT_EXPERIMENTAL_FILE_ANALYSIS, false),
+    memory: readBooleanEnv(process.env.PATCHPILOT_EXPERIMENTAL_MEMORY, false),
+    subagents: props.subagents
+  });
   const [onboardingIndex, setOnboardingIndex] = useState(0);
   const [onboardingInput, setOnboardingInput] = useState("");
   const [onboardingBusyMessage, setOnboardingBusyMessage] = useState<string | null>(null);
@@ -114,7 +130,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   const terminalRows = stdout.rows ?? 40;
   const terminalColumns = stdout.columns ?? 120;
   const paletteItems =
-    !isRunning && !onboarding
+    !isRunning && !onboarding && !experimentalOpen
       ? buildCommandSuggestionItems({
           input,
           provider: settings.provider,
@@ -128,9 +144,9 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   const rootHeight = Math.max(24, terminalRows);
   const headerReservedHeight = 5;
   const paletteReservedHeight = !onboarding && paletteItems.length > 0 ? Math.min(8, paletteItems.length) + 4 : 0;
-  const composerReservedHeight = onboarding ? 0 : 2;
-  const footerReservedHeight = onboarding ? 0 : 1;
-  const approvalReservedHeight = !onboarding && (pendingApproval || bypassConfirmation) ? 6 : 0;
+  const composerReservedHeight = onboarding || experimentalOpen ? 0 : 2;
+  const footerReservedHeight = onboarding || experimentalOpen ? 0 : 1;
+  const approvalReservedHeight = !onboarding && !experimentalOpen && (pendingApproval || bypassConfirmation) ? 6 : 0;
   const panelHeight = Math.max(8, rootHeight - headerReservedHeight - composerReservedHeight - paletteReservedHeight - footerReservedHeight - approvalReservedHeight);
   const transcriptWidth = Math.max(42, terminalColumns - 38);
   const scrollStep = Math.max(4, Math.floor(panelHeight * 0.8));
@@ -153,6 +169,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
 
       approvalResolverRef.current(decision);
       approvalResolverRef.current = null;
+      setInput("");
       appendLine({
         kind: "approval",
         tone: decision === "deny" ? "warning" : "success",
@@ -206,10 +223,12 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   }, [bypassConfirmation]);
 
   const confirmBypassMode = useCallback(() => {
+    setInput("");
     applyMode("bypass");
   }, [applyMode]);
 
   const cancelBypassMode = useCallback(() => {
+    setInput("");
     setBypassConfirmation(false);
     setStatus("idle");
     setWorkState("idle");
@@ -376,23 +395,6 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         model: nextModel
       }));
 
-      if (provider === "gemini-wrapper" && shouldUseGeminiWrapperAutoModelOnly()) {
-        const models = [defaultGeminiWrapperModel];
-        modelCache.set(modelCacheKey(provider, options.ollamaUrl ?? settings.ollamaUrl), {
-          models,
-          expiresAt: Date.now() + modelCacheTtlMs
-        });
-        setModelOptions(models);
-        setOnboarding({
-          step: "model",
-          provider,
-          models,
-          deviceName: options.deviceName
-        });
-        setOnboardingIndex(0);
-        return;
-      }
-
       setOnboardingBusyMessage(`Loading ${provider} models...`);
       try {
         const models = await loadAvailableModels(provider, options.ollamaUrl ?? settings.ollamaUrl, setModelOptions, true);
@@ -464,6 +466,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       case "gemini-wrapper-url":
       case "gemini-wrapper-psid":
       case "gemini-wrapper-psidts":
+      case "gemini-wrapper-model-mode":
       case "gemini-wrapper-key":
       case "openrouter-key":
       case "nvidia-key":
@@ -493,7 +496,9 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         }
 
         if (onboarding.provider === "gemini-wrapper") {
-          openApiKeyChoice("gemini-wrapper", setOnboarding, setOnboardingIndex);
+          setOnboarding({
+            step: "gemini-wrapper-model-mode"
+          });
           return;
         }
 
@@ -679,6 +684,15 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         }
 
         if (choice === 0 && onboarding.hasExistingKey) {
+          if (onboarding.provider === "gemini-wrapper") {
+            setOnboarding({
+              step: "gemini-wrapper-model-mode"
+            });
+            setOnboardingInput("");
+            setOnboardingIndex(0);
+            return;
+          }
+
           await openModelSelection(onboarding.provider, {
             currentModel: defaultModelForProvider(onboarding.provider, settings.model)
           });
@@ -759,8 +773,44 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           text: "Gemini-API bridge cookies saved to PatchPilot config.",
           detail: `${cookiesPath} was written with owner-only permissions. PatchPilot will run gemini_webapi through python3.`
         });
+        setOnboarding({
+          step: "gemini-wrapper-model-mode"
+        });
+        setOnboardingInput("");
+        setOnboardingIndex(0);
+        return;
+      }
+
+      if (onboarding.step === "gemini-wrapper-model-mode") {
+        const choice = readIndexedSelection(value, onboardingIndex);
+        if (choice === null) {
+          return;
+        }
+
+        if (choice === 0) {
+          setTelemetry(null);
+          setModelOptions([defaultGeminiWrapperModel]);
+          setSettings((currentSettings) => ({
+            ...currentSettings,
+            provider: "gemini-wrapper",
+            model: defaultGeminiWrapperModel
+          }));
+          savePatchPilotEnvValues({
+            PATCHPILOT_PROVIDER: "gemini-wrapper",
+            PATCHPILOT_MODEL: defaultGeminiWrapperModel,
+            PATCHPILOT_ONBOARDING_COMPLETE: "1"
+          });
+          appendLine({
+            tone: "success",
+            label: "onboarding",
+            text: `ready: gemini-wrapper using ${defaultGeminiWrapperModel}`
+          });
+          closeOnboarding();
+          return;
+        }
+
         await openModelSelection("gemini-wrapper", {
-          currentModel: defaultGeminiWrapperModel
+          currentModel: settings.model
         });
         return;
       }
@@ -910,7 +960,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
 
       const visibleModels = selectableModels(onboardingInput, onboarding.models);
       const selectedModel = visibleModels[onboardingIndex] ?? selectModelFromInput(value, visibleModels, onboardingIndex, {
-        allowManual: onboarding.provider !== "ollama"
+        allowManual: onboarding.provider !== "ollama" && onboarding.provider !== "gemini-wrapper"
       });
       if (!selectedModel) {
         setOnboardingNotice({
@@ -976,9 +1026,12 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         abortControllerRef.current = abortController;
         const taskRunner = new AgentRunner({
           ...runnableSettings,
+          allowExternalFileAnalysis: experimentalFlags.fileAnalysis,
+          memoryEnabled: experimentalFlags.memory,
           mode: agentMode,
           signal: abortController.signal,
           sessionStore: sessionStoreRef.current,
+          resumeContext,
           approvalHandler: (request) =>
             new Promise<PermissionDecision>((resolve) => {
               if (agentMode === "plan") {
@@ -1058,7 +1111,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         setIsRunning(false);
       }
     },
-    [agentMode, appendLine, isRunning, modelOptions, settings]
+    [agentMode, appendLine, isRunning, modelOptions, resumeContext, settings]
   );
 
   const handleSlashCommand = useCallback(
@@ -1162,6 +1215,10 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
             ...currentSettings,
             subagents: subagentsEnabled
           }));
+          setExperimentalFlags((currentFlags) => ({
+            ...currentFlags,
+            subagents: subagentsEnabled
+          }));
           appendLine({
             tone: "success",
             label: "agents",
@@ -1253,7 +1310,9 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         case "model": {
           const requestedModel = normalizeModelAlias(args.join(" ").trim());
           if (!requestedModel) {
-            const models = await loadKnownOrAvailableModels(settings.provider, settings.ollamaUrl, modelOptions, setModelOptions, appendLine);
+            const models = await loadKnownOrAvailableModels(settings.provider, settings.ollamaUrl, modelOptions, setModelOptions, appendLine, {
+              refresh: settings.provider === "gemini-wrapper"
+            });
             if (!models) {
               return;
             }
@@ -1268,12 +1327,14 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           }
 
           {
-            const models = await loadKnownOrAvailableModels(settings.provider, settings.ollamaUrl, modelOptions, setModelOptions, appendLine);
+            const models = await loadKnownOrAvailableModels(settings.provider, settings.ollamaUrl, modelOptions, setModelOptions, appendLine, {
+              refresh: settings.provider === "gemini-wrapper"
+            });
             if (!models) {
               return;
             }
             const nextModel = selectModelFromInput(requestedModel, models, undefined, {
-              allowManual: settings.provider !== "ollama"
+              allowManual: settings.provider !== "ollama" && settings.provider !== "gemini-wrapper"
             });
             if (!nextModel) {
               appendLine({
@@ -1291,13 +1352,15 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         case "models": {
           const requestedModel = args.join(" ").trim();
           if (requestedModel) {
-            const installedModels = await loadKnownOrAvailableModels(settings.provider, settings.ollamaUrl, modelOptions, setModelOptions, appendLine);
+            const installedModels = await loadKnownOrAvailableModels(settings.provider, settings.ollamaUrl, modelOptions, setModelOptions, appendLine, {
+              refresh: settings.provider === "gemini-wrapper"
+            });
             if (!installedModels) {
               return;
             }
 
             const nextModel = selectModelFromInput(requestedModel, installedModels, undefined, {
-              allowManual: settings.provider !== "ollama"
+              allowManual: settings.provider !== "ollama" && settings.provider !== "gemini-wrapper"
             });
             if (!nextModel) {
               appendLine({
@@ -1380,11 +1443,26 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           const sessionId = args[0] ?? "";
           const sessions = await listWorkspaceSessions(settings.workspace);
           const selectedSession = sessionId ? await loadSessionSummary(settings.workspace, sessionId) : sessions[0] ?? null;
+          if (selectedSession) {
+            sessionStoreRef.current = new SessionStore({
+              workspace: settings.workspace,
+              sessionId: selectedSession.sessionId
+            });
+            await sessionStoreRef.current.append({
+              type: "session.resumed",
+              sessionId: selectedSession.sessionId,
+              workspace: settings.workspace,
+              resumedAt: new Date().toISOString()
+            });
+            setResumeContext(await buildSessionResumeContext(settings.workspace, selectedSession.sessionId));
+            setSessionTelemetry(emptySessionTelemetry());
+            setTelemetry(null);
+          }
           appendLine({
             kind: "status",
             tone: selectedSession ? "accent" : "warning",
             label: "resume",
-            text: selectedSession ? `Loaded session ${selectedSession.sessionId}` : "No session available to resume.",
+            text: selectedSession ? `Loaded session ${selectedSession.sessionId} and will inject its summary into the next run.` : "No session available to resume.",
             detail: selectedSession
               ? `workspace ${selectedSession.workspace}\nupdated ${selectedSession.updatedAt}\nmodel ${selectedSession.provider ?? "-"} ${selectedSession.model ?? "-"}\nlast task ${selectedSession.lastTask ?? "-"}`
               : "Run /sessions after at least one PatchPilot run."
@@ -1506,28 +1584,149 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           return;
         }
         case "doctor": {
+          const shouldFix = args.some((arg) => arg.toLowerCase() === "fix" || arg.toLowerCase() === "--fix");
           appendLine({
             tone: "muted",
             label: "doctor",
-            text: "checking local requirements..."
+            text: shouldFix ? "checking local requirements and applying safe fixes..." : "checking local requirements..."
           });
-          const doctorResults = await runDoctor(settings.provider, settings.ollamaUrl, settings.model);
+          const doctorResults = await runDoctor(settings.provider, settings.ollamaUrl, settings.model, {
+            fix: shouldFix
+          });
           for (const result of doctorResults) {
             appendLine({
               tone: result.ok ? "success" : "danger",
               label: result.name,
-              text: result.details
+              text: result.action && result.action !== "check" ? `${result.action}: ${result.details}` : result.details
             });
           }
+          if (!shouldFix && doctorResults.some((result) => result.action === "skipped")) {
+            appendLine({
+              tone: "accent",
+              label: "doctor",
+              text: "Some safe fixes are available. Run /doctor fix to approve them."
+            });
+          }
+          return;
+        }
+        case "cleanup": {
+          const target = readCleanupTarget(args[0]);
+          if (!target) {
+            appendLine({
+              tone: "accent",
+              label: "cleanup",
+              text: "Choose what to clean: /cleanup cache, /cleanup sessions, /cleanup temp, or /cleanup all.",
+              detail: "Sessions deletes saved workspace transcripts. Cache/temp are safe first choices."
+            });
+            return;
+          }
+
+          const removed = await cleanupPatchPilot(settings.workspace, target);
+          if (target === "sessions" || target === "all") {
+            sessionStoreRef.current = new SessionStore({
+              workspace: settings.workspace
+            });
+            await sessionStoreRef.current.create();
+            setResumeContext("");
+            setLines([]);
+            setAdvisorNotes([]);
+            setTelemetry(null);
+            setSessionTelemetry(emptySessionTelemetry());
+          }
+          appendLine({
+            tone: "success",
+            label: "cleanup",
+            text: `cleaned ${removed.join(", ") || target}`
+          });
+          return;
+        }
+        case "experimental": {
+          const requestedFlag = args[0]?.toLowerCase();
+          const requestedValue = args[1]?.toLowerCase();
+          if (!requestedFlag) {
+            setExperimentalOpen(true);
+            setExperimentalIndex(0);
+            setInput("");
+            return;
+          }
+
+          const enabled = readToggle(requestedValue, true);
+          if (requestedFlag === "subagents" || requestedFlag === "agents") {
+            setSettings((currentSettings) => ({
+              ...currentSettings,
+              subagents: enabled
+            }));
+          }
+          savePatchPilotEnvValues({
+            [`PATCHPILOT_EXPERIMENTAL_${requestedFlag.replace(/-/g, "_").toUpperCase()}`]: enabled ? "1" : "0"
+          });
+          setExperimentalFlags((currentFlags) => ({
+            ...currentFlags,
+            ...(requestedFlag === "file-analysis"
+              ? { fileAnalysis: enabled }
+              : requestedFlag === "memory"
+                ? { memory: enabled }
+                : requestedFlag === "subagents" || requestedFlag === "agents"
+                  ? { subagents: enabled }
+                  : {})
+          }));
+          appendLine({
+            tone: "success",
+            label: "experimental",
+            text: `${requestedFlag} ${enabled ? "enabled" : "disabled"}`
+          });
+          return;
+        }
+        case "init": {
+          const result = await ensurePatchPilotInstructions(settings.workspace);
+          appendLine({
+            tone: result.created ? "success" : "accent",
+            label: "init",
+            text: `${result.created ? "created" : "found"} PATCHPILOT.md`,
+            detail: result.path
+          });
           return;
         }
         case "clear":
           setLines([]);
           setAdvisorNotes([]);
           setTelemetry(null);
+          setResumeContext("");
           setSessionTelemetry(emptySessionTelemetry());
           setTranscriptScrollOffset(0);
           setSessionScrollOffset(0);
+          return;
+        case "new":
+          if (isRunning) {
+            appendLine({
+              tone: "warning",
+              label: "new",
+              text: "Cannot start a new session while a run is active.",
+              detail: "Stop the current run first, then use /new again."
+            });
+            return;
+          }
+          sessionStoreRef.current = new SessionStore({
+            workspace: settings.workspace
+          });
+          await sessionStoreRef.current.create();
+          setLines([]);
+          setAdvisorNotes([]);
+          setTelemetry(null);
+          setSessionTelemetry(emptySessionTelemetry());
+          setPendingApproval(null);
+          approvalResolverRef.current = null;
+          setBypassConfirmation(false);
+          setInput("");
+          setTranscriptScrollOffset(0);
+          setSessionScrollOffset(0);
+          setStatus("idle");
+          setWorkState("idle");
+          appendLine({
+            tone: "success",
+            label: "new",
+            text: `started session ${sessionStoreRef.current.sessionId}`
+          });
           return;
         case "exit":
         case "quit":
@@ -1556,6 +1755,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       loadHostSuggestions,
       loadProviderModels,
       modelOptions,
+      isRunning,
       resolveApproval,
       sessionTelemetry,
       settings,
@@ -1611,6 +1811,11 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   useEffect(() => {
     void sessionStoreRef.current.create();
   }, []);
+
+  useEffect(() => {
+    runtimeStateRef.current.isRunning = isRunning;
+    runtimeStateRef.current.hasPendingApproval = Boolean(pendingApproval || bypassConfirmation);
+  }, [bypassConfirmation, isRunning, pendingApproval]);
 
   useEffect(() => {
     if (!props.initialTask || didRunInitialTask.current || onboarding || process.env.PATCHPILOT_ONBOARDING_COMPLETE !== "1") {
@@ -1715,6 +1920,49 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   }, [hostOptions.length, input, isLoadingHosts, isLoadingModels, isRunning, loadHostSuggestions, loadProviderModels, modelOptions.length, onboarding, settings.provider]);
 
   useInput((inputValue, key) => {
+    if (experimentalOpen) {
+      if (key.upArrow) {
+        setExperimentalIndex((currentIndex) => (currentIndex - 1 + experimentalFlagCount()) % experimentalFlagCount());
+        return;
+      }
+
+      if (key.downArrow) {
+        setExperimentalIndex((currentIndex) => (currentIndex + 1) % experimentalFlagCount());
+        return;
+      }
+
+      if (inputValue === " ") {
+        const flag = experimentalFlagAt(experimentalIndex);
+        setExperimentalFlags((currentFlags) => {
+          const nextFlags = {
+            ...currentFlags,
+            [flag]: !currentFlags[flag]
+          };
+          if (flag === "subagents") {
+            setSettings((currentSettings) => ({
+              ...currentSettings,
+              subagents: nextFlags.subagents
+            }));
+          }
+          savePatchPilotEnvValues({
+            PATCHPILOT_EXPERIMENTAL_FILE_ANALYSIS: nextFlags.fileAnalysis ? "1" : "0",
+            PATCHPILOT_EXPERIMENTAL_MEMORY: nextFlags.memory ? "1" : "0",
+            PATCHPILOT_EXPERIMENTAL_SUBAGENTS: nextFlags.subagents ? "1" : "0"
+          });
+          return nextFlags;
+        });
+        return;
+      }
+
+      if (key.return || key.escape || key.leftArrow) {
+        setExperimentalOpen(false);
+        setInput("");
+        return;
+      }
+
+      return;
+    }
+
     if (bypassConfirmation) {
       const normalizedInput = inputValue.toLowerCase();
       if (key.tab) {
@@ -1784,7 +2032,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         return;
       }
 
-      if (optionCount > 0 && key.return && onboarding.step !== "model") {
+      if (optionCount > 0 && key.return) {
         void handleOnboardingSubmit(String(onboardingIndex + 1));
         return;
       }
@@ -1815,6 +2063,18 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
     }
 
     const canUsePanelKeys = input.length === 0 || isRunning;
+    if (canUsePanelKeys && key.upArrow && paletteItems.length === 0) {
+      const setOffset = activeScrollPane === "session" ? setSessionScrollOffset : setTranscriptScrollOffset;
+      setOffset((currentOffset) => currentOffset + 1);
+      return;
+    }
+
+    if (canUsePanelKeys && key.downArrow && paletteItems.length === 0) {
+      const setOffset = activeScrollPane === "session" ? setSessionScrollOffset : setTranscriptScrollOffset;
+      setOffset((currentOffset) => Math.max(0, currentOffset - 1));
+      return;
+    }
+
     if (canUsePanelKeys && key.leftArrow) {
       setActiveScrollPane("session");
       return;
@@ -1850,20 +2110,47 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   });
 
   useEffect(() => {
+    const gracefulStopOrExit = (): void => {
+      const now = Date.now();
+      const state = runtimeStateRef.current;
+      if ((state.isRunning || state.hasPendingApproval) && now - state.lastSigintAt > 1500) {
+        state.lastSigintAt = now;
+        abortControllerRef.current?.abort();
+        approvalResolverRef.current?.("deny");
+        approvalResolverRef.current = null;
+        setPendingApproval(null);
+        setBypassConfirmation(false);
+        setInput("");
+        setStatus("stopping");
+        setWorkState("idle");
+        appendLine({
+          kind: "status",
+          tone: "warning",
+          label: "stop",
+          text: "Stopping current task. Press Ctrl-C again to quit."
+        });
+        return;
+      }
+
+      void unloadUsedOllamaModels(usedOllamaModelsRef.current).finally(() => {
+        process.exit(0);
+      });
+    };
+
     const unloadAndExit = (): void => {
       void unloadUsedOllamaModels(usedOllamaModelsRef.current).finally(() => {
         process.exit(0);
       });
     };
 
-    process.once("SIGINT", unloadAndExit);
-    process.once("SIGTERM", unloadAndExit);
+    process.on("SIGINT", gracefulStopOrExit);
+    process.on("SIGTERM", unloadAndExit);
     return () => {
-      process.off("SIGINT", unloadAndExit);
+      process.off("SIGINT", gracefulStopOrExit);
       process.off("SIGTERM", unloadAndExit);
       void unloadUsedOllamaModels(usedOllamaModelsRef.current);
     };
-  }, []);
+  }, [appendLine]);
 
   useEffect(() => {
     let previousSnapshot = readSystemStats().snapshot;
@@ -1922,7 +2209,13 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         activeHost={activeHost}
       />
 
-      {onboarding ? (
+      {experimentalOpen ? (
+        <ExperimentalPanel
+          flags={experimentalFlags}
+          selectedIndex={experimentalIndex}
+          height={panelHeight}
+        />
+      ) : onboarding ? (
         <OnboardingPanel
           state={onboarding}
           height={panelHeight}
@@ -2028,20 +2321,18 @@ function modelCacheKey(provider: ModelProvider, ollamaUrl: string): string {
   return `${provider}:default`;
 }
 
-function shouldUseGeminiWrapperAutoModelOnly(): boolean {
-  const mode = readGeminiWrapperMode();
-  return mode === "python" || (mode === "auto" && !readGeminiWrapperBaseUrl());
-}
-
 async function loadKnownOrAvailableModels(
   provider: ModelProvider,
   ollamaUrl: string,
   modelOptions: string[],
   setModelOptions: React.Dispatch<React.SetStateAction<string[]>>,
-  appendLine: (line: LogLineInput) => void
+  appendLine: (line: LogLineInput) => void,
+  options: {
+    refresh?: boolean;
+  } = {}
 ): Promise<string[] | null> {
   try {
-    return modelOptions.length > 0 ? modelOptions : await loadAvailableModels(provider, ollamaUrl, setModelOptions);
+    return !options.refresh && modelOptions.length > 0 ? modelOptions : await loadAvailableModels(provider, ollamaUrl, setModelOptions, options.refresh);
   } catch (error) {
     appendLine({
       tone: "danger",
@@ -2191,7 +2482,6 @@ function buildCommandSuggestionItems(options: {
 
   const trimmedInput = options.input.trimStart().toLowerCase();
   const items: PaletteSuggestion[] = filterSlashCommands(options.input)
-    .slice(0, 6)
     .map((command) => {
       const baseCommand = `/${command.name}`;
       return {
@@ -2229,7 +2519,7 @@ function buildCommandSuggestionItems(options: {
     }
   }
 
-  if (trimmedInput === "/models" || trimmedInput.startsWith("/models") || trimmedInput === "/model" || trimmedInput.startsWith("/model")) {
+  if (trimmedInput.startsWith("/models ") || trimmedInput.startsWith("/model ")) {
     const modelQuery = trimmedInput.replace(/^\/models?/, "").trim();
     if (options.isLoadingModels) {
       items.unshift({
@@ -2254,7 +2544,7 @@ function buildCommandSuggestionItems(options: {
     }
   }
 
-  return items.slice(0, 8);
+  return items;
 }
 
 function getOnboardingOptionCount(onboarding: OnboardingState): number {
@@ -2265,6 +2555,8 @@ function getOnboardingOptionCount(onboarding: OnboardingState): number {
       return onboarding.hosts.length + 1;
     case "api-key-choice":
       return onboarding.hasExistingKey ? 2 : 1;
+    case "gemini-wrapper-model-mode":
+      return 2;
     case "model":
       return onboarding.models.length;
     default:
@@ -2307,6 +2599,23 @@ function readEntrySelection(value: string, selectedIndex: number): "local" | "ho
   }
 
   return null;
+}
+
+function readBooleanEnv(value: string | undefined, fallback: boolean): boolean {
+  if (!value) {
+    return fallback;
+  }
+
+  const normalizedValue = value.trim().toLowerCase();
+  if (["1", "true", "yes", "on", "enabled"].includes(normalizedValue)) {
+    return true;
+  }
+
+  if (["0", "false", "no", "off", "disabled"].includes(normalizedValue)) {
+    return false;
+  }
+
+  return fallback;
 }
 
 function readIndexedSelection(value: string, selectedIndex: number): number | null {

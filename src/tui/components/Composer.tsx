@@ -40,7 +40,9 @@ export function Composer(props: {
         <Text color={props.isApprovalWaiting ? "yellow" : props.isRunning ? "yellow" : "cyan"}>
           {props.isApprovalWaiting ? "input >  " : props.isRunning ? "running  " : "patch >  "}
         </Text>
-        {props.isRunning && !props.isApprovalWaiting ? (
+        {props.isApprovalWaiting ? (
+          <Text color="yellow">approval waiting</Text>
+        ) : props.isRunning ? (
           <Text color="yellow">
             {spinnerFrames[frameIndex]} {props.status}
             <Text color="gray">{elapsedSeconds > 0 ? `  ${elapsedSeconds}s` : "  starting"}</Text>

@@ -5,12 +5,14 @@ import React from "react";
 import { render } from "ink";
 import { Command } from "commander";
 import { defaultCodexModel } from "./core/codex.js";
+import { cleanupPatchPilot, readCleanupTarget } from "./core/cleanup.js";
 import { loadPatchPilotEnv } from "./core/env.js";
 import { defaultGeminiModel } from "./core/gemini.js";
 import { defaultGeminiWrapperModel } from "./core/geminiWrapper.js";
 import { normalizeModelProvider, readModelProvider } from "./core/modelClient.js";
 import { defaultNvidiaModel } from "./core/nvidia.js";
 import { runDoctor } from "./core/doctor.js";
+import { ensurePatchPilotInstructions } from "./core/projectInit.js";
 import { defaultOllamaModel, resolveOllamaBaseUrl } from "./core/ollama.js";
 import { defaultOpenRouterModel } from "./core/openrouter.js";
 import { listIndexedSessions, listWorkspaceSessions, loadSessionSummary } from "./core/session.js";
@@ -43,6 +45,32 @@ program
   .version(readPackageVersion());
 
 program
+  .command("init")
+  .description("Create PATCHPILOT.md workspace instructions.")
+  .option("--workspace <path>", "Workspace root", process.cwd())
+  .action(async (options: { workspace: string }) => {
+    const result = await ensurePatchPilotInstructions(path.resolve(options.workspace));
+    console.log(`${result.created ? "created" : "exists"} ${result.path}`);
+  });
+
+program
+  .command("cleanup")
+  .description("Clean PatchPilot workspace cache, sessions, temp files, or all.")
+  .argument("[target]", "cache, sessions, temp, or all", "cache")
+  .option("--workspace <path>", "Workspace root", process.cwd())
+  .action(async (target: string, options: { workspace: string }) => {
+    const cleanupTarget = readCleanupTarget(target);
+    if (!cleanupTarget) {
+      console.error("Use one of: cache, sessions, temp, all");
+      process.exitCode = 1;
+      return;
+    }
+
+    const removed = await cleanupPatchPilot(path.resolve(options.workspace), cleanupTarget);
+    console.log(`cleaned ${removed.join(", ") || cleanupTarget}`);
+  });
+
+program
   .command("doctor")
   .description("Check local PatchPilot requirements.")
   .option("--provider <name>", "Model provider: ollama, gemini, gemini-wrapper, openrouter, nvidia, or codex.", defaultProvider)
@@ -50,17 +78,22 @@ program
   .option("--ollama-url <url>", "Alias for --check-url.")
   .option("--check-model <name>", "Model name to verify", defaultModel)
   .option("--model <name>", "Alias for --check-model.")
+  .option("--fix", "Apply safe doctor fixes, such as installing the managed Gemini-API bridge.", false)
   .action(async (options: {
       provider: string;
       checkUrl: string;
       ollamaUrl?: string;
       checkModel: string;
       model?: string;
+      fix?: boolean;
     }) => {
-    const results = await runDoctor(normalizeModelProvider(options.provider), options.ollamaUrl ?? options.checkUrl, options.model ?? options.checkModel);
+    const results = await runDoctor(normalizeModelProvider(options.provider), options.ollamaUrl ?? options.checkUrl, options.model ?? options.checkModel, {
+      fix: Boolean(options.fix)
+    });
     for (const result of results) {
       const marker = result.ok ? "ok" : "fail";
-      console.log(`${marker.padEnd(5)} ${result.name}: ${result.details}`);
+      const action = result.action ? ` ${result.action}` : "";
+      console.log(`${marker.padEnd(5)} ${result.name}${action}: ${result.details}`);
     }
 
     process.exitCode = results.every((result) => result.ok) ? 0 : 1;

@@ -60,6 +60,13 @@ export const slashCommands: SlashCommand[] = [
     category: "model"
   },
   {
+    name: "new",
+    usage: "/new",
+    description: "Start a fresh PatchPilot session and clear the current context.",
+    category: "session",
+    detail: "Clears the visible transcript, telemetry, advisor notes, approvals, and starts a new session file. Provider, model, mode, and permissions stay unchanged."
+  },
+  {
     name: "write",
     usage: "/write on|off",
     description: "Enable or disable workspace writes.",
@@ -169,9 +176,31 @@ export const slashCommands: SlashCommand[] = [
   },
   {
     name: "doctor",
-    usage: "/doctor",
+    usage: "/doctor [fix]",
     description: "Check Node, Git, and active provider diagnostics.",
-    category: "utility"
+    category: "utility",
+    detail: "/doctor checks requirements without changing the machine. /doctor fix applies safe repairs such as installing the managed Gemini-API bridge."
+  },
+  {
+    name: "cleanup",
+    usage: "/cleanup cache|sessions|temp|all",
+    description: "Clean PatchPilot cache, saved sessions, temp files, or all workspace state.",
+    category: "utility",
+    detail: "Use cache/temp for safe cleanup. sessions/all delete saved workspace transcripts and start a fresh session."
+  },
+  {
+    name: "experimental",
+    usage: "/experimental [file-analysis|memory|subagents] [on|off]",
+    description: "Open or update experimental feature toggles.",
+    category: "utility",
+    detail: "Run /experimental to open the checkbox menu. Use space to toggle file-analysis, memory, and subagents."
+  },
+  {
+    name: "init",
+    usage: "/init",
+    description: "Create PATCHPILOT.md workspace instructions.",
+    category: "utility",
+    detail: "Creates a PATCHPILOT.md file similar to AGENTS.md or CLAUDE.md and ensures .patchpilot/ stays ignored."
   },
   {
     name: "clear",

@@ -2,7 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { listWorkspaceSessions, readSessionEvents, SessionStore } from "../src/core/session.js";
+import { buildSessionResumeContext, listWorkspaceSessions, readSessionEvents, SessionStore } from "../src/core/session.js";
 
 let tempRoot = "";
 
@@ -64,5 +64,31 @@ describe("SessionStore", () => {
 
     const sessions = await listWorkspaceSessions(tempRoot);
     expect(sessions.map((session) => session.sessionId)).toContain("recoverable");
+  });
+
+  it("builds compact resume context from prior session events", async () => {
+    const store = new SessionStore({
+      workspace: tempRoot,
+      sessionId: "resume-me"
+    });
+
+    await store.create();
+    await store.append({
+      type: "run.started",
+      runId: "run-1",
+      task: "fix the broken game",
+      provider: "gemini-wrapper",
+      model: "auto",
+      startedAt: "2026-05-18T10:00:00.000Z"
+    });
+    await store.append({
+      type: "run.completed",
+      runId: "run-1",
+      message: "changed index.html",
+      completedAt: "2026-05-18T10:00:02.000Z"
+    });
+
+    await expect(buildSessionResumeContext(tempRoot, "resume-me")).resolves.toContain("fix the broken game");
+    await expect(buildSessionResumeContext(tempRoot, "resume-me")).resolves.toContain("changed index.html");
   });
 });

@@ -119,6 +119,26 @@ export async function loadSessionSummary(workspace: string, sessionId: string): 
   return summarizeEvents(await readSessionEvents(SessionStore.workspaceSessionPath(workspace, sessionId)), sessionId, path.resolve(workspace));
 }
 
+export async function buildSessionResumeContext(workspace: string, sessionId: string): Promise<string> {
+  const events = await readSessionEvents(SessionStore.workspaceSessionPath(workspace, sessionId));
+  const summary = summarizeEvents(events, sessionId, path.resolve(workspace));
+  const recentEvents = events
+    .filter((event) => event.type !== "model.request")
+    .slice(-24)
+    .map(formatEventForResume)
+    .filter(Boolean);
+
+  return [
+    `Resumed PatchPilot session ${summary.sessionId}.`,
+    `Workspace: ${summary.workspace}`,
+    summary.provider && summary.model ? `Last model: ${summary.provider}/${summary.model}` : "",
+    summary.lastTask ? `Last task: ${summary.lastTask}` : "",
+    recentEvents.length > 0 ? `Recent session events:\n${recentEvents.join("\n")}` : ""
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
 function summarizeEvents(events: SessionEvent[], sessionId: string, workspace: string): SessionSummary {
   const created = events.find((event) => event.type === "session.created");
   const summary: SessionSummary = {
@@ -172,6 +192,10 @@ function eventTimestamp(event: SessionEvent): string {
     return event.createdAt;
   }
 
+  if ("resumedAt" in event) {
+    return event.resumedAt;
+  }
+
   if ("startedAt" in event) {
     return event.startedAt;
   }
@@ -185,6 +209,33 @@ function eventTimestamp(event: SessionEvent): string {
   }
 
   return new Date().toISOString();
+}
+
+function formatEventForResume(event: SessionEvent): string {
+  switch (event.type) {
+    case "session.created":
+      return `- session created at ${event.createdAt}`;
+    case "session.resumed":
+      return `- session resumed at ${event.resumedAt}`;
+    case "run.started":
+      return `- user asked: ${clip(event.task, 300)}`;
+    case "tool.requested":
+      return `- requested ${event.tool}`;
+    case "approval.requested":
+      return `- approval ${event.decision} for ${event.request.tool}`;
+    case "tool.completed":
+      return `- ${event.tool} ${event.ok ? "ok" : "failed"}: ${clip(event.summary, 180)}`;
+    case "run.completed":
+      return `- assistant finished: ${clip(event.message, 500)}`;
+    case "run.failed":
+      return `- run failed: ${clip(event.message, 300)}`;
+    case "model.request":
+      return "";
+  }
+}
+
+function clip(value: string, maxLength: number): string {
+  return value.length <= maxLength ? value : `${value.slice(0, maxLength)}...`;
 }
 
 function createSessionId(): string {

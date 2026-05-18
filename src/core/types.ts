@@ -45,6 +45,8 @@ export type AgentToolName =
   | "file_info"
   | "search_text"
   | "inspect_document"
+  | "memory_remember"
+  | "memory_search"
   | "git_status"
   | "git_diff"
   | "list_changed_files"
@@ -66,7 +68,7 @@ export type ToolSideEffect = "none" | "write" | "shell";
 
 export type ToolPermission = "none" | "write" | "shell";
 
-export type ToolCategory = "read" | "search" | "write" | "shell" | "git" | "test" | "document";
+export type ToolCategory = "read" | "search" | "write" | "shell" | "git" | "test" | "document" | "memory";
 
 export type ToolSpec = {
   name: AgentToolName;
@@ -172,6 +174,12 @@ export type SessionEvent =
       sessionId: string;
       workspace: string;
       createdAt: string;
+    }
+  | {
+      type: "session.resumed";
+      sessionId: string;
+      workspace: string;
+      resumedAt: string;
     }
   | {
       type: "run.started";

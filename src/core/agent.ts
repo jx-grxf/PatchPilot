@@ -20,6 +20,9 @@ export type AgentRunnerOptions = {
   thinkingMode: "fixed" | "adaptive";
   reasoningEffort: ProviderReasoningEffort | "adaptive";
   subagents: boolean;
+  resumeContext?: string;
+  allowExternalFileAnalysis?: boolean;
+  memoryEnabled?: boolean;
   signal?: AbortSignal;
   sessionStore?: SessionStore;
   approvalHandler?: (request: ApprovalRequest) => Promise<PermissionDecision>;
@@ -41,6 +44,8 @@ export class AgentRunner {
       root: options.workspace,
       allowWrite: options.allowWrite,
       allowShell: options.allowShell,
+      allowExternalFileAnalysis: options.allowExternalFileAnalysis,
+      memoryEnabled: options.memoryEnabled,
       signal: options.signal,
       approvalHandler: options.approvalHandler
     });
@@ -95,12 +100,15 @@ export class AgentRunner {
 
     const messages: ChatMessage[] = [
       {
-        role: "system",
-        content: buildSystemPrompt(this.tools.root, subagentContext, workspaceSummary, {
+          role: "system",
+        content: buildSystemPrompt(this.tools.root, subagentContext, workspaceSummary, this.options.resumeContext ?? "", {
           mode: this.options.mode ?? (this.options.allowWrite || this.options.allowShell ? "bypass" : "plan"),
           allowWrite: this.options.allowWrite,
           allowShell: this.options.allowShell,
           hasApprovalHandler: Boolean(this.options.approvalHandler)
+        }, {
+          allowExternalFileAnalysis: Boolean(this.options.allowExternalFileAnalysis),
+          memoryEnabled: Boolean(this.options.memoryEnabled)
         })
       },
       {
@@ -135,13 +143,25 @@ export class AgentRunner {
         createdAt: new Date().toISOString()
       });
 
-      const modelResponse = await this.client.chat({
-        model: this.options.model,
-        messages,
-        formatJson: true,
-        reasoningEffort,
-        signal: this.options.signal
-      });
+      let modelResponse;
+      try {
+        modelResponse = await this.client.chat({
+          model: this.options.model,
+          messages,
+          formatJson: true,
+          reasoningEffort,
+          signal: this.options.signal
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        await this.options.sessionStore?.append({
+          type: "run.failed",
+          runId,
+          message,
+          failedAt: new Date().toISOString()
+        });
+        throw error;
+      }
       const rawResponse = modelResponse.content;
 
       yield {
@@ -162,7 +182,7 @@ export class AgentRunner {
         };
         messages.push({
           role: "assistant",
-          content: rawResponse
+          content: clipPromptValue(rawResponse, 2000)
         });
         messages.push({
           role: "user",
@@ -341,11 +361,16 @@ function buildSystemPrompt(
   workspaceRoot: string,
   subagentContext: string,
   workspaceSummary: string,
+  resumeContext: string,
   permissions: {
     mode: "plan" | "build" | "bypass";
     allowWrite: boolean;
     allowShell: boolean;
     hasApprovalHandler: boolean;
+  },
+  experimental: {
+    allowExternalFileAnalysis: boolean;
+    memoryEnabled: boolean;
   }
 ): string {
   const workspaceLabel = path.basename(workspaceRoot) || "workspace";
@@ -382,7 +407,22 @@ function buildSystemPrompt(
     "For repository summaries, inspect README.md, package.json, tests, docs, and top-level source files before answering.",
     "For implementation tasks, first inspect the narrowest relevant files, then edit only what is needed.",
     "When diagnosing a failure, form a concrete hypothesis, gather targeted evidence with tools, then fix the smallest cause.",
+    experimental.allowExternalFileAnalysis
+      ? "Experimental file analysis is enabled: inspect_document may inspect supported absolute paths outside the workspace when the user provides them."
+      : "Experimental file analysis is disabled: inspect_document is limited to the workspace.",
+    experimental.memoryEnabled
+      ? "Experimental memory is enabled: use memory_search for relevant durable context and memory_remember when the user asks you to remember something or states durable project guidance."
+      : "Experimental memory is disabled.",
     workspaceSummary ? ["", "Workspace context:", workspaceSummary].join("\n") : "",
+    resumeContext
+      ? [
+          "",
+          "Resumed session context:",
+          resumeContext,
+          "",
+          "Use this as compact historical context. Re-read files before making claims about current workspace contents."
+        ].join("\n")
+      : "",
     subagentContext
       ? [
           "",
@@ -409,6 +449,12 @@ function buildSystemPrompt(
     "- file_info: {\"path\":\"src/index.ts\"}",
     "- search_text: {\"query\":\"functionName\"}",
     "- inspect_document: {\"path\":\"docs/spec.pdf\"} for pdf, docx, and text/code files",
+    ...(experimental.memoryEnabled
+      ? [
+          "- memory_search: {\"query\":\"provider setup\",\"limit\":5}",
+          "- memory_remember: {\"content\":\"durable note\",\"tags\":[\"project\"]}"
+        ]
+      : []),
     "- git_status: {} for current branch and dirty files",
     "- git_diff: {\"path\":\"src/index.ts\"} or {} for all current changes",
     "- list_changed_files: {}",
@@ -542,13 +588,15 @@ function createToolCallId(tool: AgentToolName): string {
 }
 
 async function buildWorkspaceSummary(workspaceRoot: string): Promise<string> {
-  const [packageJson, tsconfig, readme] = await Promise.all([
+  const [patchPilotInstructions, packageJson, tsconfig, readme] = await Promise.all([
+    readWorkspaceFile(workspaceRoot, "PATCHPILOT.md", 4000),
     readWorkspaceFile(workspaceRoot, "package.json", 4000),
     readWorkspaceFile(workspaceRoot, "tsconfig.json", 1600),
     readWorkspaceFile(workspaceRoot, "README.md", 3000)
   ]);
 
   return [
+    patchPilotInstructions ? `PATCHPILOT.md instructions:\n${patchPilotInstructions}` : "",
     packageJson ? `package.json:\n${packageJson}` : "",
     tsconfig ? `tsconfig.json:\n${tsconfig}` : "",
     readme ? `README excerpt:\n${readme}` : ""

@@ -24,9 +24,10 @@ export type DoctorResult = {
   name: string;
   ok: boolean;
   details: string;
+  action?: "check" | "fix" | "skipped";
 };
 
-export async function runDoctor(provider: ModelProvider, ollamaUrl: string, model?: string): Promise<DoctorResult[]> {
+export async function runDoctor(provider: ModelProvider, ollamaUrl: string, model?: string, options: { fix?: boolean } = {}): Promise<DoctorResult[]> {
   const results: DoctorResult[] = [];
 
   results.push(await checkCommand("node", ["--version"]));
@@ -38,7 +39,7 @@ export async function runDoctor(provider: ModelProvider, ollamaUrl: string, mode
   }
 
   if (provider === "gemini-wrapper") {
-    results.push(...(await checkGeminiWrapper(model)));
+    results.push(...(await checkGeminiWrapper(model, options)));
     return results;
   }
 
@@ -248,12 +249,12 @@ async function checkGemini(model?: string): Promise<DoctorResult[]> {
   return results;
 }
 
-async function checkGeminiWrapper(model?: string): Promise<DoctorResult[]> {
+async function checkGeminiWrapper(model?: string, options: { fix?: boolean } = {}): Promise<DoctorResult[]> {
   const baseUrl = readGeminiWrapperBaseUrl();
   const apiKey = readGeminiWrapperApiKey();
   const mode = readGeminiWrapperMode();
   if (mode === "python" || (!baseUrl && mode === "auto")) {
-    return await checkGeminiApiBridge(model);
+    return await checkGeminiApiBridge(model, options);
   }
 
   const results: DoctorResult[] = [
@@ -309,18 +310,21 @@ async function checkGeminiWrapper(model?: string): Promise<DoctorResult[]> {
   return results;
 }
 
-async function checkGeminiApiBridge(model?: string): Promise<DoctorResult[]> {
+async function checkGeminiApiBridge(model?: string, options: { fix?: boolean } = {}): Promise<DoctorResult[]> {
   const pythonCommand = readGeminiWrapperPythonCommand();
   const hasExplicitAuth = Boolean(readGeminiWrapperCookiesJson() || readGeminiWrapperSecure1psid());
   const isInstalledBefore = await isGeminiWebApiInstalled(pythonCommand);
-  const isInstalled = isInstalledBefore || (await ensureGeminiWebApiInstalled(pythonCommand));
+  const isInstalled = isInstalledBefore || (options.fix ? await ensureGeminiWebApiInstalled(pythonCommand) : false);
   const results: DoctorResult[] = [
     {
       name: "gemini-api-bridge",
       ok: isInstalled,
       details: isInstalled
         ? `${isInstalledBefore ? "gemini_webapi import works" : "installed gemini_webapi into PatchPilot managed venv"} through ${pythonCommand}`
-        : `missing. PatchPilot tried the managed venv install. Manual fallback: ${geminiWebApiInstallCommand}`
+        : options.fix
+          ? `missing. PatchPilot tried the managed venv install. Manual fallback: ${geminiWebApiInstallCommand}`
+          : `missing. Run /doctor fix or patchpilot doctor --fix to install the managed bridge. Manual fallback: ${geminiWebApiInstallCommand}`,
+      action: isInstalledBefore ? "check" : options.fix && isInstalled ? "fix" : "skipped"
     },
     {
       name: "gemini-api-auth",

@@ -1,10 +1,14 @@
 <div align="center">
 
+<img src="https://raw.githubusercontent.com/jx-grxf/PatchPilot/main/docs/showcase/patchpilot-logo.png" alt="PatchPilot logo" width="112">
+
 # PatchPilot
 
 **A local-first coding-agent TUI that makes repo changes visible, permissioned, and easy to review across local, remote, and cloud model routes.**
 
 [![CI](https://github.com/jx-grxf/PatchPilot/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/jx-grxf/PatchPilot/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/@jx-grxf/patchpilot?logo=npm&color=cb3837)](https://www.npmjs.com/package/@jx-grxf/patchpilot)
+[![npm downloads](https://img.shields.io/npm/dm/@jx-grxf/patchpilot?logo=npm&color=0ea5e9)](https://www.npmjs.com/package/@jx-grxf/patchpilot)
 ![Status](https://img.shields.io/badge/status-preview%20agent-0ea5e9)
 ![TypeScript](https://img.shields.io/badge/TypeScript-5.9-3178C6?logo=typescript&logoColor=white)
 ![Node](https://img.shields.io/badge/Node.js-22%2B-339933?logo=node.js&logoColor=white)
@@ -20,7 +24,13 @@
 
 ---
 
-## Showcase
+## Product Visual
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/jx-grxf/PatchPilot/main/docs/showcase/patchpilot-banner.png" alt="PatchPilot product visual" width="920">
+</p>
+
+## Current TUI Screenshot
 
 <p align="center">
   <img src="docs/showcase/patchpilot-showcase.svg" alt="PatchPilot terminal interface overview" width="920">
@@ -28,7 +38,8 @@
 
 PatchPilot is a terminal interface for running coding-agent tasks inside a repository. It shows what the agent is doing, keeps risky actions behind explicit permissions, and supports local Ollama, remote Ollama, Google Gemini, explicit Gemini-compatible wrappers, OpenRouter, NVIDIA NIM-compatible endpoints, and Codex CLI OAuth.
 
-PatchPilot is still preview software. The v0.4 line focuses on making the TUI, approvals, and provider selection reliable enough for real project use; it is not a finished autonomous PR bot or a v1 desktop product.
+> [!IMPORTANT]
+> PatchPilot is preview software. v0.4.0 is usable for guarded repo inspection and patching, but it is not a finished autonomous PR bot or desktop product.
 
 ---
 
@@ -36,6 +47,7 @@ PatchPilot is still preview software. The v0.4 line focuses on making the TUI, a
 
 - [Highlights](#highlights)
 - [Why This Exists](#why-this-exists)
+- [Current Workflow](#current-workflow)
 - [Requirements](#requirements)
 - [Quick Start](#quick-start)
 - [Usage](#usage)
@@ -68,6 +80,8 @@ PatchPilot is still preview software. The v0.4 line focuses on making the TUI, a
 ## Why This Exists
 
 Most local coding-agent experiments fall into one of two traps: they are either raw scripts that feel painful to use, or polished tools that hide too much of what is happening. PatchPilot aims for the middle: a practical TUI where every file read, search, proposed write, command, model route, and token/cost signal stays visible.
+
+## Current Workflow
 
 The core workflow is intentionally simple:
 
@@ -136,6 +150,9 @@ patchpilot "find likely test gaps in this repo"
 
 Use bypass permissions only when you intentionally want PatchPilot to modify files or run commands without per-tool approval:
 
+> [!WARNING]
+> `--apply --allow-shell` bypasses per-tool approval. Use it only in trusted workspaces and review `/diff` before committing.
+
 ```bash
 patchpilot "add tests for the parser" --apply --allow-shell
 ```
@@ -189,8 +206,13 @@ Useful slash commands inside the TUI:
 | `/eject [model\|all]` | Unload Ollama model(s) from the active host. |
 | `/hosts` | Re-scan reachable Ollama hosts. |
 | `/doctor` | Run provider diagnostics from inside the TUI. |
+| `/doctor fix` | Apply safe doctor repairs, such as installing the managed Gemini-API bridge. |
+| `/cleanup cache\|sessions\|temp\|all` | Clean PatchPilot workspace state. |
+| `/experimental` | Open the experimental checkbox menu; use Space to toggle file-analysis, memory, and subagents. |
+| `/init` | Create `PATCHPILOT.md` workspace instructions. |
+| `/new` | Start a fresh session and clear current context. |
 | `/sessions` | List recent sessions for the current workspace. |
-| `/resume [session-id]` | Load a previous session summary. |
+| `/resume [session-id]` | Resume a previous session and inject its compact summary into the next run. |
 | `/diff` | Show the current Git diff. |
 | `/approve once\|session` | Approve a pending risky tool request. |
 | `/deny` | Deny a pending risky tool request. |
@@ -198,6 +220,8 @@ Useful slash commands inside the TUI:
 | `/exit` | Quit PatchPilot. |
 
 The transcript and sidebar have internal scroll areas. With an empty prompt, use left/right to choose the sidebar or transcript, then Page Up/Page Down and Home/End to navigate long sessions.
+
+Experimental file analysis allows `inspect_document` to read supported files outside the workspace when the user provides an absolute path, including PNG/JPEG/WebP/GIF metadata, PDFs, DOCX, Markdown, and text/code files. Experimental memory stores durable workspace notes in `~/.patchpilot/memory.sqlite` and exposes `memory_remember` / `memory_search` to the agent.
 
 ## Providers
 
@@ -243,6 +267,9 @@ PatchPilot reads provider cache telemetry when the provider reports it, for exam
 Reasoning support is provider and model dependent. Codex accepts fixed reasoning levels. OpenRouter receives `reasoning.effort` only for models whose metadata advertises reasoning support. Gemini uses Thinking configuration where the selected model exposes it; some Gemini models cannot disable thinking. Gemini-Wrapper stays on wrapper defaults because wrapper compatibility varies. Ollama only receives native `think` values for known thinking model families. NVIDIA reasoning effort is limited to supported GPT-OSS NIM routes.
 
 Gemini-Wrapper is intentionally explicit. In default `python` bridge mode, PatchPilot creates a managed Python venv and installs the wrapper there:
+
+> [!CAUTION]
+> `__Secure-1PSID` acts like a Google session token. Never paste it into issues, logs, chats, or commits.
 
 ```sh
 ~/.patchpilot/gemini-wrapper-venv

@@ -35,7 +35,11 @@ export function Sidebar(props: {
   isActive: boolean;
   activeHost: OllamaHostDetails | null;
 }): React.ReactElement {
-  const rows = buildSidebarRows(props).slice(0, Math.max(1, props.height - 2));
+  const allRows = buildSidebarRows(props);
+  const visibleCount = Math.max(1, props.height - 2);
+  const maxOffset = Math.max(0, allRows.length - visibleCount);
+  const offset = Math.max(0, Math.min(props.scrollOffset, maxOffset));
+  const rows = allRows.slice(offset, offset + visibleCount);
 
   return (
     <Box width={32} height={props.height} overflowY="hidden" borderStyle="round" borderColor={props.isActive ? "cyan" : "gray"} flexDirection="column" paddingX={1} marginRight={1}>
@@ -82,7 +86,6 @@ function buildSidebarRows(props: {
     row("agents", props.subagents ? "on" : "off", props.subagents ? "cyan" : "gray"),
     spacer(),
     section("Permissions"),
-    row("mode", formatMode(props.agentMode), modeColor(props.agentMode)),
     muted(modeDescription(props.agentMode)),
     row("write", modePermissionLabel(props.agentMode, "write"), permissionColor(props.agentMode)),
     row("shell", modePermissionLabel(props.agentMode, "shell"), permissionColor(props.agentMode)),
@@ -91,20 +94,21 @@ function buildSidebarRows(props: {
     row("provider", props.provider, props.provider === "ollama" ? "green" : "cyan"),
     muted(shortenMiddle(props.model, 28)),
     spacer(),
-    section("Host"),
-    row("device", shortenMiddle(hostDeviceName, 19), "yellow"),
+    section(props.provider === "ollama" ? "Host" : "Route"),
+    row("target", shortenMiddle(hostDeviceName, 19), "yellow"),
     row("network", hostNetwork, "green"),
     muted(shortenMiddle(hostRoute, 28)),
-    muted(`ver ${hostVersion}  models ${hostModels}`),
-    muted(`loaded ${shortenMiddle(hostLoaded, 21)}`),
+    ...(props.provider === "ollama" ? [muted(`ver ${hostVersion}  models ${hostModels}`), muted(`loaded ${shortenMiddle(hostLoaded, 21)}`)] : []),
     spacer(),
     section("Workspace"),
     muted(shortenMiddle(props.workspace, 28)),
     spacer(),
-    section("Runtime"),
+    section("Local machine"),
     muted(`cpu ${props.systemStats.cpuPercent}%  mem ${props.systemStats.memoryPercent}%/${props.systemStats.usedMemoryGb}G`),
-    muted(`gpu ${formatGpuUtilization(props.gpuStats)}  vram ${formatGpuMemory(props.gpuStats)}`),
-    muted(`draft ${props.draftTokens} tok`),
+    ...(props.provider === "ollama" && props.gpuStats ? [muted(`gpu ${formatGpuUtilization(props.gpuStats)}  vram ${formatGpuMemory(props.gpuStats)}`)] : []),
+    muted(`draft prompt ${props.draftTokens} tok`),
+    spacer(),
+    section("Model usage"),
     ...telemetryRows,
     muted(formatCost(props.sessionTelemetry.estimatedCostUsd)),
     spacer(),

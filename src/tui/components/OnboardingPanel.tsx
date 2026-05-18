@@ -37,6 +37,9 @@ export type OnboardingState =
       secure1psid: string;
     }
   | {
+      step: "gemini-wrapper-model-mode";
+    }
+  | {
       step: "gemini-wrapper-key";
       baseUrl: string;
     }
@@ -106,7 +109,7 @@ export function OnboardingPanel(props: {
       ? 0
       : props.state.step === "host" || props.state.step === "host-input"
         ? 1
-        : props.state.step === "api-key-choice" || props.state.step === "gemini-key" || props.state.step === "gemini-wrapper-url" || props.state.step === "gemini-wrapper-psid" || props.state.step === "gemini-wrapper-psidts" || props.state.step === "gemini-wrapper-key" || props.state.step === "openrouter-key" || props.state.step === "nvidia-key" || props.state.step === "codex-login"
+        : props.state.step === "api-key-choice" || props.state.step === "gemini-key" || props.state.step === "gemini-wrapper-url" || props.state.step === "gemini-wrapper-psid" || props.state.step === "gemini-wrapper-psidts" || props.state.step === "gemini-wrapper-model-mode" || props.state.step === "gemini-wrapper-key" || props.state.step === "openrouter-key" || props.state.step === "nvidia-key" || props.state.step === "codex-login"
           ? 2
           : 3;
   const visibleModels = props.state.step === "model" ? selectableModels(props.input, props.state.models) : [];
@@ -236,6 +239,23 @@ export function OnboardingPanel(props: {
           mask="*"
         />
       ) : null}
+      {props.state.step === "gemini-wrapper-model-mode" ? (
+        <SelectionList
+          title="Gemini-Wrapper model mode"
+          subtitle="Auto is fastest and most stable. Manual fetches models currently exposed by Gemini Web."
+          rows={[
+            {
+              label: "Auto",
+              description: "Let Gemini Web pick the current default model"
+            },
+            {
+              label: "Manual",
+              description: "Fetch available Gemini Web models and choose one"
+            }
+          ]}
+          selectedIndex={props.selectedIndex}
+        />
+      ) : null}
       {props.state.step === "gemini-wrapper-key" ? (
         <InputStep
           title="Enter Gemini-Wrapper API key"
@@ -341,13 +361,16 @@ function SelectionList(props: {
 }): React.ReactElement {
   const startIndex = Math.max(0, Math.min(props.selectedIndex - 4, Math.max(0, props.rows.length - 8)));
   const visibleRows = props.rows.slice(startIndex, startIndex + 8);
+  const endIndex = startIndex + visibleRows.length;
 
   return (
     <Box flexDirection="column" marginTop={2}>
       <Text color="white" bold>
         {props.title}
       </Text>
-      <Text color="gray">{props.subtitle}</Text>
+      <Text color="gray">
+        {props.subtitle} {props.rows.length > 0 ? `${startIndex + 1}-${endIndex}/${props.rows.length}` : "0/0"}
+      </Text>
       {visibleRows.map((row, index) => {
         const absoluteIndex = startIndex + index;
         const isSelected = absoluteIndex === props.selectedIndex;
