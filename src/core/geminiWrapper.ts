@@ -42,6 +42,7 @@ type GeminiWrapperRuntimeOptions = {
   maxTokens: number;
   temperature: number;
   bridgeMinIntervalMs?: number;
+  bridgeTimeoutMs?: number;
 };
 
 type GeminiWrapperMode = "auto" | "http" | "python";
@@ -54,6 +55,7 @@ type PythonBridgeInput = {
   secure1psid?: string;
   secure1psidts?: string;
   proxy?: string;
+  timeoutSeconds?: number;
 };
 
 type PythonBridgeOutput = {
@@ -179,7 +181,8 @@ export class GeminiWrapperClient {
         proxy: process.env.HTTPS_PROXY ?? process.env.https_proxy ?? process.env.HTTP_PROXY ?? process.env.http_proxy
       },
       undefined,
-      this.runtimeOptions.bridgeMinIntervalMs
+      this.runtimeOptions.bridgeMinIntervalMs,
+      getGeminiWrapperBridgeTimeoutMs(defaultGeminiWrapperModel, this.runtimeOptions.bridgeTimeoutMs)
     );
     if (result.error) {
       throw new Error(result.error);
@@ -244,7 +247,8 @@ export class GeminiWrapperClient {
         proxy: process.env.HTTPS_PROXY ?? process.env.https_proxy ?? process.env.HTTP_PROXY ?? process.env.http_proxy
       },
       options.signal,
-      this.runtimeOptions.bridgeMinIntervalMs
+      this.runtimeOptions.bridgeMinIntervalMs,
+      getGeminiWrapperBridgeTimeoutMs(options.model, this.runtimeOptions.bridgeTimeoutMs)
     );
     const durationMs = Date.now() - startedAt;
     const content = result.content?.trim() ?? "";
@@ -436,7 +440,8 @@ function readGeminiWrapperRuntimeOptions(env: NodeJS.ProcessEnv = process.env): 
   return {
     maxTokens: readPositiveInteger(env.PATCHPILOT_NUM_PREDICT, 1024),
     temperature: readTemperature(env.PATCHPILOT_TEMPERATURE, 0.1),
-    bridgeMinIntervalMs: readNonNegativeInteger(env.PATCHPILOT_GEMINI_WRAPPER_MIN_INTERVAL_MS, 1500)
+    bridgeMinIntervalMs: readNonNegativeInteger(env.PATCHPILOT_GEMINI_WRAPPER_MIN_INTERVAL_MS, 1500),
+    bridgeTimeoutMs: readPositiveInteger(env.PATCHPILOT_GEMINI_WRAPPER_TIMEOUT_MS, 180_000)
   };
 }
 
@@ -492,7 +497,18 @@ function toEstimatedTelemetry(prompt: string, content: string, durationMs: numbe
 let geminiBridgeQueue: Promise<unknown> = Promise.resolve();
 let lastGeminiBridgeStartedAt = 0;
 
-function runThrottledGeminiWebApiBridge(pythonCommand: string, input: PythonBridgeInput, signal: AbortSignal | undefined, minIntervalMs = readGeminiWrapperRuntimeOptions().bridgeMinIntervalMs): Promise<PythonBridgeOutput> {
+function getGeminiWrapperBridgeTimeoutMs(model: string, configuredTimeoutMs = readGeminiWrapperRuntimeOptions().bridgeTimeoutMs): number {
+  const timeoutMs = configuredTimeoutMs ?? 180_000;
+  return model.includes("pro") ? Math.max(timeoutMs, 240_000) : timeoutMs;
+}
+
+function runThrottledGeminiWebApiBridge(
+  pythonCommand: string,
+  input: PythonBridgeInput,
+  signal: AbortSignal | undefined,
+  minIntervalMs = readGeminiWrapperRuntimeOptions().bridgeMinIntervalMs,
+  timeoutMs = getGeminiWrapperBridgeTimeoutMs(input.model)
+): Promise<PythonBridgeOutput> {
   const run = async () => {
     const intervalMs = minIntervalMs ?? 0;
     const waitMs = Math.max(0, intervalMs - (Date.now() - lastGeminiBridgeStartedAt));
@@ -500,7 +516,7 @@ function runThrottledGeminiWebApiBridge(pythonCommand: string, input: PythonBrid
       await sleep(waitMs, signal);
     }
     lastGeminiBridgeStartedAt = Date.now();
-    return await runGeminiWebApiBridge(pythonCommand, input, signal);
+    return await runGeminiWebApiBridge(pythonCommand, input, timeoutMs, signal);
   };
 
   const result = geminiBridgeQueue.then(run, run);
@@ -508,7 +524,7 @@ function runThrottledGeminiWebApiBridge(pythonCommand: string, input: PythonBrid
   return result;
 }
 
-function runGeminiWebApiBridge(pythonCommand: string, input: PythonBridgeInput, signal?: AbortSignal): Promise<PythonBridgeOutput> {
+function runGeminiWebApiBridge(pythonCommand: string, input: PythonBridgeInput, timeoutMs: number, signal?: AbortSignal): Promise<PythonBridgeOutput> {
   return new Promise((resolve, reject) => {
     const cookieCacheDir = getGeminiWrapperCookieCacheDir();
     mkdirSync(cookieCacheDir, {
@@ -535,8 +551,8 @@ function runGeminiWebApiBridge(pythonCommand: string, input: PythonBridgeInput, 
 
     const timeout = setTimeout(() => {
       child.kill();
-      reject(new Error("Gemini-API bridge timed out after 90s."));
-    }, 90_000);
+      reject(new Error(`Gemini-API bridge timed out after ${Math.round(timeoutMs / 1000)}s.`));
+    }, timeoutMs);
 
     let stdout = "";
     let stderr = "";
@@ -565,7 +581,10 @@ function runGeminiWebApiBridge(pythonCommand: string, input: PythonBridgeInput, 
         reject(new Error(`Gemini-API bridge returned invalid JSON.${stderr.trim() ? ` ${stderr.trim()}` : ""}`));
       }
     });
-    child.stdin.end(JSON.stringify(input));
+    child.stdin.end(JSON.stringify({
+      ...input,
+      timeoutSeconds: Math.max(45, Math.min(90, Math.floor(timeoutMs / 4000)))
+    }));
   });
 }
 
@@ -600,8 +619,20 @@ async def main():
         return
 
     extra = {key: value for key, value in cookies.items() if key not in {"__Secure-1PSID", "__Secure-1PSIDTS"}}
+    attempt_timeout = max(30, int(payload.get("timeoutSeconds") or 60))
 
-    async def generate_with_timestamp(psidts_value):
+    def is_transient_network_error(message):
+        lower = message.lower()
+        return (
+            "curl: (28)" in lower
+            or "connection timed out" in lower
+            or "operation timed out" in lower
+            or "readtimeout" in lower
+            or "timeouterror" in lower
+            or "temporarily unavailable" in lower
+        )
+
+    async def generate_once(psidts_value):
         client = GeminiClient(secure_1psid=psid, secure_1psidts=psidts_value, cookies=extra or None, proxy=payload.get("proxy"))
         await client.init(timeout=90, auto_refresh=False, verbose=False)
         try:
@@ -612,6 +643,22 @@ async def main():
             return text
         finally:
             await client.close()
+
+    async def generate_with_timestamp(psidts_value):
+        last_error = None
+        for attempt in range(3):
+            try:
+                return await asyncio.wait_for(generate_once(psidts_value), timeout=attempt_timeout)
+            except asyncio.TimeoutError:
+                if attempt >= 2:
+                    raise TimeoutError(f"Gemini-API bridge attempt timed out after {attempt_timeout}s.")
+                await asyncio.sleep(1.5 * (attempt + 1))
+            except Exception as exc:
+                last_error = exc
+                if attempt >= 2 or not is_transient_network_error(str(exc)):
+                    raise
+                await asyncio.sleep(1.5 * (attempt + 1))
+        raise last_error
 
     try:
         text = await generate_with_timestamp(psidts)

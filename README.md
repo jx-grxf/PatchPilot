@@ -254,9 +254,10 @@ PATCHPILOT_PROVIDER=gemini-wrapper
 PATCHPILOT_GEMINI_WRAPPER_MODE=python
 PATCHPILOT_GEMINI_WRAPPER_COOKIES_JSON=/Users/you/.patchpilot/gemini-cookies.json
 PATCHPILOT_GEMINI_WRAPPER_MIN_INTERVAL_MS=1500
+PATCHPILOT_GEMINI_WRAPPER_TIMEOUT_MS=180000
 ```
 
-The cookie JSON must contain `__Secure-1PSID`; `__Secure-1PSIDTS` is optional for some accounts. If the optional timestamp expires, PatchPilot retries once without it. Env alternatives are `GEMINI_SECURE_1PSID` and `GEMINI_SECURE_1PSIDTS`. See [docs/gemini-wrapper.md](docs/gemini-wrapper.md) for the exact setup steps.
+The cookie JSON must contain `__Secure-1PSID`; `__Secure-1PSIDTS` is optional for some accounts. If the optional timestamp expires, PatchPilot retries once without it. Transient WebAPI network timeouts are retried inside the bridge. Env alternatives are `GEMINI_SECURE_1PSID` and `GEMINI_SECURE_1PSIDTS`. See [docs/gemini-wrapper.md](docs/gemini-wrapper.md) for the exact setup steps.
 
 PatchPilot also sets `GEMINI_COOKIE_PATH` to `~/.patchpilot/gemini-webapi-cache` for the Python process so refreshed wrapper cookies stay in a local owner-only cache instead of a temporary directory.
 
