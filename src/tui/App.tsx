@@ -11,7 +11,8 @@ import {
   geminiWrapperRequiresApiKey,
   readGeminiWrapperApiKey,
   readGeminiWrapperBaseUrl,
-  readGeminiWrapperCookiesJson
+  readGeminiWrapperCookiesJson,
+  saveGeminiWrapperCookieFile
 } from "../core/geminiWrapper.js";
 import { createModelClient } from "../core/modelClient.js";
 import { defaultNvidiaModel, readNvidiaApiKey } from "../core/nvidia.js";
@@ -384,7 +385,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
                 : provider === "gemini"
                   ? "No Gemini models listed. Check the API key."
                   : provider === "gemini-wrapper"
-                    ? "No Gemini-Wrapper models listed. Check the wrapper URL and key."
+                    ? "No Gemini-Wrapper models listed. Check the bridge install and cookie setup."
                   : provider === "openrouter"
                     ? "No OpenRouter models listed. Check the API key."
                     : provider === "nvidia"
@@ -441,7 +442,8 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       case "api-key-choice":
       case "gemini-key":
       case "gemini-wrapper-url":
-      case "gemini-wrapper-cookies":
+      case "gemini-wrapper-psid":
+      case "gemini-wrapper-psidts":
       case "gemini-wrapper-key":
       case "openrouter-key":
       case "nvidia-key":
@@ -663,7 +665,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           return;
         }
 
-        setOnboarding(onboarding.provider === "gemini-wrapper" ? { step: "gemini-wrapper-cookies" } : {
+        setOnboarding(onboarding.provider === "gemini-wrapper" ? { step: "gemini-wrapper-psid" } : {
           step: `${onboarding.provider}-key` as "gemini-key" | "openrouter-key" | "nvidia-key"
         });
         setOnboardingInput("");
@@ -697,16 +699,32 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         return;
       }
 
-      if (onboarding.step === "gemini-wrapper-cookies") {
-        const cookiesPath = value.trim();
-        if (!cookiesPath) {
+      if (onboarding.step === "gemini-wrapper-psid") {
+        const secure1psid = value.trim();
+        if (!secure1psid) {
           setOnboardingNotice({
             tone: "warning",
-            text: "Cookie JSON path cannot be empty.",
-            detail: "Export cookies yourself and point PatchPilot at that file. PatchPilot will not scan browser profiles."
+            text: "__Secure-1PSID cannot be empty.",
+            detail: "Paste the cookie value manually. PatchPilot will not scan browser profiles."
           });
           return;
         }
+
+        setOnboarding({
+          step: "gemini-wrapper-psidts",
+          secure1psid
+        });
+        setOnboardingInput("");
+        setOnboardingIndex(0);
+        return;
+      }
+
+      if (onboarding.step === "gemini-wrapper-psidts") {
+        const secure1psidts = value.trim();
+        const cookiesPath = saveGeminiWrapperCookieFile({
+          secure1psid: onboarding.secure1psid,
+          secure1psidts
+        });
 
         process.env.PATCHPILOT_GEMINI_WRAPPER_MODE = "python";
         process.env.PATCHPILOT_GEMINI_WRAPPER_COOKIES_JSON = cookiesPath;
@@ -718,8 +736,8 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         });
         setOnboardingNotice({
           tone: "success",
-          text: "Gemini-API bridge cookie file saved to PatchPilot config.",
-          detail: "PatchPilot will run the installed gemini_webapi package through python3."
+          text: "Gemini-API bridge cookies saved to PatchPilot config.",
+          detail: `${cookiesPath} was written with owner-only permissions. PatchPilot will run gemini_webapi through python3.`
         });
         await openModelSelection("gemini-wrapper", {
           currentModel: defaultGeminiWrapperModel
@@ -2107,7 +2125,7 @@ async function resolveRunnableSettings(
           : settings.provider === "gemini"
             ? "No Gemini models listed. Check GEMINI_API_KEY in PatchPilot config."
             : settings.provider === "gemini-wrapper"
-              ? "No Gemini-Wrapper models listed. Check PATCHPILOT_GEMINI_WRAPPER_BASE_URL in PatchPilot config."
+              ? "No Gemini-Wrapper models listed. Check gemini_webapi install and PATCHPILOT_GEMINI_WRAPPER_COOKIES_JSON in PatchPilot config."
             : settings.provider === "openrouter"
               ? "No OpenRouter models listed. Check OPENROUTER_API_KEY in PatchPilot config."
               : "Codex OAuth is not ready. Run codex login."

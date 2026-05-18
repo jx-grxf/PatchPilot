@@ -205,7 +205,7 @@ The transcript and sidebar have internal scroll areas. With an empty prompt, use
 | Ollama local | `ollama` | `qwen2.5-coder:7b` | Private local coding work and offline experiments. | Install Ollama, pull a model, run `patchpilot`. |
 | Ollama remote | `ollama` with `--ollama-url` or `/connect` | Host model inventory | Laptop editing with a stronger desktop/server GPU. | Expose Ollama on the host, then use `/connect` or `--ollama-url`. |
 | Google Gemini | `gemini`, `google` | `gemini-2.5-flash` | Fast cloud inference through a Gemini API key. | Store `GEMINI_API_KEY` in `~/.patchpilot/.env` or use onboarding. |
-| Gemini-Wrapper | `gemini-wrapper`, `geminiwrapper` | `gemini-2.5-flash` | Bridge to the installed `gemini_webapi` Python wrapper, with optional HTTP-wrapper mode. | Install `gemini_webapi`, then set `PATCHPILOT_GEMINI_WRAPPER_COOKIES_JSON` or `GEMINI_SECURE_1PSID`. PatchPilot runs the bridge commands itself and never scans browser cookies. |
+| Gemini-Wrapper | `gemini-wrapper`, `geminiwrapper` | `gemini-2.5-flash` | Bridge to the installed `gemini_webapi` Python wrapper, with optional HTTP-wrapper mode. | Install `gemini_webapi`, then use onboarding to paste `__Secure-1PSID`. PatchPilot creates `~/.patchpilot/gemini-cookies.json`, runs the bridge commands itself, and never scans browser cookies. |
 | OpenRouter | `openrouter`, `open-router` | `openrouter/auto` | Broad model routing, auto model selection, and free variants. | Store `OPENROUTER_API_KEY` in `~/.patchpilot/.env` or use onboarding. |
 | NVIDIA | `nvidia`, `nim` | `meta/llama-3.1-70b-instruct` | NVIDIA NIM OpenAI-compatible endpoints. | Store `NVIDIA_API_KEY` in `~/.patchpilot/.env` or use onboarding. |
 | Codex CLI | `codex`, `openai`, `openai-codex` | `gpt-5.5` | Using an existing Codex CLI OAuth login. | Run `codex login`, then `patchpilot --provider codex`. |
@@ -247,15 +247,15 @@ Gemini-Wrapper is intentionally explicit. In default `python` bridge mode, Patch
 python3 -m pip install -U gemini_webapi
 ```
 
-Then PatchPilot runs the bridge command itself for `/models` and chat requests. Authentication must come from an explicit cookie source:
+Then PatchPilot runs the bridge command itself for model discovery and chat requests. Use `/onboarding`, choose Gemini-Wrapper, paste `__Secure-1PSID`, and optionally paste `__Secure-1PSIDTS`. PatchPilot writes `~/.patchpilot/gemini-cookies.json` with owner-only permissions and stores the file path in `~/.patchpilot/.env`.
 
 ```sh
 PATCHPILOT_PROVIDER=gemini-wrapper
 PATCHPILOT_GEMINI_WRAPPER_MODE=python
-PATCHPILOT_GEMINI_WRAPPER_COOKIES_JSON=/absolute/path/to/gemini-cookies.json
+PATCHPILOT_GEMINI_WRAPPER_COOKIES_JSON=/Users/you/.patchpilot/gemini-cookies.json
 ```
 
-The cookie JSON must contain `__Secure-1PSID`; `__Secure-1PSIDTS` is optional for some accounts. Env alternatives are `GEMINI_SECURE_1PSID` and `GEMINI_SECURE_1PSIDTS`.
+The cookie JSON must contain `__Secure-1PSID`; `__Secure-1PSIDTS` is optional for some accounts. Env alternatives are `GEMINI_SECURE_1PSID` and `GEMINI_SECURE_1PSIDTS`. See [docs/gemini-wrapper.md](docs/gemini-wrapper.md) for the exact setup steps.
 
 PatchPilot does not inspect Chrome, Safari, Firefox, Arc, Edge, Brave, Keychain, or browser cookie stores, and it does not reuse Google web-login sessions automatically. Advanced users can still set `PATCHPILOT_GEMINI_WRAPPER_MODE=http` plus `PATCHPILOT_GEMINI_WRAPPER_BASE_URL` for an explicit OpenAI-compatible `/v1` endpoint.
 

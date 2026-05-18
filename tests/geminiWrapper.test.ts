@@ -1,12 +1,17 @@
+import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   GeminiWrapperClient,
   geminiWrapperRequiresApiKey,
+  getDefaultGeminiWrapperCookiesPath,
   readGeminiWrapperApiKey,
   readGeminiWrapperBaseUrl,
   readGeminiWrapperCookiesJson,
   readGeminiWrapperMode,
-  readGeminiWrapperPythonCommand
+  readGeminiWrapperPythonCommand,
+  saveGeminiWrapperCookieFile
 } from "../src/core/geminiWrapper.js";
 import { normalizeModelProvider } from "../src/core/modelClient.js";
 
@@ -28,6 +33,32 @@ describe("GeminiWrapperClient", () => {
     expect(readGeminiWrapperPythonCommand({ PATCHPILOT_GEMINI_WRAPPER_PYTHON: "python" } as NodeJS.ProcessEnv)).toBe("python");
     expect(geminiWrapperRequiresApiKey("http://localhost:8787/v1")).toBe(false);
     expect(geminiWrapperRequiresApiKey("https://wrapper.example.com/v1")).toBe(true);
+  });
+
+  it("writes pasted Gemini cookies into PatchPilot config with owner-only permissions", async () => {
+    const tempRoot = await mkdtemp(path.join(tmpdir(), "patchpilot-gemini-wrapper-"));
+    try {
+      const env = {
+        PATCHPILOT_CONFIG_DIR: tempRoot
+      } as NodeJS.ProcessEnv;
+      const cookiesPath = saveGeminiWrapperCookieFile(
+        {
+          secure1psid: "psid-value",
+          secure1psidts: "psidts-value"
+        },
+        env
+      );
+
+      expect(cookiesPath).toBe(getDefaultGeminiWrapperCookiesPath(env));
+      await expect(readFile(cookiesPath, "utf8")).resolves.toContain("__Secure-1PSID");
+      await expect(readFile(cookiesPath, "utf8")).resolves.toContain("psidts-value");
+      expect((await stat(cookiesPath)).mode & 0o777).toBe(0o600);
+    } finally {
+      await rm(tempRoot, {
+        recursive: true,
+        force: true
+      });
+    }
   });
 
   it("requires explicit bridge auth and does not fall back to browser cookies", async () => {

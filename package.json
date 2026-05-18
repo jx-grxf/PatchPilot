@@ -10,6 +10,7 @@
   "files": [
     "dist",
     ".env.example",
+    "docs/gemini-wrapper.md",
     "docs/releases",
     "docs/showcase/patchpilot-showcase.svg",
     "README.md",

@@ -30,7 +30,11 @@ export type OnboardingState =
       step: "gemini-wrapper-url";
     }
   | {
-      step: "gemini-wrapper-cookies";
+      step: "gemini-wrapper-psid";
+    }
+  | {
+      step: "gemini-wrapper-psidts";
+      secure1psid: string;
     }
   | {
       step: "gemini-wrapper-key";
@@ -102,7 +106,7 @@ export function OnboardingPanel(props: {
       ? 0
       : props.state.step === "host" || props.state.step === "host-input"
         ? 1
-        : props.state.step === "api-key-choice" || props.state.step === "gemini-key" || props.state.step === "gemini-wrapper-url" || props.state.step === "gemini-wrapper-cookies" || props.state.step === "gemini-wrapper-key" || props.state.step === "openrouter-key" || props.state.step === "nvidia-key" || props.state.step === "codex-login"
+        : props.state.step === "api-key-choice" || props.state.step === "gemini-key" || props.state.step === "gemini-wrapper-url" || props.state.step === "gemini-wrapper-psid" || props.state.step === "gemini-wrapper-psidts" || props.state.step === "gemini-wrapper-key" || props.state.step === "openrouter-key" || props.state.step === "nvidia-key" || props.state.step === "codex-login"
           ? 2
           : 3;
   const visibleModels = props.state.step === "model" ? selectableModels(props.input, props.state.models) : [];
@@ -210,14 +214,26 @@ export function OnboardingPanel(props: {
           onSubmit={props.onInputSubmit}
         />
       ) : null}
-      {props.state.step === "gemini-wrapper-cookies" ? (
+      {props.state.step === "gemini-wrapper-psid" ? (
         <InputStep
           title="Connect Gemini-API bridge"
-          description="Enter a JSON cookie file with __Secure-1PSID. PatchPilot runs gemini_webapi itself and will not scan browsers."
-          prompt="file > "
+          description="Paste __Secure-1PSID. PatchPilot stores it in ~/.patchpilot/gemini-cookies.json with owner-only permissions."
+          prompt="psid > "
           value={props.input}
           onChange={props.onInputChange}
           onSubmit={props.onInputSubmit}
+          mask="*"
+        />
+      ) : null}
+      {props.state.step === "gemini-wrapper-psidts" ? (
+        <InputStep
+          title="Optional Gemini session timestamp"
+          description="Paste __Secure-1PSIDTS if you have it, or press Enter to skip."
+          prompt="ts   > "
+          value={props.input}
+          onChange={props.onInputChange}
+          onSubmit={props.onInputSubmit}
+          mask="*"
         />
       ) : null}
       {props.state.step === "gemini-wrapper-key" ? (

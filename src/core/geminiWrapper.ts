@@ -1,5 +1,8 @@
 import { spawn } from "node:child_process";
+import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
+import path from "node:path";
 import type { ModelChatOptions, ModelChatResult, ModelTelemetry } from "./types.js";
+import { getPatchPilotConfigDir } from "./env.js";
 import { fetchWithTimeout } from "./http.js";
 import { attachTokenCost, estimateTokens } from "./tokenAccounting.js";
 
@@ -260,6 +263,52 @@ export function readGeminiWrapperCookiesJson(env: NodeJS.ProcessEnv = process.en
   return env.PATCHPILOT_GEMINI_WRAPPER_COOKIES_JSON?.trim() || env.GEMINI_COOKIES_JSON?.trim() || "";
 }
 
+export function getDefaultGeminiWrapperCookiesPath(env: NodeJS.ProcessEnv = process.env): string {
+  return path.join(getPatchPilotConfigDir(env), "gemini-cookies.json");
+}
+
+export function saveGeminiWrapperCookieFile(
+  values: {
+    secure1psid: string;
+    secure1psidts?: string;
+  },
+  env: NodeJS.ProcessEnv = process.env
+): string {
+  const secure1psid = values.secure1psid.trim();
+  const secure1psidts = values.secure1psidts?.trim() ?? "";
+  if (!secure1psid) {
+    throw new Error("__Secure-1PSID cannot be empty.");
+  }
+
+  const configDir = getPatchPilotConfigDir(env);
+  mkdirSync(configDir, {
+    recursive: true,
+    mode: 0o700
+  });
+  tryChmod(configDir, 0o700);
+
+  const cookiesPath = getDefaultGeminiWrapperCookiesPath(env);
+  writeFileSync(
+    cookiesPath,
+    `${JSON.stringify(
+      {
+        cookies: {
+          "__Secure-1PSID": secure1psid,
+          ...(secure1psidts ? { "__Secure-1PSIDTS": secure1psidts } : {})
+        }
+      },
+      null,
+      2
+    )}\n`,
+    {
+      encoding: "utf8",
+      mode: 0o600
+    }
+  );
+  tryChmod(cookiesPath, 0o600);
+  return cookiesPath;
+}
+
 export function readGeminiWrapperPythonCommand(env: NodeJS.ProcessEnv = process.env): string {
   return env.PATCHPILOT_GEMINI_WRAPPER_PYTHON?.trim() || "python3";
 }
@@ -478,4 +527,12 @@ function readPositiveInteger(value: string | undefined, fallback: number): numbe
 function readTemperature(value: string | undefined, fallback: number): number {
   const parsedValue = Number.parseFloat(value ?? "");
   return Number.isFinite(parsedValue) && parsedValue >= 0 ? parsedValue : fallback;
+}
+
+function tryChmod(filePath: string, mode: number): void {
+  try {
+    chmodSync(filePath, mode);
+  } catch {
+    // Best-effort hardening for platforms that do not support POSIX permissions.
+  }
 }
