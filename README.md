@@ -160,11 +160,12 @@ patchpilot resume [session-id] [--workspace <path>]
 | `--model <name>` | Model name for the selected provider. |
 | `--ollama-url <url>` | Ollama base URL. Defaults to `http://127.0.0.1:11434`. |
 | `--steps <count>` | Maximum agent loop steps before stopping. |
-| `--thinking <mode>` | Step-budget mode: `fixed` or `adaptive`. |
+| `--thinking <mode>` | Step-budget mode: `fixed` or `adaptive`. Defaults to `adaptive`. |
 | `--reasoning <effort>` | Provider reasoning effort: `none`, `low`, `medium`, `high`, `xhigh`, or `adaptive`. Unsupported provider/model combinations fall back to provider defaults. |
 | `--apply` | Allows file writes inside the workspace. |
 | `--allow-shell` | Allows shell commands inside the workspace. |
-| `--no-subagents` | Disables explorer/planner/reviewer advisor calls for faster runs. |
+| `--subagents` | Enables explorer/planner/reviewer advisor calls. Defaults to off. |
+| `--no-subagents` | Disables explorer/planner/reviewer advisor calls. |
 
 Useful slash commands inside the TUI:
 

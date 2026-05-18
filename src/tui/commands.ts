@@ -29,7 +29,7 @@ export const slashCommands: SlashCommand[] = [
     description: "Enable or disable explorer/planner/reviewer subagents.",
     category: "session",
     aliases: ["subagents"],
-    detail: "Advisor subagents add short explorer/planner/reviewer briefs before larger workspace tasks. Turn them off with /agents off when you want less noise or lower latency."
+    detail: "Advisor subagents add short explorer/planner/reviewer briefs before larger workspace tasks. They are off by default; turn them on with /agents on when you want extra review context."
   },
   {
     name: "provider",
