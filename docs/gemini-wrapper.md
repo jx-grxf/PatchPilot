@@ -50,7 +50,7 @@ with owner-only file permissions (`0600`) and stores this config:
 
 ```sh
 PATCHPILOT_PROVIDER=gemini-wrapper
-PATCHPILOT_MODEL=gemini-3-flash
+PATCHPILOT_MODEL=auto
 PATCHPILOT_GEMINI_WRAPPER_MODE=python
 PATCHPILOT_GEMINI_WRAPPER_COOKIES_JSON=/Users/you/.patchpilot/gemini-cookies.json
 PATCHPILOT_GEMINI_WRAPPER_MIN_INTERVAL_MS=1500
@@ -59,7 +59,7 @@ PATCHPILOT_GEMINI_WRAPPER_TIMEOUT_MS=180000
 
 If a pasted `__Secure-1PSIDTS` expires, PatchPilot retries the bridge request once without that optional timestamp. Transient WebAPI network timeouts are retried inside the bridge. Bridge calls are also serialized with a small default delay so advisor or agent requests do not hit the wrapper at the same instant. Set `PATCHPILOT_GEMINI_WRAPPER_MIN_INTERVAL_MS=0` only for debugging.
 
-The default bridge timeout is 180 seconds. `gemini-3-pro` can take longer through the unofficial WebAPI bridge, so PatchPilot gives Pro models at least 240 seconds. For fast local test loops, use `gemini-3-flash`.
+The default bridge timeout is 180 seconds. `gemini-3-pro` can take longer through the unofficial WebAPI bridge, so PatchPilot gives Pro models at least 240 seconds. For fast local test loops, use `auto`; PatchPilot omits the model parameter and lets Gemini Web pick its current default.
 
 The Python wrapper stores refreshed Google cookies in a PatchPilot-owned cache:
 
@@ -72,7 +72,7 @@ PatchPilot creates that directory with owner-only permissions (`0700`) and passe
 ## 4. Verify
 
 ```sh
-patchpilot doctor --provider gemini-wrapper --check-model gemini-3-flash
+patchpilot doctor --provider gemini-wrapper --check-model auto
 ```
 
 Expected checks:

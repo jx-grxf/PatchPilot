@@ -71,7 +71,7 @@ const entryOptions = [
   },
   {
     label: "Gemini-Wrapper",
-    description: "Use an explicit OpenAI-compatible wrapper URL; no browser cookies"
+    description: "Use the local Gemini-API Python bridge with pasted cookies"
   },
   {
     label: "OpenRouter",
@@ -174,20 +174,20 @@ export function OnboardingPanel(props: {
       ) : null}
       {props.state.step === "api-key-choice" ? (
         <SelectionList
-          title={`${providerLabel(props.state.provider)} API key`}
-          subtitle="Use up/down and Enter. Existing keys stay in PatchPilot config."
+          title={props.state.provider === "gemini-wrapper" ? "Gemini-Wrapper bridge auth" : `${providerLabel(props.state.provider)} API key`}
+          subtitle={props.state.provider === "gemini-wrapper" ? "Use up/down and Enter. Saved cookies stay in PatchPilot config." : "Use up/down and Enter. Existing keys stay in PatchPilot config."}
           rows={[
             ...(props.state.hasExistingKey
               ? [
                   {
-                    label: "Use Existing Key",
-                    description: "Continue with the saved key"
+                    label: props.state.provider === "gemini-wrapper" ? "Use Saved Bridge" : "Use Existing Key",
+                    description: props.state.provider === "gemini-wrapper" ? "Continue with the saved cookie file" : "Continue with the saved key"
                   }
                 ]
               : []),
             {
-              label: "Enter New Key",
-              description: "Replace or add the key in PatchPilot config"
+              label: props.state.provider === "gemini-wrapper" ? "Paste Cookie" : "Enter New Key",
+              description: props.state.provider === "gemini-wrapper" ? "Replace the Gemini Web cookie file in PatchPilot config" : "Replace or add the key in PatchPilot config"
             }
           ]}
           selectedIndex={props.selectedIndex}

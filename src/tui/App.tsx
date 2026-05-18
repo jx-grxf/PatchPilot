@@ -12,6 +12,8 @@ import {
   readGeminiWrapperApiKey,
   readGeminiWrapperBaseUrl,
   readGeminiWrapperCookiesJson,
+  readGeminiWrapperMode,
+  readGeminiWrapperPythonCommand,
   saveGeminiWrapperCookieFile
 } from "../core/geminiWrapper.js";
 import { createModelClient } from "../core/modelClient.js";
@@ -366,7 +368,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       setTelemetry(null);
       setOnboardingInput("");
       setOnboardingNotice(null);
-      setOnboardingBusyMessage(`Loading ${provider} models...`);
+      setOnboardingBusyMessage(null);
       const nextModel = defaultModelForProvider(provider, options.currentModel ?? settings.model);
       setSettings((currentSettings) => ({
         ...currentSettings,
@@ -374,6 +376,24 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         model: nextModel
       }));
 
+      if (provider === "gemini-wrapper" && shouldUseGeminiWrapperAutoModelOnly()) {
+        const models = [defaultGeminiWrapperModel];
+        modelCache.set(modelCacheKey(provider, options.ollamaUrl ?? settings.ollamaUrl), {
+          models,
+          expiresAt: Date.now() + modelCacheTtlMs
+        });
+        setModelOptions(models);
+        setOnboarding({
+          step: "model",
+          provider,
+          models,
+          deviceName: options.deviceName
+        });
+        setOnboardingIndex(0);
+        return;
+      }
+
+      setOnboardingBusyMessage(`Loading ${provider} models...`);
       try {
         const models = await loadAvailableModels(provider, options.ollamaUrl ?? settings.ollamaUrl, setModelOptions, true);
         if (models.length === 0) {
@@ -1971,7 +1991,7 @@ async function loadAvailableModels(
   setModelOptions: React.Dispatch<React.SetStateAction<string[]>>,
   refresh = false
 ): Promise<string[]> {
-  const cacheKey = `${provider}:${provider === "ollama" ? ollamaUrl : "default"}`;
+  const cacheKey = modelCacheKey(provider, ollamaUrl);
   const cachedModels = modelCache.get(cacheKey);
   if (!refresh && cachedModels && cachedModels.expiresAt > Date.now()) {
     setModelOptions(cachedModels.models);
@@ -1988,6 +2008,29 @@ async function loadAvailableModels(
   });
   setModelOptions(models);
   return models;
+}
+
+function modelCacheKey(provider: ModelProvider, ollamaUrl: string): string {
+  if (provider === "ollama") {
+    return `${provider}:${ollamaUrl}`;
+  }
+
+  if (provider === "gemini-wrapper") {
+    return [
+      provider,
+      readGeminiWrapperMode(),
+      readGeminiWrapperBaseUrl() || "python",
+      readGeminiWrapperPythonCommand(),
+      readGeminiWrapperCookiesJson()
+    ].join(":");
+  }
+
+  return `${provider}:default`;
+}
+
+function shouldUseGeminiWrapperAutoModelOnly(): boolean {
+  const mode = readGeminiWrapperMode();
+  return mode === "python" || (mode === "auto" && !readGeminiWrapperBaseUrl());
 }
 
 async function loadKnownOrAvailableModels(
@@ -2035,7 +2078,7 @@ async function switchModel(
     return;
   }
 
-  if (!installedModels.includes(nextModel) && !(provider !== "ollama" && isPlausibleCloudModelId(nextModel))) {
+  if (!installedModels.includes(nextModel) && !canUseUnverifiedCloudModel(provider, nextModel)) {
     appendLine({
       tone: "warning",
       label: "model",
@@ -2101,7 +2144,7 @@ async function resolveRunnableSettings(
     return null;
   }
 
-  if (installedModels.includes(settings.model) || (settings.provider !== "ollama" && isPlausibleCloudModelId(settings.model))) {
+  if (installedModels.includes(settings.model) || canUseUnverifiedCloudModel(settings.provider, settings.model)) {
     if (!installedModels.includes(settings.model)) {
       appendLine({
         tone: "warning",
@@ -2307,6 +2350,10 @@ function isPlausibleCloudModelId(value: string): boolean {
   return /^[A-Za-z0-9][A-Za-z0-9._:/+-]*$/.test(value) && value.length >= 3;
 }
 
+function canUseUnverifiedCloudModel(provider: ModelProvider, model: string): boolean {
+  return provider !== "ollama" && provider !== "gemini-wrapper" && isPlausibleCloudModelId(model);
+}
+
 function defaultModelForProvider(provider: ModelProvider, currentModel: string): string {
   if (provider === "nvidia") {
     return currentModel.includes("/") && !currentModel.startsWith("openrouter/") ? currentModel : defaultNvidiaModel;
@@ -2317,7 +2364,7 @@ function defaultModelForProvider(provider: ModelProvider, currentModel: string):
   }
 
   if (provider === "gemini-wrapper") {
-    return currentModel.startsWith("gemini-3-") ? currentModel : defaultGeminiWrapperModel;
+    return currentModel === defaultGeminiWrapperModel || currentModel.startsWith("gemini-3-") ? currentModel : defaultGeminiWrapperModel;
   }
 
   if (provider === "gemini") {

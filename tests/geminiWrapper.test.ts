@@ -160,6 +160,188 @@ describe("GeminiWrapperClient", () => {
     }
   });
 
+  it("lists Gemini Web models through the Python bridge instead of a static model list", async () => {
+    const tempRoot = await mkdtemp(path.join(tmpdir(), "patchpilot-gemini-models-"));
+    const originalConfigDir = process.env.PATCHPILOT_CONFIG_DIR;
+    try {
+      process.env.PATCHPILOT_CONFIG_DIR = tempRoot;
+      const modulePath = path.join(tempRoot, "gemini_webapi.py");
+      const pythonShimPath = path.join(tempRoot, "python-shim");
+      const cookiesPath = path.join(tempRoot, "cookies.json");
+
+      await writeFile(
+        modulePath,
+        [
+          "class Status:",
+          "    name = 'AVAILABLE'",
+          "",
+          "class ModelItem:",
+          "    def __init__(self, name, available=True):",
+          "        self.model_name = name",
+          "        self.display_name = name",
+          "        self.is_available = available",
+          "",
+          "class GeminiClient:",
+          "    def __init__(self, *args, **kwargs):",
+          "        self.account_status = Status()",
+          "",
+          "    async def init(self, *args, **kwargs):",
+          "        pass",
+          "",
+          "    def list_models(self):",
+          "        return [ModelItem('gemini-2.5-flash'), ModelItem('gemini-3-pro', False)]",
+          "",
+          "    async def close(self):",
+          "        pass",
+          ""
+        ].join("\n"),
+        "utf8"
+      );
+      await writeFile(pythonShimPath, `#!/bin/sh\nPYTHONPATH="${tempRoot}" python3 "$@"\n`, "utf8");
+      await chmod(pythonShimPath, 0o755);
+      await writeFile(cookiesPath, JSON.stringify({ cookies: { "__Secure-1PSID": "psid-value" } }), "utf8");
+
+      await expect(new GeminiWrapperClient("", "", { maxTokens: 256, temperature: 0.2, bridgeMinIntervalMs: 0 }, "python", pythonShimPath, cookiesPath).listModels()).resolves.toEqual(["auto", "gemini-2.5-flash"]);
+    } finally {
+      if (originalConfigDir === undefined) {
+        delete process.env.PATCHPILOT_CONFIG_DIR;
+      } else {
+        process.env.PATCHPILOT_CONFIG_DIR = originalConfigDir;
+      }
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("retries without optional session timestamp when the bridge reports unauthenticated", async () => {
+    const tempRoot = await mkdtemp(path.join(tmpdir(), "patchpilot-gemini-unauth-ts-"));
+    const originalConfigDir = process.env.PATCHPILOT_CONFIG_DIR;
+    try {
+      process.env.PATCHPILOT_CONFIG_DIR = tempRoot;
+      const modulePath = path.join(tempRoot, "gemini_webapi.py");
+      const pythonShimPath = path.join(tempRoot, "python-shim");
+      const cookiesPath = path.join(tempRoot, "cookies.json");
+
+      await writeFile(
+        modulePath,
+        [
+          "class Status:",
+          "    def __init__(self, name):",
+          "        self.name = name",
+          "",
+          "class Response:",
+          "    text = 'ok after unauthenticated timestamp retry'",
+          "",
+          "class GeminiClient:",
+          "    def __init__(self, secure_1psid, secure_1psidts='', cookies=None, proxy=None):",
+          "        self.account_status = Status('UNAUTHENTICATED' if secure_1psidts else 'AVAILABLE')",
+          "",
+          "    async def init(self, *args, **kwargs):",
+          "        pass",
+          "",
+          "    async def generate_content(self, prompt, **kwargs):",
+          "        return Response()",
+          "",
+          "    async def close(self):",
+          "        pass",
+          ""
+        ].join("\n"),
+        "utf8"
+      );
+      await writeFile(pythonShimPath, `#!/bin/sh\nPYTHONPATH="${tempRoot}" python3 "$@"\n`, "utf8");
+      await chmod(pythonShimPath, 0o755);
+      await writeFile(
+        cookiesPath,
+        JSON.stringify({
+          cookies: {
+            "__Secure-1PSID": "psid-value",
+            "__Secure-1PSIDTS": "stale-ts"
+          }
+        }),
+        "utf8"
+      );
+
+      const result = await new GeminiWrapperClient("", "", { maxTokens: 256, temperature: 0.2, bridgeMinIntervalMs: 0 }, "python", pythonShimPath, cookiesPath).chat({
+        model: "auto",
+        messages: [
+          {
+            role: "user",
+            content: "hello"
+          }
+        ]
+      });
+
+      expect(result.content).toBe("ok after unauthenticated timestamp retry");
+    } finally {
+      if (originalConfigDir === undefined) {
+        delete process.env.PATCHPILOT_CONFIG_DIR;
+      } else {
+        process.env.PATCHPILOT_CONFIG_DIR = originalConfigDir;
+      }
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("uses the Gemini Web default model when Python bridge model is auto", async () => {
+    const tempRoot = await mkdtemp(path.join(tmpdir(), "patchpilot-gemini-auto-"));
+    const originalConfigDir = process.env.PATCHPILOT_CONFIG_DIR;
+    try {
+      process.env.PATCHPILOT_CONFIG_DIR = tempRoot;
+      const modulePath = path.join(tempRoot, "gemini_webapi.py");
+      const pythonShimPath = path.join(tempRoot, "python-shim");
+      const cookiesPath = path.join(tempRoot, "cookies.json");
+
+      await writeFile(
+        modulePath,
+        [
+          "class Status:",
+          "    name = 'AVAILABLE'",
+          "",
+          "class Response:",
+          "    text = 'ok with web default'",
+          "",
+          "class GeminiClient:",
+          "    def __init__(self, *args, **kwargs):",
+          "        self.account_status = Status()",
+          "",
+          "    async def init(self, *args, **kwargs):",
+          "        pass",
+          "",
+          "    async def generate_content(self, prompt, **kwargs):",
+          "        if 'model' in kwargs:",
+          "            raise Exception('model should not be set for auto')",
+          "        return Response()",
+          "",
+          "    async def close(self):",
+          "        pass",
+          ""
+        ].join("\n"),
+        "utf8"
+      );
+      await writeFile(pythonShimPath, `#!/bin/sh\nPYTHONPATH="${tempRoot}" python3 "$@"\n`, "utf8");
+      await chmod(pythonShimPath, 0o755);
+      await writeFile(cookiesPath, JSON.stringify({ cookies: { "__Secure-1PSID": "psid-value" } }), "utf8");
+
+      const result = await new GeminiWrapperClient("", "", { maxTokens: 256, temperature: 0.2, bridgeMinIntervalMs: 0 }, "python", pythonShimPath, cookiesPath).chat({
+        model: "auto",
+        messages: [
+          {
+            role: "user",
+            content: "hello"
+          }
+        ]
+      });
+
+      expect(result.content).toBe("ok with web default");
+    } finally {
+      if (originalConfigDir === undefined) {
+        delete process.env.PATCHPILOT_CONFIG_DIR;
+      } else {
+        process.env.PATCHPILOT_CONFIG_DIR = originalConfigDir;
+      }
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
   it("requires explicit bridge auth and does not fall back to browser cookies", async () => {
     const client = new GeminiWrapperClient("", "");
     await expect(
