@@ -52,7 +52,7 @@ export function Composer(props: {
         )}
       </Box>
       <Text color="gray" wrap="truncate">
-        {props.isApprovalWaiting ? "Approval waiting: use y/a/n or /approve session, /deny." : props.isRunning ? "Input is locked while the current run is active." : `prompt ${props.draftTokens} tok est`}
+        {props.isApprovalWaiting ? "Approval waiting: press y once, a session, or n deny." : props.isRunning ? "Input is locked while the current run is active." : `prompt ${props.draftTokens} tok est`}
       </Text>
     </Box>
   );

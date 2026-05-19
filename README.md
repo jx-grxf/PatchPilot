@@ -221,7 +221,9 @@ Useful slash commands inside the TUI:
 
 The transcript and sidebar have internal scroll areas. With an empty prompt, use left/right to choose the sidebar or transcript, then Page Up/Page Down and Home/End to navigate long sessions.
 
-Experimental file analysis allows `inspect_document` to read supported files outside the workspace after per-path approval when the user provides an absolute path, including PNG/JPEG/WebP/GIF metadata, PDFs, DOCX, Markdown, and text/code files. Experimental memory stores durable workspace notes in `~/.patchpilot/memory.sqlite`; `memory_remember` requires write approval and `memory_search` is read-only.
+The TUI also keeps a live todo panel in the lower transcript area. Providers can update it through the provider-neutral `update_todo` tool, so longer runs show the current task, pending work, and completed checkpoints without hiding the chat transcript.
+
+Experimental file analysis allows `inspect_document` to read supported files outside the workspace after per-path approval when the user provides an absolute path. With Gemini-Wrapper's managed Python bridge, PatchPilot sends PNG/JPEG/WebP/GIF/HEIC images to Gemini Web as file inputs for visual analysis and text extraction. PDFs and DOCX files use local text extraction first, then fall back to Gemini-Wrapper only when local extraction cannot produce useful text. Image OCR remains explicit through `mode:"ocr"`/`mode:"local"`. Experimental memory stores durable workspace notes in `~/.patchpilot/memory.sqlite`; `memory_remember` requires write approval and `memory_search` is read-only.
 
 ## Providers
 
@@ -289,7 +291,7 @@ PATCHPILOT_GEMINI_WRAPPER_MIN_INTERVAL_MS=1500
 PATCHPILOT_GEMINI_WRAPPER_TIMEOUT_MS=180000
 ```
 
-The cookie JSON must contain `__Secure-1PSID`; `__Secure-1PSIDTS` is optional for some accounts. If the optional timestamp expires, PatchPilot retries once without it. Transient WebAPI network timeouts are retried inside the bridge. `auto` lets Gemini Web pick its default model and avoids relying on brittle Web model headers. `flash`, `thinking`, and `pro` are stable PatchPilot shortcuts for the corresponding Gemini Web model modes. Env alternatives are `GEMINI_SECURE_1PSID` and `GEMINI_SECURE_1PSIDTS`. See [docs/gemini-wrapper.md](docs/gemini-wrapper.md) for the exact setup steps.
+The cookie JSON must contain `__Secure-1PSID`; `__Secure-1PSIDTS` is optional for some accounts. If the optional timestamp expires, PatchPilot retries once without it. Transient WebAPI network timeouts are retried inside the bridge. `auto` lets Gemini Web pick its default model and avoids relying on brittle Web model headers. `flash`, `thinking`, and `pro` are stable PatchPilot shortcuts for the corresponding Gemini Web model modes. In Python bridge mode, `inspect_document` passes supported files through `gemini_webapi` so Gemini Web can analyze screenshots, images, PDFs, and DOCX files directly. Env alternatives are `GEMINI_SECURE_1PSID` and `GEMINI_SECURE_1PSIDTS`. See [docs/gemini-wrapper.md](docs/gemini-wrapper.md) for the exact setup steps.
 
 PatchPilot also sets `GEMINI_COOKIE_PATH` to `~/.patchpilot/gemini-webapi-cache` for the Python process so refreshed wrapper cookies stay in a local owner-only cache instead of a temporary directory.
 

@@ -75,6 +75,14 @@ PatchPilot exposes four stable model shortcuts for the Python bridge:
 
 `thinking` is a Gemini Web model mode exposed by `gemini_webapi`. It is not the same as the official Gemini API `thinkingBudget` or `thinkingLevel` controls.
 
+## File Analysis
+
+Gemini-Wrapper file analysis uses the same `gemini_webapi` file pipeline documented by the upstream project: PatchPilot passes the approved file path as `files=[...]` to `GeminiClient.generate_content`. This is used by `inspect_document` for screenshots and images when the managed Python bridge is active, and as a fallback for PDFs/DOCX files when local text extraction cannot produce useful text.
+
+Supported direct file inputs include PNG, JPEG, WebP, GIF, HEIC/HEIF, PDF, and DOCX. PatchPilot still applies its own safety checks first: external absolute paths require file-analysis approval, sensitive paths are blocked, and browser cookie stores are never auto-scanned.
+
+By default, Gemini-Wrapper is tried first for images. PDFs use `pdftotext` first and DOCX is parsed from `word/document.xml` first; provider file analysis is used only when local document extraction fails or returns no useful text. Text/code files are read directly. Images can use local `tesseract` OCR when the user asks for `mode:"local"`/`mode:"ocr"`.
+
 The Python wrapper stores refreshed Google cookies in a PatchPilot-owned cache:
 
 ```text

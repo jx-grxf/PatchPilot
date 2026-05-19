@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { recoverMalformedToolResponse } from "../src/core/agent.js";
+import { normalizeTodoItems, recoverMalformedToolResponse } from "../src/core/agent.js";
 
 describe("recoverMalformedToolResponse", () => {
   it("recovers a full HTML rewrite from a malformed JSON tool response", () => {
@@ -31,5 +31,23 @@ describe("recoverMalformedToolResponse", () => {
 
     expect(recovered?.tool_calls[0]?.arguments.path).toBe("code_tests/rand_gen/index.html");
     expect(recovered?.tool_calls[0]?.arguments.content).toContain("<body>ok</body>");
+  });
+});
+
+describe("normalizeTodoItems", () => {
+  it("normalizes visible todo snapshots", () => {
+    expect(
+      normalizeTodoItems({
+        items: [
+          { id: "Inspect Files", content: "Inspect files", status: "current" },
+          { content: "Run checks", status: "done" },
+          { content: "Ship release" }
+        ]
+      })
+    ).toEqual([
+      { id: "inspect-files", content: "Inspect files", status: "in_progress" },
+      { id: "run-checks", content: "Run checks", status: "completed" },
+      { id: "ship-release", content: "Ship release", status: "pending" }
+    ]);
   });
 });

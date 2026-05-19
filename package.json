@@ -1,6 +1,6 @@
 {
   "name": "@jx-grxf/patchpilot",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": false,
   "description": "Local-first coding agent TUI for visible, permissioned repo changes.",
   "type": "module",

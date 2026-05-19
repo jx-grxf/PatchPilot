@@ -402,6 +402,61 @@ describe("GeminiWrapperClient", () => {
     }
   });
 
+  it("passes file paths through the Python Gemini-API bridge", async () => {
+    const tempRoot = await mkdtemp(path.join(tmpdir(), "patchpilot-gemini-files-"));
+    const originalConfigDir = process.env.PATCHPILOT_CONFIG_DIR;
+    try {
+      process.env.PATCHPILOT_CONFIG_DIR = tempRoot;
+      const modulePath = path.join(tempRoot, "gemini_webapi.py");
+      const pythonShimPath = path.join(tempRoot, "python-shim");
+      const cookiesPath = path.join(tempRoot, "cookies.json");
+      const imagePath = path.join(tempRoot, "sample.png");
+
+      await writeFile(
+        modulePath,
+        [
+          "import json",
+          "class Status:",
+          "    name = 'AVAILABLE'",
+          "",
+          "class Response:",
+          "    def __init__(self, text):",
+          "        self.text = text",
+          "",
+          "class GeminiClient:",
+          "    def __init__(self, *args, **kwargs):",
+          "        self.account_status = Status()",
+          "",
+          "    async def init(self, *args, **kwargs):",
+          "        pass",
+          "",
+          "    async def generate_content(self, prompt, **kwargs):",
+          "        return Response(json.dumps({'prompt': prompt, 'files': kwargs.get('files', [])}))",
+          "",
+          "    async def close(self):",
+          "        pass",
+          ""
+        ].join("\n"),
+        "utf8"
+      );
+      await writeFile(pythonShimPath, `#!/bin/sh\nPYTHONPATH="${tempRoot}" python3 "$@"\n`, "utf8");
+      await chmod(pythonShimPath, 0o755);
+      await writeFile(cookiesPath, JSON.stringify({ cookies: { "__Secure-1PSID": "psid-value" } }), "utf8");
+      await writeFile(imagePath, "fake image", "utf8");
+
+      const client = new GeminiWrapperClient("", "", { maxTokens: 256, temperature: 0.2, bridgeMinIntervalMs: 0 }, "python", pythonShimPath, cookiesPath);
+      const result = await client.analyzeFile({ model: "flash", path: imagePath, prompt: "Describe this" });
+      expect(JSON.parse(result.content)).toEqual({ prompt: "Describe this", files: [imagePath] });
+    } finally {
+      if (originalConfigDir === undefined) {
+        delete process.env.PATCHPILOT_CONFIG_DIR;
+      } else {
+        process.env.PATCHPILOT_CONFIG_DIR = originalConfigDir;
+      }
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
   it("requires explicit bridge auth and does not fall back to browser cookies", async () => {
     const client = new GeminiWrapperClient("", "");
     await expect(

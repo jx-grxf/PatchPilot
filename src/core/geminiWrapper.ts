@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import type { ModelChatOptions, ModelChatResult, ModelTelemetry } from "./types.js";
+import type { ModelChatOptions, ModelChatResult, ModelFileAnalysisOptions, ModelTelemetry } from "./types.js";
 import { getPatchPilotConfigDir } from "./env.js";
 import { fetchWithTimeout } from "./http.js";
 import { attachTokenCost, estimateTokens } from "./tokenAccounting.js";
@@ -53,6 +53,7 @@ type PythonBridgeInput = {
   command: "authCheck" | "chat" | "models";
   model: string;
   prompt?: string;
+  files?: string[];
   cookiesJson?: string;
   secure1psid?: string;
   secure1psidts?: string;
@@ -178,6 +179,36 @@ export class GeminiWrapperClient {
     return mergeGeminiWrapperModels(models);
   }
 
+  async analyzeFile(options: ModelFileAnalysisOptions): Promise<ModelChatResult> {
+    if (!this.usesPythonBridge()) {
+      throw new Error("Gemini-Wrapper file analysis is only available through the managed Python Gemini-API bridge.");
+    }
+
+    await this.assertPythonBridgeReady();
+    const startedAt = Date.now();
+    const bridgeModel = normalizeGeminiWrapperBridgeModel(options.model);
+    const result = await this.runPythonBridge(
+      {
+        command: "chat",
+        model: bridgeModel,
+        prompt: options.prompt,
+        files: [options.path]
+      },
+      options.signal,
+      Math.min(getGeminiWrapperBridgeTimeoutMs(bridgeModel || defaultGeminiWrapperModel, this.runtimeOptions.bridgeTimeoutMs), 90_000)
+    );
+    const durationMs = Date.now() - startedAt;
+    const content = result.content?.trim() ?? "";
+    if (!content) {
+      throw new Error(result.error ? `Gemini-API bridge failed: ${result.error}` : "Gemini-API bridge returned an empty file analysis response.");
+    }
+
+    return {
+      content,
+      telemetry: toEstimatedTelemetry(`${options.prompt}\nFILE:${options.path}`, content, durationMs, result.model ?? options.model)
+    };
+  }
+
   async checkBridgeAuth(): Promise<void> {
     await this.assertPythonBridgeReady();
     const result = await this.runPythonBridge({
@@ -257,7 +288,7 @@ export class GeminiWrapperClient {
     };
   }
 
-  private async runPythonBridge(input: Pick<PythonBridgeInput, "command" | "model" | "prompt">, signal?: AbortSignal, timeoutMs = getGeminiWrapperBridgeTimeoutMs(input.model, this.runtimeOptions.bridgeTimeoutMs)): Promise<PythonBridgeOutput> {
+  private async runPythonBridge(input: Pick<PythonBridgeInput, "command" | "model" | "prompt" | "files">, signal?: AbortSignal, timeoutMs = getGeminiWrapperBridgeTimeoutMs(input.model, this.runtimeOptions.bridgeTimeoutMs)): Promise<PythonBridgeOutput> {
     const result = await runThrottledGeminiWebApiBridge(
       this.pythonCommand,
       {
@@ -762,7 +793,7 @@ async def main():
 
     async def generate_once(psidts_value):
         client = GeminiClient(secure_1psid=psid, secure_1psidts=psidts_value, cookies=extra or None, proxy=payload.get("proxy"))
-        await client.init(timeout=90, auto_refresh=False, verbose=False)
+        await client.init(timeout=attempt_timeout, auto_refresh=False, verbose=False)
         try:
             status_name = account_status_name(client)
             if payload.get("command") == "authCheck":
@@ -782,6 +813,9 @@ async def main():
             request_kwargs = {"temporary": True}
             if request_model:
                 request_kwargs["model"] = request_model
+            files = payload.get("files") or []
+            if files:
+                request_kwargs["files"] = files
             response = await client.generate_content(payload.get("prompt") or "", **request_kwargs)
             text = getattr(response, "text", None) or str(response)
             return {"content": text, "accountStatus": status_name, "model": request_model or "auto"}
@@ -790,16 +824,17 @@ async def main():
 
     async def generate_with_timestamp(psidts_value):
         last_error = None
-        for attempt in range(3):
+        max_attempts = 2 if payload.get("files") else 3
+        for attempt in range(max_attempts):
             try:
                 return await asyncio.wait_for(generate_once(psidts_value), timeout=attempt_timeout)
             except asyncio.TimeoutError:
-                if attempt >= 2:
+                if attempt >= max_attempts - 1:
                     raise TimeoutError(f"Gemini-API bridge attempt timed out after {attempt_timeout}s.")
                 await asyncio.sleep(1.5 * (attempt + 1))
             except Exception as exc:
                 last_error = exc
-                if attempt >= 2 or not is_transient_network_error(str(exc)):
+                if attempt >= max_attempts - 1 or not is_transient_network_error(str(exc)):
                     raise
                 await asyncio.sleep(1.5 * (attempt + 1))
         raise last_error

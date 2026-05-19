@@ -2,6 +2,7 @@ import React from "react";
 import { Box, Text } from "ink";
 import { toneToColor, toneToMarker, type InkColor } from "../format.js";
 import type { LogLine } from "../types.js";
+import type { AgentTodoItem } from "../../core/types.js";
 
 type TranscriptRow = {
   marker: string;
@@ -19,11 +20,15 @@ export function Transcript(props: {
   height: number;
   width: number;
   scrollOffset: number;
+  todos?: AgentTodoItem[];
+  todoFrame?: number;
 }): React.ReactElement {
   const rows = props.lines.length === 0 ? emptyRows() : buildTranscriptRows(props.lines, props.width);
   const visibleRowCount = Math.max(1, props.height - 2);
+  const todoRows = buildTodoRows(props.todos ?? [], props.width, props.todoFrame ?? 0);
+  const reservedTodoRows = todoRows.length > 0 ? Math.min(todoRows.length, Math.max(1, Math.floor(visibleRowCount / 3))) : 0;
   const hasOverflow = rows.length > visibleRowCount;
-  const contentRowCount = hasOverflow ? Math.max(1, visibleRowCount - 1) : visibleRowCount;
+  const contentRowCount = hasOverflow ? Math.max(1, visibleRowCount - reservedTodoRows - 1) : Math.max(1, visibleRowCount - reservedTodoRows);
   const clampedOffset = clampScrollOffset(props.scrollOffset, rows.length, contentRowCount);
   const visibleRows = rows.slice(Math.max(0, rows.length - contentRowCount - clampedOffset), rows.length - clampedOffset);
 
@@ -42,6 +47,9 @@ export function Transcript(props: {
       ))}
       {visibleRows.map((row, index) => (
         <TranscriptRowView key={`${index}-${row.marker}-${row.label}-${row.text}`} row={row} />
+      ))}
+      {todoRows.slice(0, reservedTodoRows).map((row, index) => (
+        <TranscriptRowView key={`todo-${index}-${row.text}`} row={row} />
       ))}
       {hasOverflow ? <ScrollHint offset={clampedOffset} total={rows.length} visible={contentRowCount} /> : null}
     </Box>
@@ -139,6 +147,39 @@ function emptyRows(): TranscriptRow[] {
   ];
 }
 
+function buildTodoRows(todos: AgentTodoItem[], width: number, frame: number): TranscriptRow[] {
+  if (todos.length === 0) {
+    return [];
+  }
+
+  const textWidth = Math.max(18, width - 19);
+  const spinner = ["-", "\\", "|", "/"][frame % 4] ?? "-";
+  const rows: TranscriptRow[] = [
+    {
+      marker: "",
+      label: "todos",
+      text: `${todos.filter((todo) => todo.status === "completed").length}/${todos.length} complete`,
+      color: "cyan",
+      bold: true
+    }
+  ];
+
+  for (const todo of todos.slice(0, 8)) {
+    const marker = todo.status === "completed" ? "[x]" : todo.status === "in_progress" ? `[${spinner}]` : "[ ]";
+    const color: InkColor = todo.status === "completed" ? "green" : todo.status === "in_progress" ? "yellow" : "gray";
+    rows.push({
+      marker: "",
+      label: marker,
+      text: truncate(todo.content, textWidth),
+      color,
+      bold: todo.status === "in_progress",
+      dim: todo.status === "pending"
+    });
+  }
+
+  return rows;
+}
+
 function markerForBlock(line: LogLine): string {
   switch (line.kind) {
     case "user":
@@ -191,6 +232,13 @@ function colorForBlock(line: LogLine): InkColor {
 
 function clampScrollOffset(offset: number, rowCount: number, visibleRowCount: number): number {
   return Math.max(0, Math.min(offset, Math.max(0, rowCount - visibleRowCount)));
+}
+
+function truncate(value: string, width: number): string {
+  if (value.length <= width) {
+    return value;
+  }
+  return `${value.slice(0, Math.max(0, width - 3))}...`;
 }
 
 function wrapText(value: string, width: number): string[] {

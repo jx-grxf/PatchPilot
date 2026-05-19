@@ -74,6 +74,26 @@ describe("WorkspaceTools", () => {
     await expect(readFile(path.join(tempRoot, "test2", "test.txt"), "utf8")).resolves.toBe("hallo");
   });
 
+  it("normalizes escaped multiline source content before writing", async () => {
+    const tools = new WorkspaceTools({
+      root: tempRoot,
+      allowWrite: true,
+      allowShell: false
+    });
+
+    const result = await tools.execute({
+      name: "write_file",
+      arguments: {
+        path: "index.html",
+        content: '<!DOCTYPE html>\\n<html lang=\\"en\\">\\n<body>\\n  <h1>Snake</h1>\\n</body>\\n</html>'
+      }
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.metadata?.normalizedEscapedContent).toBe(true);
+    await expect(readFile(path.join(tempRoot, "index.html"), "utf8")).resolves.toBe('<!DOCTYPE html>\n<html lang="en">\n<body>\n  <h1>Snake</h1>\n</body>\n</html>');
+  });
+
   it("denies writes unless enabled", async () => {
     const tools = new WorkspaceTools({
       root: tempRoot,
@@ -134,6 +154,51 @@ describe("WorkspaceTools", () => {
 
     expect(result.ok).toBe(true);
     await expect(readFile(path.join(tempRoot, "style.css"), "utf8")).resolves.toBe("body {\n  color: white;\n  background: navy;\n}\n");
+  });
+
+  it("normalizes escaped multiline line-range replacements", async () => {
+    await writeFile(path.join(tempRoot, "script.js"), "function run() {\n  return false;\n}\n");
+    const tools = new WorkspaceTools({
+      root: tempRoot,
+      allowWrite: true,
+      allowShell: false
+    });
+
+    const result = await tools.execute({
+      name: "edit_file",
+      arguments: {
+        path: "script.js",
+        startLine: 2,
+        endLine: 2,
+        replacement: '  const label = \\"ok\\";\\n  return label === \\"ok\\";'
+      }
+    });
+
+    expect(result.ok).toBe(true);
+    await expect(readFile(path.join(tempRoot, "script.js"), "utf8")).resolves.toBe('function run() {\n  const label = "ok";\n  return label === "ok";\n}\n');
+  });
+
+  it("returns text formatting metadata when reading files", async () => {
+    await writeFile(path.join(tempRoot, "broken.html"), '<html>\\n<body>\\n</body>');
+    const tools = new WorkspaceTools({
+      root: tempRoot,
+      allowWrite: false,
+      allowShell: false
+    });
+
+    const result = await tools.execute({
+      name: "read_file",
+      arguments: {
+        path: "broken.html"
+      }
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.metadata).toMatchObject({
+      lineCount: 1,
+      realNewlines: 0,
+      literalBackslashN: 2
+    });
   });
 
   it("rejects ambiguous find and replace edits", async () => {
@@ -261,6 +326,135 @@ describe("WorkspaceTools", () => {
     expect(result.ok).toBe(true);
     expect(result.content).toContain("dimensions: 2x3");
     await rm(outsideRoot, { recursive: true, force: true });
+  });
+
+  it("uses provider file analysis for images when available", async () => {
+    const imagePath = path.join(tempRoot, "sample.png");
+    await writeFile(imagePath, Buffer.from("89504e470d0a1a0a0000000d4948445200000002000000030802000000", "hex"));
+    const tools = new WorkspaceTools({
+      root: tempRoot,
+      allowWrite: false,
+      allowShell: false,
+      documentAnalyzer: async (request) => `saw ${path.basename(request.path)} text: Hallo`
+    });
+
+    const result = await tools.execute({
+      name: "inspect_document",
+      arguments: {
+        path: "sample.png"
+      }
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.content).toContain("provider_analysis:");
+    expect(result.content).toContain("Hallo");
+  });
+
+  it("does not claim image analysis succeeded when provider and OCR fail", async () => {
+    const imagePath = path.join(tempRoot, "sample.png");
+    await writeFile(imagePath, Buffer.from("89504e470d0a1a0a0000000d4948445200000002000000030802000000", "hex"));
+    const tools = new WorkspaceTools({
+      root: tempRoot,
+      allowWrite: false,
+      allowShell: false,
+      documentAnalyzer: async () => {
+        throw new Error("provider unavailable");
+      }
+    });
+
+    const result = await tools.execute({
+      name: "inspect_document",
+      arguments: {
+        path: "sample.png"
+      }
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.summary).toContain("only metadata");
+    expect(result.content).toContain("provider_analysis_error: provider unavailable");
+    expect(result.metadata).toMatchObject({
+      analysisStatus: "metadata_only"
+    });
+  });
+
+  it("hard-times out image providers that ignore abort signals", async () => {
+    const imagePath = path.join(tempRoot, "sample.png");
+    await writeFile(imagePath, Buffer.from("89504e470d0a1a0a0000000d4948445200000002000000030802000000", "hex"));
+    const tools = new WorkspaceTools({
+      root: tempRoot,
+      allowWrite: false,
+      allowShell: false,
+      timeoutMs: 25,
+      documentAnalyzer: async () => new Promise<string>(() => {})
+    });
+
+    const startedAt = Date.now();
+    const result = await tools.execute({
+      name: "inspect_document",
+      arguments: {
+        path: "sample.png"
+      }
+    });
+
+    expect(Date.now() - startedAt).toBeLessThan(500);
+    expect(result.ok).toBe(false);
+    expect(result.content).toContain("provider file analysis timed out");
+  });
+
+  it("creates readable PDF and DOCX files", async () => {
+    const tools = new WorkspaceTools({
+      root: tempRoot,
+      allowWrite: true,
+      allowShell: false
+    });
+
+    const pdf = await tools.execute({
+      name: "create_pdf",
+      arguments: {
+        path: "out/report.pdf",
+        title: "Report",
+        content: "Hallo PDF"
+      }
+    });
+    const docx = await tools.execute({
+      name: "create_docx",
+      arguments: {
+        path: "out/report.docx",
+        title: "Report",
+        content: "Hallo DOCX"
+      }
+    });
+
+    expect(pdf.ok).toBe(true);
+    expect(docx.ok).toBe(true);
+    await expect(readFile(path.join(tempRoot, "out", "report.pdf"), "utf8")).resolves.toContain("%PDF-1.4");
+
+    const inspect = await tools.execute({
+      name: "inspect_document",
+      arguments: {
+        path: "out/report.docx"
+      }
+    });
+    expect(inspect.ok).toBe(true);
+    expect(inspect.content).toContain("Hallo DOCX");
+  });
+
+  it("accepts update_todo as a side-effect-free state tool", async () => {
+    const tools = new WorkspaceTools({
+      root: tempRoot,
+      allowWrite: false,
+      allowShell: false
+    });
+
+    const result = await tools.execute({
+      name: "update_todo",
+      arguments: {
+        items: [{ id: "inspect", content: "Inspect files", status: "in_progress" }]
+      }
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.category).toBe("state");
   });
 
   it("blocks external files when experimental file analysis is disabled", async () => {

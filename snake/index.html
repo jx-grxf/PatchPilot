@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Retro Snake Game</title>
+    <style>
+        body {
+            background-color: #0f172a;
+            color: #f8fafc;
+            font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            margin: 0;
+            overflow: hidden;
+        }
+        h1 {
+            margin: 0 0 10px 0;
+            font-size: 2.5rem;
+            letter-spacing: 4px;
+            background: linear-gradient(to right, #38bdf8, #3b82f6);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            text-shadow: 0 4px 12px rgba(56, 189, 248, 0.2);
+        }
+        #score-board {
+            display: flex;
+            justify-content: space-between;
+            width: 400px;
+            font-size: 1.1rem;
+            font-weight: 600;
+            margin-bottom: 15px;
+            background: rgba(30, 41, 59, 0.7);
+            padding: 10px 20px;
+            border-radius: 8px;
+            box-sizing: border-box;
+            border: 1px solid rgba(255, 255, 255, 0.05);
+        }
+        #game-container {
+            position: relative;
+            border: 3px solid #38bdf8;
+            border-radius: 12px;
+            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5), 0 0 30px rgba(56, 189, 248, 0.2);
+            background-color: #1e293b;
+            overflow: hidden;
+        }
+        canvas {
+            display: block;
+        }
+        #overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(15, 23, 42, 0.85);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            opacity: 1;
+            transition: opacity 0.3s ease;
+            z-index: 10;
+        }
+        #overlay.hidden {
+            display: none;
+            opacity: 0;
+        }
+        #overlay-title {
+            font-size: 2rem;
+            color: #ef4444;
+            margin-bottom: 10px;
+            font-weight: bold;
+        }
+        #overlay-msg {
+            font-size: 1.1rem;
+            color: #94a3b8;
+            margin-bottom: 20px;
+        }
+        #controls-info {
+            margin-top: 15px;
+            font-size: 0.85rem;
+            color: #64748b;
+            text-align: center;
+            line-height: 1.4;
+        }
+        .btn {
+            background: linear-gradient(135deg, #38bdf8, #3b82f6);
+            border: none;
+            color: white;
+            padding: 12px 28px;
+            font-size: 1rem;
+            font-weight: 600;
+            border-radius: 8px;
+            cursor: pointer;
+            box-shadow: 0 4px 6px -1px rgba(56, 189, 248, 0.2);
+            transition: all 0.2s;
+        }
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 15px -3px rgba(56, 189, 248, 0.4);
+        }
+        .btn:active {
+            transform: translateY(0);
+        }
+    </style>
+</head>
+<body>
+
+    <h1>SNAKE</h1>
+    <div id="score-board">
+        <div>Score: <span id="score">0</span></div>
+        <div>High Score: <span id="high-score">0</span></div>
+    </div>
+
+    <div id="game-container">
+        <canvas id="gameCanvas" width="400" height="400"></canvas>
+        <div id="overlay">
+            <div id="overlay-title">SNAKE</div>
+            <div id="overlay-msg">Press Start to Play</div>
+            <button class="btn" id="start-btn">Start Game</button>
+        </div>
+    </div>
+
+    <div id="controls-info">Use Arrow Keys or WASD to turn.<br>Prevents default screen scrolling automatically.</div>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const scoreEl = document.getElementById('score');
+        const highScoreEl = document.getElementById('high-score');
+        const startBtn = document.getElementById('start-btn');
+        const overlay = document.getElementById('overlay');
+        const overlayTitle = document.getElementById('overlay-title');
+        const overlayMsg = document.getElementById('overlay-msg');
+
+        const gridSize = 20;
+        const tileCount = canvas.width / gridSize;
+
+        let snake = [];
+        let food = { x: 0, y: 0 };
+        let dx = gridSize;
+        let dy = 0;
+        let nextDx = gridSize;
+        let nextDy = 0;
+        let score = 0;
+        let highScore = 0;
+        let gameInterval = null;
+        let gameRunning = false;
+
+        function initGame() {
+            snake = [
+                { x: gridSize * 5, y: gridSize * 5 },
+                { x: gridSize * 4, y: gridSize * 5 },
+                { x: gridSize * 3, y: gridSize * 5 }
+            ];
+            dx = gridSize;
+            dy = 0;
+            nextDx = gridSize;
+            nextDy = 0;
+            score = 0;
+            scoreEl.innerText = score;
+            placeFood();
+        }
+
+        function placeFood() {
+            food.x = Math.floor(Math.random() * tileCount) * gridSize;
+            food.y = Math.floor(Math.random() * tileCount) * gridSize;
+            
+            for (let part of snake) {
+                if (part.x === food.x && part.y === food.y) {
+                    placeFood();
+                    break;
+                }
+            }
+        }
+
+        function gameLoop() {
+            // Commit the buffered direction from input listener
+            dx = nextDx;
+            dy = nextDy;
+
+            update();
+            if (checkGameOver()) {
+                clearInterval(gameInterval);
+                gameRunning = false;
+                
+                overlayTitle.innerText = "GAME OVER";
+                overlayTitle.style.color = "#ef4444";
+                overlayMsg.innerText = "Your Score: " + score;
+                startBtn.innerText = "Play Again";
+                overlay.classList.remove('hidden');
+                return;
+            }
+            draw();
+        }
+
+        function update() {
+            const head = { x: snake[0].x + dx, y: snake[0].y + dy };
+            snake.unshift(head);
+
+            if (head.x === food.x && head.y === food.y) {
+                score += 10;
+                scoreEl.innerText = score;
+                if (score > highScore) {
+                    highScore = score;
+                    highScoreEl.innerText = highScore;
+                }
+                placeFood();
+            } else {
+                snake.pop();
+            }
+        }
+
+        function draw() {
+            // Background
+            ctx.fillStyle = '#1e293b';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            // Subtle grid pattern lines
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.02)';
+            ctx.lineWidth = 1;
+            for (let i = 0; i < tileCount; i++) {
+                ctx.beginPath();
+                ctx.moveTo(i * gridSize, 0);
+                ctx.lineTo(i * gridSize, canvas.height);
+                ctx.stroke();
+                ctx.beginPath();
+                ctx.moveTo(0, i * gridSize);
+                ctx.lineTo(canvas.width, i * gridSize);
+                ctx.stroke();
+            }
+
+            // Draw Snake
+            snake.forEach((part, index) => {
+                if (index === 0) {
+                    ctx.fillStyle = '#38bdf8'; // Glowing blue head
+                } else {
+                    ctx.fillStyle = '#3b82f6'; // Deep blue body
+                }
+                ctx.fillRect(part.x + 1, part.y + 1, gridSize - 2, gridSize - 2);
+            });
+
+            // Draw Food
+            ctx.fillStyle = '#f43f5e'; // Vibrant rose/red food
+            ctx.shadowBlur = 8;
+            ctx.shadowColor = '#f43f5e';
+            ctx.beginPath();
+            ctx.arc(food.x + gridSize/2, food.y + gridSize/2, gridSize/2 - 3, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.shadowBlur = 0; // reset shadow for next draw iterations
+        }
+
+        function checkGameOver() {
+            const head = snake[0];
+            
+            if (head.x < 0 || head.x >= canvas.width || head.y < 0 || head.y >= canvas.height) {
+                return true;
+            }
+
+            for (let i = 1; i < snake.length; i++) {
+                if (head.x === snake[i].x && head.y === snake[i].y) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        function changeDirection(event) {
+            const keyPressed = event.key.toLowerCase();
+            
+            // Prevent arrows and spacebar from scrolling window
+            if (["arrowup", "arrowdown", "arrowleft", "arrowright", " "].includes(event.key.toLowerCase())) {
+                event.preventDefault();
+            }
+
+            const goingUp = dy === -gridSize;
+            const goingDown = dy === gridSize;
+            const goingRight = dx === gridSize;
+            const goingLeft = dx === -gridSize;
+
+            if ((keyPressed === 'arrowleft' || keyPressed === 'a') && !goingRight) {
+                nextDx = -gridSize;
+                nextDy = 0;
+            }
+            if ((keyPressed === 'arrowup' || keyPressed === 'w') && !goingDown) {
+                nextDx = 0;
+                nextDy = -gridSize;
+            }
+            if ((keyPressed === 'arrowright' || keyPressed === 'd') && !goingLeft) {
+                nextDx = gridSize;
+                nextDy = 0;
+            }
+            if ((keyPressed === 'arrowdown' || keyPressed === 's') && !goingUp) {
+                nextDx = 0;
+                nextDy = gridSize;
+            }
+        }
+
+        window.addEventListener('keydown', changeDirection);
+        
+        startBtn.addEventListener('click', () => {
+            if (gameRunning) return;
+            overlay.classList.add('hidden');
+            initGame();
+            gameRunning = true;
+            gameInterval = setInterval(gameLoop, 90);
+        });
+    </script>
+</body>
+</html>

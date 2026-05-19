@@ -159,7 +159,29 @@ const agentResponseFormat = {
                 required: ["name", "arguments"],
                 properties: {
                   name: {
-                    enum: ["list_files", "read_file", "search_text", "inspect_document", "memory_search", "memory_remember", "git_status", "list_scripts", "write_file", "run_shell"]
+                    enum: [
+                      "update_todo",
+                      "list_files",
+                      "read_file",
+                      "read_range",
+                      "file_info",
+                      "search_text",
+                      "inspect_document",
+                      "memory_search",
+                      "memory_remember",
+                      "git_status",
+                      "git_diff",
+                      "list_changed_files",
+                      "list_scripts",
+                      "write_file",
+                      "edit_file",
+                      "create_pdf",
+                      "create_docx",
+                      "apply_patch",
+                      "run_script",
+                      "run_tests",
+                      "run_shell"
+                    ]
                   },
                   arguments: {
                     type: "object",

@@ -17,6 +17,13 @@ export type ModelChatOptions = {
   signal?: AbortSignal;
 };
 
+export type ModelFileAnalysisOptions = {
+  model: string;
+  path: string;
+  prompt: string;
+  signal?: AbortSignal;
+};
+
 export type ModelChatResult = {
   content: string;
   telemetry: ModelTelemetry;
@@ -25,6 +32,7 @@ export type ModelChatResult = {
 export type ModelClient = {
   chat(options: ModelChatOptions): Promise<ModelChatResult>;
   listModels(): Promise<string[]>;
+  analyzeFile?(options: ModelFileAnalysisOptions): Promise<ModelChatResult>;
 };
 
 export type AgentWorkState =
@@ -39,6 +47,7 @@ export type AgentWorkState =
   | "error";
 
 export type AgentToolName =
+  | "update_todo"
   | "list_files"
   | "read_file"
   | "read_range"
@@ -53,6 +62,8 @@ export type AgentToolName =
   | "list_scripts"
   | "write_file"
   | "edit_file"
+  | "create_pdf"
+  | "create_docx"
   | "apply_patch"
   | "run_script"
   | "run_tests"
@@ -69,7 +80,7 @@ export type ToolSideEffect = "none" | "write" | "shell";
 
 export type ToolPermission = "none" | "write" | "shell" | "external_file";
 
-export type ToolCategory = "read" | "search" | "write" | "shell" | "git" | "test" | "document" | "memory";
+export type ToolCategory = "state" | "read" | "search" | "write" | "shell" | "git" | "test" | "document" | "memory";
 
 export type ToolSpec = {
   name: AgentToolName;
@@ -103,6 +114,14 @@ export type AgentResponse =
     };
 
 export type SubagentRole = "planner" | "reviewer" | "explorer";
+
+export type AgentTodoStatus = "pending" | "in_progress" | "completed";
+
+export type AgentTodoItem = {
+  id: string;
+  content: string;
+  status: AgentTodoStatus;
+};
 
 export type AgentEvent =
   | {
@@ -138,6 +157,12 @@ export type AgentEvent =
       category?: ToolCategory;
       preview?: string;
       metadata?: Record<string, unknown>;
+    }
+  | {
+      type: "todo";
+      items: AgentTodoItem[];
+      summary: string;
+      workState: AgentWorkState;
     }
   | {
       type: "approval";
@@ -214,6 +239,13 @@ export type SessionEvent =
       runId: string;
       request: ApprovalRequest;
       decision: PermissionDecision;
+      createdAt: string;
+    }
+  | {
+      type: "todo.updated";
+      runId: string;
+      items: AgentTodoItem[];
+      summary: string;
       createdAt: string;
     }
   | {

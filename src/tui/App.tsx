@@ -26,8 +26,8 @@ import { ensurePatchPilotGitignore, patchPilotInitPrompt } from "../core/project
 import { formatReasoningSupport } from "../core/reasoning.js";
 import { buildSessionResumeContext, listWorkspaceSessions, loadSessionSummary, SessionStore } from "../core/session.js";
 import { addTelemetryToSession, emptySessionTelemetry, estimateTokens } from "../core/tokenAccounting.js";
-import type { AgentEvent, AgentWorkState, ApprovalRequest, ModelProvider, ModelTelemetry, PermissionDecision, SessionTelemetry } from "../core/types.js";
-import { WorkspaceTools } from "../core/workspace.js";
+import type { AgentEvent, AgentTodoItem, AgentToolName, AgentWorkState, ApprovalRequest, ModelProvider, ModelTelemetry, PermissionDecision, SessionTelemetry } from "../core/types.js";
+import { getToolSpec, WorkspaceTools } from "../core/workspace.js";
 import { ApprovalPanel } from "./components/ApprovalPanel.js";
 import { CommandSuggestions, type CommandSuggestionItem } from "./components/CommandSuggestions.js";
 import { Composer, FooterHints } from "./components/Composer.js";
@@ -79,6 +79,8 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   const usedOllamaModelsRef = useRef(new Set<string>());
   const [lines, setLines] = useState<LogLine[]>([]);
   const [advisorNotes, setAdvisorNotes] = useState<AdvisorNote[]>([]);
+  const [todos, setTodos] = useState<AgentTodoItem[]>([]);
+  const [todoFrame, setTodoFrame] = useState(0);
   const [isRunning, setIsRunning] = useState(false);
   const [status, setStatus] = useState("idle");
   const [workState, setWorkState] = useState<AgentWorkState>("idle");
@@ -162,6 +164,21 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
     ]);
   }, []);
 
+  useEffect(() => {
+    if (!isRunning || todos.every((todo) => todo.status !== "in_progress")) {
+      setTodoFrame(0);
+      return;
+    }
+
+    const timer = setInterval(() => {
+      setTodoFrame((currentFrame) => (currentFrame + 1) % 4);
+    }, 180);
+
+    return () => {
+      clearInterval(timer);
+    };
+  }, [isRunning, todos]);
+
   const resolveApproval = useCallback(
     (decision: PermissionDecision) => {
       if (!pendingApproval || !approvalResolverRef.current) {
@@ -170,14 +187,17 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
 
       approvalResolverRef.current(decision);
       approvalResolverRef.current = null;
+      const nextWorkState = decision === "deny" ? "error" : workStateForApprovalTool(pendingApproval.tool);
       setInput("");
+      setStatus(decision === "deny" ? `${pendingApproval.tool} denied` : `${pendingApproval.tool} approved; running`);
+      setWorkState(nextWorkState);
       appendLine({
         kind: "approval",
         tone: decision === "deny" ? "warning" : "success",
         label: "approval",
         text: `${pendingApproval.tool} ${decision.replace("_", " ")}`,
         detail: pendingApproval.preview,
-        workState: "waiting_approval",
+        workState: nextWorkState,
         tool: pendingApproval.tool
       });
       setPendingApproval(null);
@@ -1028,6 +1048,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
 
       setInput("");
       setTranscriptScrollOffset(0);
+      setTodos([]);
       setIsRunning(true);
       appendLine({
         kind: "user",
@@ -1112,6 +1133,12 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
                 message: event.message
               })
             );
+          }
+
+          if (event.type === "todo") {
+            setTodos(event.items);
+            setStatus(event.summary);
+            continue;
           }
 
           setStatus(eventToStatus(event));
@@ -1713,6 +1740,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         case "clear":
           setLines([]);
           setAdvisorNotes([]);
+          setTodos([]);
           setTelemetry(null);
           setResumeContext("");
           setSessionTelemetry(emptySessionTelemetry());
@@ -1735,6 +1763,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           await sessionStoreRef.current.create();
           setLines([]);
           setAdvisorNotes([]);
+          setTodos([]);
           setTelemetry(null);
           setSessionTelemetry(emptySessionTelemetry());
           setPendingApproval(null);
@@ -2281,6 +2310,8 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
               height={panelHeight}
               width={transcriptWidth}
               scrollOffset={transcriptScrollOffset}
+              todos={todos}
+              todoFrame={todoFrame}
             />
             <ApprovalPanel request={pendingApproval} bypassConfirmation={bypassConfirmation} />
             <Composer
@@ -2843,6 +2874,14 @@ function eventToLine(event: AgentEvent): LogLineInput {
         category: event.category,
         preview: event.preview
       };
+    case "todo":
+      return {
+        kind: "status",
+        tone: "muted",
+        label: "todo",
+        text: event.summary,
+        workState: event.workState
+      };
     case "approval":
       return {
         kind: "approval",
@@ -2890,6 +2929,10 @@ function eventToStatus(event: AgentEvent): string {
     return `${event.name}: ${event.summary}`;
   }
 
+  if (event.type === "todo") {
+    return event.summary;
+  }
+
   if (event.type === "subagent") {
     return `${event.role} subagent`;
   }
@@ -2899,6 +2942,20 @@ function eventToStatus(event: AgentEvent): string {
   }
 
   return event.type;
+}
+
+function workStateForApprovalTool(tool: AgentToolName): AgentWorkState {
+  const category = getToolSpec(tool).category;
+  if (category === "write") {
+    return "editing";
+  }
+  if (category === "shell" || category === "test") {
+    return "verifying";
+  }
+  if (category === "read" || category === "search" || category === "document" || category === "git") {
+    return "reading";
+  }
+  return "inspecting";
 }
 
 function defaultLogKind(line: LogLineInput): LogLine["kind"] {

@@ -223,6 +223,8 @@ function formatEventForResume(event: SessionEvent): string {
       return `- requested ${event.tool}`;
     case "approval.requested":
       return `- approval ${event.decision} for ${event.request.tool}`;
+    case "todo.updated":
+      return `- todos: ${clip(event.summary, 180)}`;
     case "tool.completed":
       return `- ${event.tool} ${event.ok ? "ok" : "failed"}: ${clip(event.summary, 180)}`;
     case "run.completed":
