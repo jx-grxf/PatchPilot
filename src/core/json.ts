@@ -15,6 +15,7 @@ const toolNameSchema = z.enum([
   "list_changed_files",
   "list_scripts",
   "write_file",
+  "edit_file",
   "apply_patch",
   "run_script",
   "run_tests",

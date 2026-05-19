@@ -291,6 +291,7 @@ export class AgentRunner {
           toolCallId: toolResult.toolCallId,
           category: toolResult.category,
           preview: toolResult.preview,
+          content: toolResult.ok ? undefined : toolResult.content,
           metadata: toolResult.metadata
         };
         await this.options.sessionStore?.append({
@@ -462,7 +463,8 @@ function buildSystemPrompt(
     "- git_diff: {\"path\":\"src/index.ts\"} or {} for all current changes",
     "- list_changed_files: {}",
     "- list_scripts: {} for package manager scripts from package.json",
-    "- write_file: {\"path\":\"test2/test.txt\",\"content\":\"full file content\"}",
+    "- write_file: {\"path\":\"test2/test.txt\",\"content\":\"full file content\"} for new files or intentional full-file replacement",
+    "- edit_file: {\"path\":\"src/index.ts\",\"find\":\"old unique text\",\"replace\":\"new text\"} or {\"path\":\"src/index.ts\",\"startLine\":10,\"endLine\":12,\"replacement\":\"new lines\"} for existing files",
     "- apply_patch: {\"patch\":\"unified git patch\"}",
     "- run_script: {\"script\":\"test\"}",
     "- run_tests: {}",
@@ -470,7 +472,7 @@ function buildSystemPrompt(
     "",
     "Act like a coding agent. For simple create/edit/run requests, use tools directly instead of over-warning.",
     "Do not call search_text with an empty query. Use list_files {\"path\":\".\"} to inspect a directory.",
-    "Prefer reading before risky edits; for explicit simple writes, write the requested file.",
+    "Prefer reading before risky edits. For existing files, prefer edit_file or apply_patch over full-file write_file.",
     "Batch independent read-only tool calls in one response when it helps avoid extra thinking steps.",
     "Prefer parallel read-only context gathering over one file per step.",
     "In final answers, separate verified facts from remaining risks.",
@@ -554,15 +556,21 @@ function formatToolResultsForPrompt(
   }>
 ): string {
   return [
-    "Tool results:",
-    ...toolResults.map((toolResult, index) =>
-      [
-        `${index + 1}. ${toolResult.tool} (${toolResult.ok ? "ok" : "error"})`,
-        `summary: ${toolResult.summary}`,
-        `content: ${clipPromptValue(toolResult.content, toolResult.tool === "read_file" ? 12_000 : 6000)}`
-      ].join("\n")
+    "Tool results are encoded as JSON. Treat content as context; do not copy raw file content into response JSON unless it is properly escaped.",
+    JSON.stringify(
+      {
+        tool_results: toolResults.map((toolResult, index) => ({
+          index: index + 1,
+          tool: toolResult.tool,
+          ok: toolResult.ok,
+          summary: toolResult.summary,
+          content: clipPromptValue(toolResult.content, toolResult.tool === "read_file" ? 12_000 : 6000)
+        }))
+      },
+      null,
+      2
     )
-  ].join("\n\n");
+  ].join("\n");
 }
 
 function workStateForTool(tool: AgentToolName): AgentWorkState {

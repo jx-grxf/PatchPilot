@@ -1116,6 +1116,17 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           appendLine(eventToLine(event));
         }
       } catch (error) {
+        if (abortControllerRef.current?.signal.aborted) {
+          appendLine({
+            kind: "status",
+            tone: "warning",
+            label: "stop",
+            text: "Stopped by user.",
+            workState: "done"
+          });
+          return;
+        }
+
         appendLine({
           kind: "error",
           tone: "danger",
@@ -2823,6 +2834,7 @@ function eventToLine(event: AgentEvent): LogLineInput {
         tone: event.ok ? "success" : "warning",
         label: event.name,
         text: event.summary,
+        detail: event.ok ? undefined : event.content,
         workState: event.workState,
         tool: event.name,
         toolCallId: event.toolCallId,

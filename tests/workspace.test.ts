@@ -93,6 +93,70 @@ describe("WorkspaceTools", () => {
     expect(result.summary).toContain("--apply");
   });
 
+  it("edits an existing file with a unique find and replace", async () => {
+    await writeFile(path.join(tempRoot, "index.html"), "<h1>Old title</h1>\n<p>body</p>\n");
+    const tools = new WorkspaceTools({
+      root: tempRoot,
+      allowWrite: true,
+      allowShell: false
+    });
+
+    const result = await tools.execute({
+      name: "edit_file",
+      arguments: {
+        path: "index.html",
+        find: "<h1>Old title</h1>",
+        replace: "<h1>New title</h1>"
+      }
+    });
+
+    expect(result.ok).toBe(true);
+    await expect(readFile(path.join(tempRoot, "index.html"), "utf8")).resolves.toBe("<h1>New title</h1>\n<p>body</p>\n");
+  });
+
+  it("edits an existing file by line range", async () => {
+    await writeFile(path.join(tempRoot, "style.css"), "body {\n  color: black;\n  margin: 0;\n}\n");
+    const tools = new WorkspaceTools({
+      root: tempRoot,
+      allowWrite: true,
+      allowShell: false
+    });
+
+    const result = await tools.execute({
+      name: "edit_file",
+      arguments: {
+        path: "style.css",
+        startLine: 2,
+        endLine: 3,
+        replacement: "  color: white;\n  background: navy;"
+      }
+    });
+
+    expect(result.ok).toBe(true);
+    await expect(readFile(path.join(tempRoot, "style.css"), "utf8")).resolves.toBe("body {\n  color: white;\n  background: navy;\n}\n");
+  });
+
+  it("rejects ambiguous find and replace edits", async () => {
+    await writeFile(path.join(tempRoot, "note.txt"), "same\nsame\n");
+    const tools = new WorkspaceTools({
+      root: tempRoot,
+      allowWrite: true,
+      allowShell: false
+    });
+
+    const result = await tools.execute({
+      name: "edit_file",
+      arguments: {
+        path: "note.txt",
+        find: "same",
+        replace: "other"
+      }
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.summary).toContain("exactly once");
+  });
+
   it("validates write paths before requesting approval", async () => {
     let approvals = 0;
     const tools = new WorkspaceTools({

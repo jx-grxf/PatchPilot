@@ -48,6 +48,27 @@ describe("parseAgentResponse", () => {
     });
   });
 
+  it("accepts edit_file tool calls", () => {
+    expect(
+      parseAgentResponse(
+        '{"action":"tools","message":"edit","tool_calls":[{"name":"edit_file","arguments":{"path":"index.html","find":"old","replace":"new"}}]}'
+      )
+    ).toEqual({
+      action: "tools",
+      message: "edit",
+      tool_calls: [
+        {
+          name: "edit_file",
+          arguments: {
+            path: "index.html",
+            find: "old",
+            replace: "new"
+          }
+        }
+      ]
+    });
+  });
+
   it("repairs raw control characters inside JSON strings", () => {
     expect(parseAgentResponse('{"action":"final","message":"first line\nsecond line"}')).toEqual({
       action: "final",

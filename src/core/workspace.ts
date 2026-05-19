@@ -202,6 +202,14 @@ export const toolSpecs: Record<AgentToolName, ToolSpec> = {
     permission: "write",
     category: "write"
   },
+  edit_file: {
+    name: "edit_file",
+    description: "Edit an existing text file by unique find/replace or by replacing a bounded line range.",
+    risk: "high",
+    sideEffects: "write",
+    permission: "write",
+    category: "write"
+  },
   apply_patch: {
     name: "apply_patch",
     description: "Apply a unified Git patch inside the workspace.",
@@ -297,6 +305,15 @@ export class WorkspaceTools {
           return await this.listScripts();
         case "write_file":
           return await this.writeFile(readString(call.arguments.path, ""), readString(call.arguments.content, ""));
+        case "edit_file":
+          return await this.editFile(
+            readString(call.arguments.path, ""),
+            readString(call.arguments.find, ""),
+            readString(call.arguments.replace, ""),
+            readNumber(call.arguments.startLine, 0),
+            readNumber(call.arguments.endLine, 0),
+            readString(call.arguments.replacement, "")
+          );
         case "apply_patch":
           return await this.applyPatch(readString(call.arguments.patch, ""));
         case "run_script":
@@ -658,6 +675,92 @@ export class WorkspaceTools {
       tool: "write_file",
       category: toolSpecs.write_file.category,
       preview: `Write ${path.relative(this.root, absolutePath)}`
+    };
+  }
+
+  private async editFile(requestedPath: string, findText: string, replaceText: string, startLine: number, endLine: number, replacementText: string): Promise<ToolResult> {
+    if (!requestedPath) {
+      return denied("edit_file requires a path.", "edit_file");
+    }
+
+    if (isPlaceholderPath(requestedPath)) {
+      return denied(`edit_file denied placeholder path: ${requestedPath}`, "edit_file");
+    }
+
+    if (isSensitivePath(requestedPath)) {
+      return denied(`edit_file denied sensitive path: ${requestedPath}`, "edit_file");
+    }
+
+    const usesLineRange = startLine > 0 || endLine > 0;
+    const usesFindReplace = findText.length > 0;
+    if (usesLineRange === usesFindReplace) {
+      return denied("edit_file requires either find/replace or startLine/endLine/replacement.", "edit_file");
+    }
+
+    if (usesLineRange && (startLine < 1 || endLine < startLine)) {
+      return denied("edit_file requires 1-based startLine/endLine values.", "edit_file");
+    }
+
+    const absolutePath = await this.resolveWritePath(requestedPath);
+    if (!isLikelyTextFile(absolutePath)) {
+      return denied(`edit_file supports text/code files. Use write_file only when replacing the full ${path.extname(absolutePath) || "file"} file is intentional.`, "edit_file");
+    }
+
+    const originalContent = await readFile(absolutePath, "utf8").catch((error: unknown) => {
+      throw new Error(`file not found or unreadable: ${requestedPath} (${error instanceof Error ? error.message : String(error)})`);
+    });
+    let nextContent = originalContent;
+    let editSummary = "";
+
+    if (usesFindReplace) {
+      const matches = countOccurrences(originalContent, findText);
+      if (matches !== 1) {
+        return denied(`edit_file find text must match exactly once; found ${matches} matches.`, "edit_file");
+      }
+      nextContent = originalContent.replace(findText, replaceText);
+      editSummary = `replaced 1 match in ${path.relative(this.root, absolutePath)}`;
+    } else {
+      const lines = originalContent.split(/\r?\n/);
+      if (endLine > lines.length) {
+        return denied(`edit_file line range exceeds file length (${lines.length} lines).`, "edit_file");
+      }
+      const replacementLines = replacementText.split(/\r?\n/);
+      lines.splice(startLine - 1, endLine - startLine + 1, ...replacementLines);
+      nextContent = lines.join("\n");
+      editSummary = `replaced lines ${startLine}-${endLine} in ${path.relative(this.root, absolutePath)}`;
+    }
+
+    if (nextContent === originalContent) {
+      return denied("edit_file produced no changes.", "edit_file");
+    }
+
+    if (!this.allowWrite) {
+      const approval = await this.requestApproval(
+        "edit_file",
+        "write",
+        {
+          path: requestedPath,
+          startLine: usesLineRange ? startLine : undefined,
+          endLine: usesLineRange ? endLine : undefined,
+          findLength: usesFindReplace ? findText.length : undefined,
+          replacementLength: usesLineRange ? replacementText.length : replaceText.length
+        },
+        `Edit ${requestedPath}: ${editSummary}`
+      );
+      if (approval.decision === "deny") {
+        return denied("edit_file denied by permission policy. Restart with --apply or approve the request in build mode.", "edit_file", approval);
+      }
+    }
+
+    await writeFile(absolutePath, nextContent, "utf8");
+
+    return {
+      ok: true,
+      summary: editSummary,
+      content: `Edited ${path.relative(this.root, absolutePath)}.`,
+      tool: "edit_file",
+      category: toolSpecs.edit_file.category,
+      preview: `Edit ${path.relative(this.root, absolutePath)}`
     };
   }
 
@@ -1251,6 +1354,23 @@ function runGitApply(patchContent: string, cwd: string, timeoutMs: number, signa
 
 function readString(value: unknown, fallback: string): string {
   return typeof value === "string" ? value : fallback;
+}
+
+function countOccurrences(value: string, needle: string): number {
+  if (!needle) {
+    return 0;
+  }
+
+  let count = 0;
+  let index = 0;
+  while (true) {
+    index = value.indexOf(needle, index);
+    if (index === -1) {
+      return count;
+    }
+    count += 1;
+    index += needle.length;
+  }
 }
 
 function readNumber(value: unknown, fallback: number): number {

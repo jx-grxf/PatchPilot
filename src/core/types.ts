@@ -52,6 +52,7 @@ export type AgentToolName =
   | "list_changed_files"
   | "list_scripts"
   | "write_file"
+  | "edit_file"
   | "apply_patch"
   | "run_script"
   | "run_tests"
@@ -130,6 +131,7 @@ export type AgentEvent =
       type: "tool";
       name: AgentToolName;
       summary: string;
+      content?: string;
       ok: boolean;
       workState: AgentWorkState;
       toolCallId?: string;
