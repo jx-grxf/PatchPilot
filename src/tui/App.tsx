@@ -9,6 +9,7 @@ import { savePatchPilotEnvValues } from "../core/env.js";
 import { defaultGeminiModel, readGeminiApiKey } from "../core/gemini.js";
 import {
   defaultGeminiWrapperModel,
+  geminiWrapperCuratedModels,
   geminiWrapperRequiresApiKey,
   readGeminiWrapperApiKey,
   readGeminiWrapperBaseUrl,
@@ -805,23 +806,24 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           return;
         }
 
-        if (choice === 0) {
+        const curatedModel = geminiWrapperCuratedModels[choice];
+        if (curatedModel) {
           setTelemetry(null);
-          setModelOptions([defaultGeminiWrapperModel]);
+          setModelOptions([...geminiWrapperCuratedModels]);
           setSettings((currentSettings) => ({
             ...currentSettings,
             provider: "gemini-wrapper",
-            model: defaultGeminiWrapperModel
+            model: curatedModel
           }));
           savePatchPilotEnvValues({
             PATCHPILOT_PROVIDER: "gemini-wrapper",
-            PATCHPILOT_MODEL: defaultGeminiWrapperModel,
+            PATCHPILOT_MODEL: curatedModel,
             PATCHPILOT_ONBOARDING_COMPLETE: "1"
           });
           appendLine({
             tone: "success",
             label: "onboarding",
-            text: `ready: gemini-wrapper using ${defaultGeminiWrapperModel}`
+            text: `ready: gemini-wrapper using ${curatedModel}`
           });
           closeOnboarding();
           return;
@@ -2577,7 +2579,7 @@ function getOnboardingOptionCount(onboarding: OnboardingState): number {
     case "api-key-choice":
       return onboarding.hasExistingKey ? 2 : 1;
     case "gemini-wrapper-model-mode":
-      return 2;
+      return geminiWrapperCuratedModels.length + 1;
     case "model":
       return onboarding.models.length;
     default:
@@ -2694,7 +2696,7 @@ function defaultModelForProvider(provider: ModelProvider, currentModel: string):
   }
 
   if (provider === "gemini-wrapper") {
-    return currentModel === defaultGeminiWrapperModel || currentModel.startsWith("gemini-3-") ? currentModel : defaultGeminiWrapperModel;
+    return geminiWrapperCuratedModels.includes(currentModel as typeof geminiWrapperCuratedModels[number]) || currentModel.startsWith("gemini-3-") ? currentModel : defaultGeminiWrapperModel;
   }
 
   if (provider === "gemini") {

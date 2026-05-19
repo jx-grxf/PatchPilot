@@ -47,4 +47,10 @@ describe("provider reasoning capabilities", () => {
   it("formats unsupported reasoning clearly for the TUI", () => {
     expect(formatReasoningSupport("nvidia", "meta/llama-3.1-70b-instruct", "high")).toContain("not supported");
   });
+
+  it("treats Gemini-Wrapper thinking as a model mode", () => {
+    expect(resolveProviderReasoning({ provider: "gemini-wrapper", model: "thinking", requested: "high" })).toBe("high");
+    expect(formatReasoningSupport("gemini-wrapper", "thinking", "high")).toContain("Gemini Web thinking model");
+    expect(resolveProviderReasoning({ provider: "gemini-wrapper", model: "flash", requested: "high" })).toBeUndefined();
+  });
 });

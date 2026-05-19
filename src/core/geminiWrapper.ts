@@ -7,6 +7,7 @@ import { fetchWithTimeout } from "./http.js";
 import { attachTokenCost, estimateTokens } from "./tokenAccounting.js";
 
 export const defaultGeminiWrapperModel = "auto";
+export const geminiWrapperCuratedModels = ["auto", "flash", "thinking", "pro"] as const;
 export const geminiWebApiVersion = "2.0.0";
 export const geminiWebApiInstallCommand = `PatchPilot managed install: python3 -m venv ~/.patchpilot/gemini-wrapper-venv && ~/.patchpilot/gemini-wrapper-venv/bin/python -m pip install gemini_webapi==${geminiWebApiVersion}`;
 
@@ -153,7 +154,7 @@ export class GeminiWrapperClient {
             .filter((model) => model && isLikelyGeminiWrapperChatModel(model))
         )
       ];
-      return [defaultGeminiWrapperModel, ...models.filter((model) => model !== defaultGeminiWrapperModel)];
+      return mergeGeminiWrapperModels(models);
     }
 
     this.assertConfigured();
@@ -174,7 +175,7 @@ export class GeminiWrapperClient {
           .filter(isLikelyGeminiWrapperChatModel) ?? []
       )
     ].sort();
-    return models.length > 0 ? models : [defaultGeminiWrapperModel];
+    return mergeGeminiWrapperModels(models);
   }
 
   async checkBridgeAuth(): Promise<void> {
@@ -462,7 +463,30 @@ function normalizeGeminiWrapperModel(model: string): string {
 
 function normalizeGeminiWrapperBridgeModel(model: string): string {
   const normalizedModel = normalizeGeminiWrapperModel(model).trim();
-  return normalizedModel === defaultGeminiWrapperModel || normalizedModel === "gemini-web-default" ? "" : normalizedModel;
+  if (normalizedModel === defaultGeminiWrapperModel || normalizedModel === "gemini-web-default") {
+    return "";
+  }
+
+  if (normalizedModel === "flash") {
+    return "gemini-3-flash";
+  }
+
+  if (normalizedModel === "thinking") {
+    return "gemini-3-flash-thinking";
+  }
+
+  if (normalizedModel === "pro") {
+    return "gemini-3-pro";
+  }
+
+  return normalizedModel;
+}
+
+function mergeGeminiWrapperModels(models: string[]): string[] {
+  return [
+    ...geminiWrapperCuratedModels,
+    ...models.filter((model) => !geminiWrapperCuratedModels.includes(model as typeof geminiWrapperCuratedModels[number]))
+  ];
 }
 
 function isLikelyGeminiWrapperChatModel(model: string): boolean {

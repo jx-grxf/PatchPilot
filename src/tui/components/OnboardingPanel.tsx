@@ -241,12 +241,24 @@ export function OnboardingPanel(props: {
       ) : null}
       {props.state.step === "gemini-wrapper-model-mode" ? (
         <SelectionList
-          title="Gemini-Wrapper model mode"
-          subtitle="Auto is fastest and most stable. Manual fetches models currently exposed by Gemini Web."
+          title="Gemini-Wrapper model"
+          subtitle="Thinking and Pro are Gemini Web model modes exposed by gemini_webapi, not official API thinking controls."
           rows={[
             {
               label: "Auto",
               description: "Let Gemini Web pick the current default model"
+            },
+            {
+              label: "Flash",
+              description: "Use gemini-3-flash through Gemini Web"
+            },
+            {
+              label: "Thinking",
+              description: "Use gemini-3-flash-thinking through Gemini Web"
+            },
+            {
+              label: "Pro",
+              description: "Use gemini-3-pro through Gemini Web"
             },
             {
               label: "Manual",

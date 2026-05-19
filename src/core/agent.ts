@@ -70,6 +70,7 @@ export class AgentRunner {
     });
     let stepIndex = 0;
     let repairs = 0;
+    let lastReadFilePath = "";
     let subagentContext = "";
     if (this.options.subagents && shouldUseSubagents(task)) {
       yield {
@@ -174,36 +175,47 @@ export class AgentRunner {
       try {
         parsedResponse = parseAgentResponse(rawResponse);
       } catch (error) {
-        repairs += 1;
-        yield {
-          type: "status",
-          message: `repairing model protocol: ${formatParseError(error)}`,
-          workState: "planning"
-        };
-        messages.push({
-          role: "assistant",
-          content: clipPromptValue(rawResponse, 2000)
-        });
-        messages.push({
-          role: "user",
-          content:
-            "Your previous response was invalid. Return exactly one JSON object now. Do not explain. Use either {\"action\":\"tools\",\"message\":\"...\",\"tool_calls\":[...]} or {\"action\":\"final\",\"message\":\"...\"}. For simple file edits, call write_file with a workspace-relative path."
-        });
-        if (repairs >= 3) {
+        const recoveredResponse = recoverMalformedToolResponse(rawResponse, lastReadFilePath);
+        if (recoveredResponse) {
+          parsedResponse = recoveredResponse;
+          const recoveredPath = recoveredResponse.tool_calls[0]?.arguments.path ?? "workspace file";
           yield {
-            type: "final",
-            message: "The model kept returning invalid tool protocol. Try a stronger coding model or switch advisors off for this task.",
-            workState: "error"
+            type: "status",
+            message: `recovered malformed model protocol as ${recoveredResponse.tool_calls[0]?.name ?? "tool"} for ${recoveredPath}`,
+            workState: "planning"
           };
-          await this.options.sessionStore?.append({
-            type: "run.failed",
-            runId,
-            message: "The model kept returning invalid tool protocol.",
-            failedAt: new Date().toISOString()
+        } else {
+          repairs += 1;
+          yield {
+            type: "status",
+            message: `repairing model protocol: ${formatParseError(error)}`,
+            workState: "planning"
+          };
+          messages.push({
+            role: "assistant",
+            content: clipPromptValue(rawResponse, 2000)
           });
-          return;
+          messages.push({
+            role: "user",
+            content:
+              "Your previous response was invalid. Return exactly one JSON object now. Do not explain. Use either {\"action\":\"tools\",\"message\":\"...\",\"tool_calls\":[...]} or {\"action\":\"final\",\"message\":\"...\"}. For simple file edits, call write_file with a workspace-relative path."
+          });
+          if (repairs >= 3) {
+            yield {
+              type: "final",
+              message: "The model kept returning invalid tool protocol. Try a stronger coding model or switch advisors off for this task.",
+              workState: "error"
+            };
+            await this.options.sessionStore?.append({
+              type: "run.failed",
+              runId,
+              message: "The model kept returning invalid tool protocol.",
+              failedAt: new Date().toISOString()
+            });
+            return;
+          }
+          continue;
         }
-        continue;
       }
 
       repairs = 0;
@@ -265,6 +277,14 @@ export class AgentRunner {
         : await executeToolCallsSequentially(this.tools, toolCallRecords);
 
       for (const toolResult of toolResults) {
+        const sourceCall = toolCalls.find((toolCall) => toolCall.name === toolResult.tool);
+        if (toolResult.ok && sourceCall?.name === "read_file") {
+          const readPath = readToolString(sourceCall.arguments.path);
+          if (readPath) {
+            lastReadFilePath = readPath;
+          }
+        }
+
         if (toolResult.approval) {
           yield {
             type: "approval",
@@ -345,6 +365,47 @@ export class AgentRunner {
       failedAt: new Date().toISOString()
     });
   }
+}
+
+export function recoverMalformedToolResponse(rawContent: string, lastReadFilePath: string): { action: "tools"; message: string; tool_calls: Array<{ name: "write_file"; arguments: { path: string; content: string } }> } | null {
+  const pathFromResponse = readFirstRegexGroup(rawContent, /"path"\s*:\s*"([^"]+)"/);
+  const targetPath = pathFromResponse || lastReadFilePath;
+  if (!targetPath) {
+    return null;
+  }
+
+  const htmlContent =
+    readFirstRegexGroup(rawContent, /(```(?:html)?\s*)([\s\S]*?<\/html>)\s*```/i, 2) ??
+    readFirstRegexGroup(rawContent, /(<!doctype html[\s\S]*?<\/html>)/i) ??
+    readFirstRegexGroup(rawContent, /(<html[\s\S]*?<\/html>)/i);
+
+  if (!htmlContent) {
+    return null;
+  }
+
+  return {
+    action: "tools",
+    message: "Recovered malformed HTML tool response.",
+    tool_calls: [
+      {
+        name: "write_file",
+        arguments: {
+          path: targetPath,
+          content: htmlContent.trim()
+        }
+      }
+    ]
+  };
+}
+
+function readFirstRegexGroup(value: string, pattern: RegExp, groupIndex = 1): string | null {
+  const match = value.match(pattern);
+  const group = match?.[groupIndex];
+  return typeof group === "string" && group.trim() ? group : null;
+}
+
+function readToolString(value: unknown): string {
+  return typeof value === "string" ? value : "";
 }
 
 function shouldUseSubagents(task: string): boolean {

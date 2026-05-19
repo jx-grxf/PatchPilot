@@ -24,7 +24,7 @@ export function resolveProviderReasoning(options: {
   }
 
   if (options.provider === "gemini-wrapper") {
-    return undefined;
+    return options.model === "thinking" && options.requested !== "none" ? options.requested : undefined;
   }
 
   if (options.provider === "codex") {
@@ -118,6 +118,10 @@ export function formatReasoningSupport(provider: ModelProvider, model: string, r
 
   if (provider === "ollama" && /gpt-oss/i.test(model) && requested === "none") {
     return "gpt-oss reasoning cannot be fully disabled in Ollama; using provider default";
+  }
+
+  if (provider === "gemini-wrapper" && model === "thinking") {
+    return "Gemini-Wrapper uses the Gemini Web thinking model; explicit reasoning budgets are not exposed";
   }
 
   return `${provider} reasoning ${resolved}`;

@@ -201,7 +201,7 @@ describe("GeminiWrapperClient", () => {
       await chmod(pythonShimPath, 0o755);
       await writeFile(cookiesPath, JSON.stringify({ cookies: { "__Secure-1PSID": "psid-value" } }), "utf8");
 
-      await expect(new GeminiWrapperClient("", "", { maxTokens: 256, temperature: 0.2, bridgeMinIntervalMs: 0 }, "python", pythonShimPath, cookiesPath).listModels()).resolves.toEqual(["auto", "gemini-2.5-flash"]);
+      await expect(new GeminiWrapperClient("", "", { maxTokens: 256, temperature: 0.2, bridgeMinIntervalMs: 0 }, "python", pythonShimPath, cookiesPath).listModels()).resolves.toEqual(["auto", "flash", "thinking", "pro", "gemini-2.5-flash"]);
     } finally {
       if (originalConfigDir === undefined) {
         delete process.env.PATCHPILOT_CONFIG_DIR;
@@ -342,6 +342,66 @@ describe("GeminiWrapperClient", () => {
     }
   });
 
+  it("maps curated Gemini-Wrapper models to Gemini Web model ids", async () => {
+    const tempRoot = await mkdtemp(path.join(tmpdir(), "patchpilot-gemini-curated-"));
+    const originalConfigDir = process.env.PATCHPILOT_CONFIG_DIR;
+    try {
+      process.env.PATCHPILOT_CONFIG_DIR = tempRoot;
+      const modulePath = path.join(tempRoot, "gemini_webapi.py");
+      const pythonShimPath = path.join(tempRoot, "python-shim");
+      const cookiesPath = path.join(tempRoot, "cookies.json");
+
+      await writeFile(
+        modulePath,
+        [
+          "import json",
+          "class Status:",
+          "    name = 'AVAILABLE'",
+          "",
+          "class Response:",
+          "    def __init__(self, text):",
+          "        self.text = text",
+          "",
+          "class GeminiClient:",
+          "    def __init__(self, *args, **kwargs):",
+          "        self.account_status = Status()",
+          "",
+          "    async def init(self, *args, **kwargs):",
+          "        pass",
+          "",
+          "    async def generate_content(self, prompt, **kwargs):",
+          "        return Response(json.dumps({'model': kwargs.get('model', '')}))",
+          "",
+          "    async def close(self):",
+          "        pass",
+          ""
+        ].join("\n"),
+        "utf8"
+      );
+      await writeFile(pythonShimPath, `#!/bin/sh\nPYTHONPATH="${tempRoot}" python3 "$@"\n`, "utf8");
+      await chmod(pythonShimPath, 0o755);
+      await writeFile(cookiesPath, JSON.stringify({ cookies: { "__Secure-1PSID": "psid-value" } }), "utf8");
+
+      const client = new GeminiWrapperClient("", "", { maxTokens: 256, temperature: 0.2, bridgeMinIntervalMs: 0 }, "python", pythonShimPath, cookiesPath);
+      await expect(client.chat({ model: "flash", messages: [{ role: "user", content: "hello" }] })).resolves.toMatchObject({
+        content: '{"model": "gemini-3-flash"}'
+      });
+      await expect(client.chat({ model: "thinking", messages: [{ role: "user", content: "hello" }] })).resolves.toMatchObject({
+        content: '{"model": "gemini-3-flash-thinking"}'
+      });
+      await expect(client.chat({ model: "pro", messages: [{ role: "user", content: "hello" }] })).resolves.toMatchObject({
+        content: '{"model": "gemini-3-pro"}'
+      });
+    } finally {
+      if (originalConfigDir === undefined) {
+        delete process.env.PATCHPILOT_CONFIG_DIR;
+      } else {
+        process.env.PATCHPILOT_CONFIG_DIR = originalConfigDir;
+      }
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
   it("requires explicit bridge auth and does not fall back to browser cookies", async () => {
     const client = new GeminiWrapperClient("", "");
     await expect(
@@ -461,6 +521,6 @@ describe("GeminiWrapperClient", () => {
       )
     );
 
-    await expect(new GeminiWrapperClient("http://localhost:8787/v1", "", undefined, "http").listModels()).resolves.toEqual(["gemini-2.5-flash"]);
+    await expect(new GeminiWrapperClient("http://localhost:8787/v1", "", undefined, "http").listModels()).resolves.toEqual(["auto", "flash", "thinking", "pro", "gemini-2.5-flash"]);
   });
 });
