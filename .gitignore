@@ -6,6 +6,9 @@ code_tests/
 /flappy-bird/
 /games/
 /game/
+/tictactoe
+/tictactoe.c
+/output/
 .env
 .env.*
 !.env.example
