@@ -149,19 +149,21 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   const paletteReservedHeight = !onboarding && paletteItems.length > 0 ? Math.min(8, paletteItems.length) + 4 : 0;
   const composerReservedHeight = onboarding || experimentalOpen ? 0 : 2;
   const footerReservedHeight = onboarding || experimentalOpen ? 0 : 1;
-  const approvalReservedHeight = !onboarding && !experimentalOpen && (pendingApproval || bypassConfirmation) ? 6 : 0;
+  const approvalReservedHeight = !onboarding && !experimentalOpen && (pendingApproval || bypassConfirmation) ? 7 : 0;
   const panelHeight = Math.max(8, rootHeight - headerReservedHeight - composerReservedHeight - paletteReservedHeight - footerReservedHeight - approvalReservedHeight);
   const transcriptWidth = Math.max(42, terminalColumns - 38);
   const scrollStep = Math.max(4, Math.floor(panelHeight * 0.8));
   const appendLine = useCallback((line: LogLineInput) => {
-    setLines((currentLines) => [
-      ...currentLines.slice(-maxTranscriptLines),
-      {
-        ...line,
-        kind: line.kind ?? defaultLogKind(line),
-        id: Date.now() + Math.random()
-      }
-    ]);
+    setLines((currentLines) =>
+      [
+        ...currentLines,
+        {
+          ...line,
+          kind: line.kind ?? defaultLogKind(line),
+          id: Date.now() + Math.random()
+        }
+      ].slice(-maxTranscriptLines)
+    );
   }, []);
 
   useEffect(() => {
@@ -840,6 +842,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
             PATCHPILOT_MODEL: curatedModel,
             PATCHPILOT_ONBOARDING_COMPLETE: "1"
           });
+          process.env.PATCHPILOT_ONBOARDING_COMPLETE = "1";
           appendLine({
             tone: "success",
             label: "onboarding",
@@ -1022,6 +1025,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         PATCHPILOT_ONBOARDING_COMPLETE: "1",
         ...(onboarding.provider === "ollama" ? { PATCHPILOT_OLLAMA_URL: activeHost?.host.url ?? settings.ollamaUrl } : {})
       });
+      process.env.PATCHPILOT_ONBOARDING_COMPLETE = "1";
       appendLine({
         tone: "success",
         label: "onboarding",
@@ -1165,8 +1169,6 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         });
       } finally {
         abortControllerRef.current = null;
-        setStatus("idle");
-        setWorkState("idle");
         setIsRunning(false);
       }
     },
@@ -1381,7 +1383,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
               return;
             }
             const nextModel = selectModelFromInput(requestedModel, models, undefined, {
-              allowManual: settings.provider !== "ollama" && settings.provider !== "gemini-wrapper"
+              allowManual: settings.provider !== "ollama"
             });
             if (!nextModel) {
               appendLine({
@@ -1407,7 +1409,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
             }
 
             const nextModel = selectModelFromInput(requestedModel, installedModels, undefined, {
-              allowManual: settings.provider !== "ollama" && settings.provider !== "gemini-wrapper"
+              allowManual: settings.provider !== "ollama"
             });
             if (!nextModel) {
               appendLine({
@@ -2714,7 +2716,7 @@ function isPlausibleCloudModelId(value: string): boolean {
 }
 
 function canUseUnverifiedCloudModel(provider: ModelProvider, model: string): boolean {
-  return provider !== "ollama" && provider !== "gemini-wrapper" && isPlausibleCloudModelId(model);
+  return provider !== "ollama" && isPlausibleCloudModelId(model);
 }
 
 function defaultModelForProvider(provider: ModelProvider, currentModel: string): string {
@@ -2727,7 +2729,7 @@ function defaultModelForProvider(provider: ModelProvider, currentModel: string):
   }
 
   if (provider === "gemini-wrapper") {
-    return geminiWrapperCuratedModels.includes(currentModel as typeof geminiWrapperCuratedModels[number]) || currentModel.startsWith("gemini-3-") ? currentModel : defaultGeminiWrapperModel;
+    return geminiWrapperCuratedModels.includes(currentModel as typeof geminiWrapperCuratedModels[number]) || currentModel.startsWith("gemini-") ? currentModel : defaultGeminiWrapperModel;
   }
 
   if (provider === "gemini") {
@@ -2867,7 +2869,7 @@ function eventToLine(event: AgentEvent): LogLineInput {
         tone: event.ok ? "success" : "warning",
         label: event.name,
         text: event.summary,
-        detail: event.ok ? undefined : event.content,
+        detail: event.ok ? previewToolContent(event.content) : event.content,
         workState: event.workState,
         tool: event.name,
         toolCallId: event.toolCallId,
@@ -2918,6 +2920,18 @@ function eventToLine(event: AgentEvent): LogLineInput {
         workState: event.workState
       };
   }
+}
+
+function previewToolContent(content: string | undefined): string | undefined {
+  const value = content?.trim();
+  if (!value) {
+    return undefined;
+  }
+
+  const lines = value.split(/\r?\n/);
+  const preview = lines.slice(0, 6).join("\n");
+  const suffix = lines.length > 6 ? `\n...[${lines.length - 6} more lines]` : "";
+  return `${preview}${suffix}`;
 }
 
 function eventToStatus(event: AgentEvent): string {

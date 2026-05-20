@@ -417,8 +417,12 @@ export class AgentRunner {
 
 export function recoverMalformedToolResponse(rawContent: string, lastReadFilePath: string): { action: "tools"; message: string; tool_calls: Array<{ name: "write_file"; arguments: { path: string; content: string } }> } | null {
   const pathFromResponse = readFirstRegexGroup(rawContent, /"path"\s*:\s*"([^"]+)"/);
-  const targetPath = pathFromResponse || lastReadFilePath;
+  const targetPath = pathFromResponse;
   if (!targetPath) {
+    return null;
+  }
+
+  if (!/"tool_calls"\s*:/.test(rawContent) || !/"name"\s*:\s*"write_file"/.test(rawContent)) {
     return null;
   }
 

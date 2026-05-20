@@ -67,6 +67,7 @@ type PythonBridgeOutput = {
   models?: string[];
   accountStatus?: string;
   model?: string;
+  warning?: string;
 };
 
 export class GeminiWrapperClient {
@@ -113,10 +114,10 @@ export class GeminiWrapperClient {
       signal: options.signal
     });
     const durationMs = Date.now() - startedAt;
-    const payload = (await readJsonSafely(response)) as GeminiWrapperChatResponse;
+    const { payload, text } = await readGeminiWrapperResponse(response);
 
     if (!response.ok || payload.error) {
-      const reason = payload.error?.message ? ` ${payload.error.message}` : "";
+      const reason = formatGeminiWrapperErrorReason(payload, text, response);
       if (response.status === 401 || response.status === 403) {
         throw new Error("Gemini-Wrapper authentication failed. Check PATCHPILOT_GEMINI_WRAPPER_API_KEY.");
       }
@@ -162,9 +163,9 @@ export class GeminiWrapperClient {
     const response = await this.fetchGeminiWrapper("/models", {
       headers: this.headers()
     });
-    const payload = (await readJsonSafely(response)) as GeminiWrapperModelsResponse;
+    const { payload, text } = await readGeminiWrapperResponse(response);
     if (!response.ok || payload.error) {
-      const reason = payload.error?.message ? ` ${payload.error.message}` : "";
+      const reason = formatGeminiWrapperErrorReason(payload, text, response);
       throw new Error(`Gemini-Wrapper models failed with HTTP ${response.status}.${reason}`);
     }
 
@@ -195,7 +196,7 @@ export class GeminiWrapperClient {
         files: [options.path]
       },
       options.signal,
-      Math.min(getGeminiWrapperBridgeTimeoutMs(bridgeModel || defaultGeminiWrapperModel, this.runtimeOptions.bridgeTimeoutMs), 90_000)
+      getGeminiWrapperBridgeTimeoutMs(bridgeModel || defaultGeminiWrapperModel, this.runtimeOptions.bridgeTimeoutMs)
     );
     const durationMs = Date.now() - startedAt;
     const content = result.content?.trim() ?? "";
@@ -217,6 +218,9 @@ export class GeminiWrapperClient {
     });
     if (result.error) {
       throw new Error(result.error);
+    }
+    if (isUnauthenticatedGeminiWebStatus(result.accountStatus)) {
+      throw new Error("Gemini-API bridge cookies are expired or unauthenticated. Refresh Gemini-Wrapper cookies.");
     }
   }
 
@@ -522,11 +526,15 @@ function mergeGeminiWrapperModels(models: string[]): string[] {
 
 function isLikelyGeminiWrapperChatModel(model: string): boolean {
   const normalizedModel = model.toLowerCase();
-  return !/(embedding|embed|imagen|veo|tts|audio|speech|rerank|rank|vision|bidi|live)/.test(normalizedModel);
+  return !/(embedding|embed|imagen|veo|tts|audio|speech|rerank|rank|bidi|live)/.test(normalizedModel);
 }
 
 function isUnauthenticatedGeminiWebError(error: string | undefined): boolean {
   return Boolean(error?.includes("Gemini web cookies are expired or unauthenticated"));
+}
+
+function isUnauthenticatedGeminiWebStatus(status: string | undefined): boolean {
+  return /unauth|expired|invalid/i.test(status ?? "");
 }
 
 function readGeminiWrapperRuntimeOptions(env: NodeJS.ProcessEnv = process.env): GeminiWrapperRuntimeOptions {
@@ -796,6 +804,9 @@ async def main():
         await client.init(timeout=attempt_timeout, auto_refresh=False, verbose=False)
         try:
             status_name = account_status_name(client)
+            if "unauth" in status_name.lower() or "expired" in status_name.lower() or "invalid" in status_name.lower():
+                return {"error": expired_cookie_error(), "accountStatus": status_name}
+
             if payload.get("command") == "authCheck":
                 return {"content": "ok", "accountStatus": status_name}
 
@@ -875,12 +886,33 @@ function cleanUndefined(value: Record<string, unknown>): Record<string, unknown>
   return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined));
 }
 
-async function readJsonSafely(response: Response): Promise<unknown> {
-  try {
-    return await response.json();
-  } catch {
-    return {};
+async function readGeminiWrapperResponse(response: Response): Promise<{ payload: GeminiWrapperChatResponse & GeminiWrapperModelsResponse; text: string }> {
+  const text = await response.text().catch(() => "");
+  if (!text.trim()) {
+    return {
+      payload: {},
+      text: ""
+    };
   }
+
+  try {
+    return {
+      payload: JSON.parse(text) as GeminiWrapperChatResponse & GeminiWrapperModelsResponse,
+      text
+    };
+  } catch {
+    return {
+      payload: {},
+      text
+    };
+  }
+}
+
+function formatGeminiWrapperErrorReason(payload: GeminiWrapperChatResponse & GeminiWrapperModelsResponse, text: string, response: Response): string {
+  const retryAfter = response.headers.get("retry-after");
+  const providerMessage = payload.error?.message?.trim() || text.replace(/\s+/g, " ").trim().slice(0, 300);
+  const parts = [providerMessage, retryAfter ? `retry-after ${retryAfter}s` : ""].filter(Boolean);
+  return parts.length > 0 ? ` ${parts.join(" ")}` : "";
 }
 
 function readPositiveInteger(value: string | undefined, fallback: number): number {

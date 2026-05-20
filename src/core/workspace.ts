@@ -285,7 +285,7 @@ export class WorkspaceTools {
   private readonly timeoutMs: number;
   private readonly signal?: AbortSignal;
   private readonly approvalHandler?: (request: ApprovalRequest) => Promise<PermissionDecision>;
-  private readonly sessionApprovals = new Set<ToolPermission>();
+  private readonly sessionApprovals = new Set<string>();
 
   constructor(options: WorkspaceToolsOptions) {
     this.root = path.resolve(options.root);
@@ -1030,6 +1030,11 @@ export class WorkspaceTools {
       return denied("apply_patch requires a unified patch.", "apply_patch");
     }
 
+    const validationError = await this.validatePatchTargets(patchContent);
+    if (validationError) {
+      return denied(validationError, "apply_patch");
+    }
+
     if (!this.allowWrite) {
       const approval = await this.requestApproval(
         "apply_patch",
@@ -1165,7 +1170,8 @@ export class WorkspaceTools {
       arguments: args
     };
 
-    if (this.sessionApprovals.has(permission)) {
+    const approvalKey = `${permission}:${tool}`;
+    if (this.sessionApprovals.has(approvalKey)) {
       return {
         request,
         decision: "allow_session"
@@ -1181,7 +1187,7 @@ export class WorkspaceTools {
 
     const decision = await this.approvalHandler(request);
     if (decision === "allow_session") {
-      this.sessionApprovals.add(permission);
+      this.sessionApprovals.add(approvalKey);
     }
 
     return {
@@ -1195,7 +1201,7 @@ export class WorkspaceTools {
     const resolvedPath = await realpath(absolutePath).catch((error: unknown) => {
       throw new Error(`file not found or unreadable: ${requestedPath} (${error instanceof Error ? error.message : String(error)})`);
     });
-    await assertInsideWorkspace(await this.rootRealPath, resolvedPath, requestedPath);
+    await this.assertSafeResolvedWorkspacePath(resolvedPath, requestedPath);
     return resolvedPath;
   }
 
@@ -1248,16 +1254,51 @@ export class WorkspaceTools {
     const existingParent = await findNearestExistingParent(absolutePath);
     const parentRealPath = await realpath(existingParent);
     await assertInsideWorkspace(rootRealPath, parentRealPath, requestedPath);
+    assertNotSensitiveResolvedPath(rootRealPath, parentRealPath, requestedPath);
 
     const targetStat = await lstat(absolutePath).catch(() => null);
     if (targetStat) {
       const resolvedTargetPath = await realpath(absolutePath).catch((error: unknown) => {
         throw new Error(`file not writable: ${requestedPath} (${error instanceof Error ? error.message : String(error)})`);
       });
-      await assertInsideWorkspace(rootRealPath, resolvedTargetPath, requestedPath);
+      await this.assertSafeResolvedWorkspacePath(resolvedTargetPath, requestedPath);
     }
 
     return absolutePath;
+  }
+
+  private async assertSafeResolvedWorkspacePath(resolvedPath: string, requestedPath: string): Promise<void> {
+    const rootRealPath = await this.rootRealPath;
+    await assertInsideWorkspace(rootRealPath, resolvedPath, requestedPath);
+    assertNotSensitiveResolvedPath(rootRealPath, resolvedPath, requestedPath);
+  }
+
+  private async validatePatchTargets(patchContent: string): Promise<string | null> {
+    for (const targetPath of extractPatchTargetPaths(patchContent)) {
+      if (isPlaceholderPath(targetPath)) {
+        return `apply_patch denied placeholder path: ${targetPath}`;
+      }
+
+      if (isSensitivePath(targetPath) || targetPath === ".patchpilot" || targetPath.startsWith(".patchpilot/")) {
+        return `apply_patch denied sensitive path: ${targetPath}`;
+      }
+
+      try {
+        const absolutePath = this.resolveInsideWorkspace(targetPath);
+        const existingPath = await realpath(absolutePath).catch(() => null);
+        if (existingPath) {
+          await this.assertSafeResolvedWorkspacePath(existingPath, targetPath);
+        } else {
+          const parentRealPath = await realpath(await findNearestExistingParent(absolutePath));
+          await assertInsideWorkspace(await this.rootRealPath, parentRealPath, targetPath);
+          assertNotSensitiveResolvedPath(await this.rootRealPath, parentRealPath, targetPath);
+        }
+      } catch (error) {
+        return error instanceof Error ? error.message : String(error);
+      }
+    }
+
+    return null;
   }
 }
 
@@ -1431,6 +1472,17 @@ async function assertInsideWorkspace(workspaceRealRoot: string, candidatePath: s
   const relativePath = path.relative(workspaceRealRoot, candidatePath);
   if (relativePath.startsWith("..") || path.isAbsolute(relativePath)) {
     throw new Error(`Path escapes workspace: ${requestedPath}`);
+  }
+}
+
+function assertNotSensitiveResolvedPath(workspaceRealRoot: string, candidatePath: string, requestedPath: string): void {
+  const relativePath = normalizeSlashPath(path.relative(workspaceRealRoot, candidatePath));
+  if (!relativePath || relativePath.startsWith("..") || path.isAbsolute(relativePath)) {
+    return;
+  }
+
+  if (isSensitivePath(relativePath) || relativePath === ".patchpilot" || relativePath.startsWith(".patchpilot/")) {
+    throw new Error(`Path resolves to sensitive workspace path: ${requestedPath}`);
   }
 }
 
@@ -2147,16 +2199,29 @@ function clip(content: string, maxLength: number): string {
 }
 
 function previewPatch(patchContent: string): string {
-  const changedFiles = patchContent
-    .split(/\r?\n/)
-    .filter((line) => line.startsWith("+++ ") || line.startsWith("--- "))
-    .map((line) => line.slice(4).replace(/^a\//, "").replace(/^b\//, ""))
-    .filter((file) => file !== "/dev/null");
+  const changedFiles = extractPatchTargetPaths(patchContent);
   const uniqueFiles = [...new Set(changedFiles)].slice(0, 6);
   const fileSummary = uniqueFiles.length > 0 ? uniqueFiles.join(", ") : "unknown files";
   const added = patchContent.split(/\r?\n/).filter((line) => line.startsWith("+") && !line.startsWith("+++")).length;
   const removed = patchContent.split(/\r?\n/).filter((line) => line.startsWith("-") && !line.startsWith("---")).length;
   return `Apply patch to ${fileSummary} (+${added}/-${removed}).`;
+}
+
+function extractPatchTargetPaths(patchContent: string): string[] {
+  const paths: string[] = [];
+  for (const line of patchContent.split(/\r?\n/)) {
+    if (!line.startsWith("+++ ") && !line.startsWith("--- ")) {
+      continue;
+    }
+
+    const rawPath = line.slice(4).trim().split(/\s+/)[0] ?? "";
+    const normalizedPath = rawPath.replace(/^a\//, "").replace(/^b\//, "");
+    if (normalizedPath && normalizedPath !== "/dev/null") {
+      paths.push(normalizedPath);
+    }
+  }
+
+  return [...new Set(paths)];
 }
 
 function validateShellCommand(command: string, workspaceRoot: string): string | null {

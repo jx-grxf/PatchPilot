@@ -265,6 +265,47 @@ describe("WorkspaceTools", () => {
     expect(result.summary).toContain("placeholder");
   });
 
+  it("rejects read symlinks that resolve to sensitive workspace files", async () => {
+    await writeFile(path.join(tempRoot, "credentials.json"), "{\"token\":\"secret\"}\n");
+    await symlink(path.join(tempRoot, "credentials.json"), path.join(tempRoot, "safe.json"));
+    const tools = new WorkspaceTools({
+      root: tempRoot,
+      allowWrite: false,
+      allowShell: false
+    });
+
+    const result = await tools.execute({
+      name: "read_file",
+      arguments: {
+        path: "safe.json"
+      }
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.summary).toContain("sensitive");
+  });
+
+  it("rejects write symlinks that resolve to sensitive workspace files", async () => {
+    await writeFile(path.join(tempRoot, ".npmrc"), "token=secret\n");
+    await symlink(path.join(tempRoot, ".npmrc"), path.join(tempRoot, "safe.txt"));
+    const tools = new WorkspaceTools({
+      root: tempRoot,
+      allowWrite: true,
+      allowShell: false
+    });
+
+    const result = await tools.execute({
+      name: "write_file",
+      arguments: {
+        path: "safe.txt",
+        content: "changed"
+      }
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.summary).toContain("sensitive");
+  });
+
   it("falls back to inspect_document for text files", async () => {
     await writeFile(path.join(tempRoot, "note.txt"), "hello\n");
     const tools = new WorkspaceTools({
@@ -439,6 +480,24 @@ describe("WorkspaceTools", () => {
     expect(inspect.content).toContain("Hallo DOCX");
   });
 
+  it("rejects patches that target sensitive workspace files", async () => {
+    const tools = new WorkspaceTools({
+      root: tempRoot,
+      allowWrite: true,
+      allowShell: false
+    });
+
+    const result = await tools.execute({
+      name: "apply_patch",
+      arguments: {
+        patch: ["diff --git a/.env b/.env", "new file mode 100644", "--- /dev/null", "+++ b/.env", "@@ -0,0 +1 @@", "+TOKEN=secret"].join("\n")
+      }
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.summary).toContain("sensitive");
+  });
+
   it("accepts update_todo as a side-effect-free state tool", async () => {
     const tools = new WorkspaceTools({
       root: tempRoot,
@@ -559,6 +618,35 @@ describe("WorkspaceTools", () => {
     expect(result.ok).toBe(true);
     expect(result.content).toContain("build: tsc");
     expect(result.content).toContain("test: vitest run");
+  });
+
+  it("scopes allow-session approvals to the requested tool", async () => {
+    await writeFile(
+      path.join(tempRoot, "package.json"),
+      JSON.stringify({
+        scripts: {
+          echo: "node -e \"console.log('ok')\""
+        }
+      })
+    );
+    const approvals: string[] = [];
+    const tools = new WorkspaceTools({
+      root: tempRoot,
+      allowWrite: false,
+      allowShell: false,
+      approvalHandler: async (request) => {
+        approvals.push(request.tool);
+        return request.tool === "run_script" ? "allow_session" : "deny";
+      }
+    });
+
+    await expect(tools.execute({ name: "run_script", arguments: { script: "echo" } })).resolves.toMatchObject({
+      ok: true
+    });
+    const shellResult = await tools.execute({ name: "run_shell", arguments: { command: "pwd" } });
+
+    expect(shellResult.ok).toBe(false);
+    expect(approvals).toEqual(["run_script", "run_shell"]);
   });
 
   it("reads git status without enabling shell", async () => {

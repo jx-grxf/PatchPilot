@@ -23,14 +23,13 @@ describe("recoverMalformedToolResponse", () => {
     });
   });
 
-  it("falls back to the last read file path for fenced HTML", () => {
+  it("does not infer write targets from fenced HTML explanations", () => {
     const recovered = recoverMalformedToolResponse(
       "Here is the updated file:\n```html\n<!doctype html>\n<html><body>ok</body></html>\n```",
       "code_tests/rand_gen/index.html"
     );
 
-    expect(recovered?.tool_calls[0]?.arguments.path).toBe("code_tests/rand_gen/index.html");
-    expect(recovered?.tool_calls[0]?.arguments.content).toContain("<body>ok</body>");
+    expect(recovered).toBeNull();
   });
 });
 

@@ -189,7 +189,7 @@ describe("GeminiWrapperClient", () => {
           "        pass",
           "",
           "    def list_models(self):",
-          "        return [ModelItem('gemini-2.5-flash'), ModelItem('gemini-3-pro', False)]",
+          "        return [ModelItem('gemini-2.5-flash'), ModelItem('gemini-2.0-flash-vision'), ModelItem('gemini-3-pro', False)]",
           "",
           "    async def close(self):",
           "        pass",
@@ -201,7 +201,7 @@ describe("GeminiWrapperClient", () => {
       await chmod(pythonShimPath, 0o755);
       await writeFile(cookiesPath, JSON.stringify({ cookies: { "__Secure-1PSID": "psid-value" } }), "utf8");
 
-      await expect(new GeminiWrapperClient("", "", { maxTokens: 256, temperature: 0.2, bridgeMinIntervalMs: 0 }, "python", pythonShimPath, cookiesPath).listModels()).resolves.toEqual(["auto", "flash", "thinking", "pro", "gemini-2.5-flash"]);
+      await expect(new GeminiWrapperClient("", "", { maxTokens: 256, temperature: 0.2, bridgeMinIntervalMs: 0 }, "python", pythonShimPath, cookiesPath).listModels()).resolves.toEqual(["auto", "flash", "thinking", "pro", "gemini-2.5-flash", "gemini-2.0-flash-vision"]);
     } finally {
       if (originalConfigDir === undefined) {
         delete process.env.PATCHPILOT_CONFIG_DIR;
@@ -472,6 +472,49 @@ describe("GeminiWrapperClient", () => {
     ).rejects.toThrow("PatchPilot will not scan browser cookies");
   });
 
+  it("fails auth checks when the Python bridge reports an unauthenticated account", async () => {
+    const tempRoot = await mkdtemp(path.join(tmpdir(), "patchpilot-gemini-auth-status-"));
+    const originalConfigDir = process.env.PATCHPILOT_CONFIG_DIR;
+    try {
+      process.env.PATCHPILOT_CONFIG_DIR = tempRoot;
+      const modulePath = path.join(tempRoot, "gemini_webapi.py");
+      const pythonShimPath = path.join(tempRoot, "python-shim");
+      const cookiesPath = path.join(tempRoot, "cookies.json");
+
+      await writeFile(
+        modulePath,
+        [
+          "class Status:",
+          "    name = 'UNAUTHENTICATED'",
+          "",
+          "class GeminiClient:",
+          "    def __init__(self, *args, **kwargs):",
+          "        self.account_status = Status()",
+          "",
+          "    async def init(self, *args, **kwargs):",
+          "        pass",
+          "",
+          "    async def close(self):",
+          "        pass",
+          ""
+        ].join("\n"),
+        "utf8"
+      );
+      await writeFile(pythonShimPath, `#!/bin/sh\nPYTHONPATH="${tempRoot}" python3 "$@"\n`, "utf8");
+      await chmod(pythonShimPath, 0o755);
+      await writeFile(cookiesPath, JSON.stringify({ cookies: { "__Secure-1PSID": "psid-value" } }), "utf8");
+
+      await expect(new GeminiWrapperClient("", "", { maxTokens: 256, temperature: 0.2, bridgeMinIntervalMs: 0 }, "python", pythonShimPath, cookiesPath).checkBridgeAuth()).rejects.toThrow("unauthenticated");
+    } finally {
+      if (originalConfigDir === undefined) {
+        delete process.env.PATCHPILOT_CONFIG_DIR;
+      } else {
+        process.env.PATCHPILOT_CONFIG_DIR = originalConfigDir;
+      }
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
   it("requires an explicit API key for remote wrapper URLs", async () => {
     const client = new GeminiWrapperClient("https://wrapper.example.com/v1", "", undefined, "http");
     await expect(client.listModels()).rejects.toThrow("remote URLs require an explicit API key");
@@ -577,5 +620,18 @@ describe("GeminiWrapperClient", () => {
     );
 
     await expect(new GeminiWrapperClient("http://localhost:8787/v1", "", undefined, "http").listModels()).resolves.toEqual(["auto", "flash", "thinking", "pro", "gemini-2.5-flash"]);
+  });
+
+  it("includes response body details for non-JSON wrapper errors", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response("<html>bad gateway</html>", {
+        status: 502,
+        headers: {
+          "retry-after": "3"
+        }
+      })
+    );
+
+    await expect(new GeminiWrapperClient("http://localhost:8787/v1", "", undefined, "http").listModels()).rejects.toThrow(/bad gateway.*retry-after 3s/);
   });
 });

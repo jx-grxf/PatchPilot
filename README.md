@@ -123,8 +123,12 @@ For source development, clone it, install dependencies, build it, and link the l
 ```bash
 git clone https://github.com/jx-grxf/PatchPilot.git
 cd PatchPilot
-npm install
+npm ci
+npm run typecheck
+npm test
 npm run build
+node dist/cli.js --version
+npm pack --dry-run
 npm link
 ```
 
@@ -232,7 +236,7 @@ Experimental file analysis allows `inspect_document` to read supported files out
 | Ollama local | `ollama` | `qwen2.5-coder:7b` | Private local coding work and offline experiments. | Install Ollama, pull a model, run `patchpilot`. |
 | Ollama remote | `ollama` with `--ollama-url` or `/connect` | Host model inventory | Laptop editing with a stronger desktop/server GPU. | Expose Ollama on the host, then use `/connect` or `--ollama-url`. |
 | Google Gemini | `gemini`, `google` | `gemini-2.5-flash` | Fast cloud inference through a Gemini API key. | Store `GEMINI_API_KEY` in `~/.patchpilot/.env` or use onboarding. |
-| Gemini-Wrapper | `gemini-wrapper`, `geminiwrapper` | `auto` | Experimental advanced bridge to the pinned `gemini_webapi` Python wrapper, with optional HTTP-wrapper mode. | Use onboarding to paste `__Secure-1PSID`, then run `/doctor fix` to approve the pinned managed bridge install. PatchPilot creates `~/.patchpilot/gemini-cookies.json`, exposes `auto`, `flash`, `thinking`, and `pro` shortcuts, asks the WebAPI for real available models, and never scans browser cookies. |
+| Gemini-Wrapper | `gemini-wrapper`, `geminiwrapper` | `auto` | Advanced, unofficial opt-in bridge to the pinned `gemini_webapi` Python wrapper, with optional HTTP-wrapper mode. | Read [docs/gemini-wrapper.md](docs/gemini-wrapper.md), use onboarding to paste `__Secure-1PSID`, then run `/doctor fix` to approve the pinned managed bridge install. PatchPilot creates `~/.patchpilot/gemini-cookies.json`, exposes `auto`, `flash`, `thinking`, and `pro` shortcuts, asks the WebAPI for real available models, and never scans browser cookies. |
 | OpenRouter | `openrouter`, `open-router` | `openrouter/auto` | Broad model routing, auto model selection, and free variants. | Store `OPENROUTER_API_KEY` in `~/.patchpilot/.env` or use onboarding. |
 | NVIDIA | `nvidia`, `nim` | `meta/llama-3.1-70b-instruct` | NVIDIA NIM OpenAI-compatible endpoints. | Store `NVIDIA_API_KEY` in `~/.patchpilot/.env` or use onboarding. |
 | Codex CLI | `codex`, `openai`, `openai-codex` | `gpt-5.5` | Using an existing Codex CLI OAuth login. | Run `codex login`, then `patchpilot --provider codex`. |
