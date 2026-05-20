@@ -176,9 +176,13 @@ describe("GeminiWrapperClient", () => {
           "    name = 'AVAILABLE'",
           "",
           "class ModelItem:",
-          "    def __init__(self, name, available=True):",
+          "    def __init__(self, name, available=True, model_id=None, display_name=None, description=''):",
+          "        self.model_id = model_id or name",
           "        self.model_name = name",
-          "        self.display_name = name",
+          "        self.display_name = display_name or name",
+          "        self.description = description",
+          "        self.capacity = 1",
+          "        self.capacity_field = 12",
           "        self.is_available = available",
           "",
           "class GeminiClient:",
@@ -189,7 +193,7 @@ describe("GeminiWrapperClient", () => {
           "        pass",
           "",
           "    def list_models(self):",
-          "        return [ModelItem('gemini-2.5-flash'), ModelItem('gemini-2.0-flash-vision'), ModelItem('gemini-3-pro', False)]",
+          "        return [ModelItem('', model_id='flash-lite-id', display_name='3.1 Flash-Lite', description='Schnellste Antworten'), ModelItem('gemini-2.5-flash'), ModelItem('gemini-2.0-flash-vision'), ModelItem('gemini-3-pro', False)]",
           "",
           "    async def close(self):",
           "        pass",
@@ -201,7 +205,17 @@ describe("GeminiWrapperClient", () => {
       await chmod(pythonShimPath, 0o755);
       await writeFile(cookiesPath, JSON.stringify({ cookies: { "__Secure-1PSID": "psid-value" } }), "utf8");
 
-      await expect(new GeminiWrapperClient("", "", { maxTokens: 256, temperature: 0.2, bridgeMinIntervalMs: 0 }, "python", pythonShimPath, cookiesPath).listModels()).resolves.toEqual(["auto", "flash", "thinking", "pro", "gemini-2.5-flash", "gemini-2.0-flash-vision"]);
+      const client = new GeminiWrapperClient("", "", { maxTokens: 256, temperature: 0.2, bridgeMinIntervalMs: 0 }, "python", pythonShimPath, cookiesPath);
+      await expect(client.listModels()).resolves.toEqual(["auto", "flash-lite", "flash", "pro", "thinking", "flash-lite-id", "gemini-2.5-flash", "gemini-2.0-flash-vision"]);
+      await expect(client.listModelDescriptors()).resolves.toContainEqual(
+        expect.objectContaining({
+          id: "flash-lite-id",
+          displayName: "3.1 Flash-Lite",
+          description: "Schnellste Antworten",
+          capacity: 1,
+          capacityField: 12
+        })
+      );
     } finally {
       if (originalConfigDir === undefined) {
         delete process.env.PATCHPILOT_CONFIG_DIR;
@@ -362,12 +376,22 @@ describe("GeminiWrapperClient", () => {
           "    def __init__(self, text):",
           "        self.text = text",
           "",
+          "class ModelItem:",
+          "    def __init__(self, model_id, name, display_name):",
+          "        self.model_id = model_id",
+          "        self.model_name = name",
+          "        self.display_name = display_name",
+          "        self.is_available = True",
+          "",
           "class GeminiClient:",
           "    def __init__(self, *args, **kwargs):",
           "        self.account_status = Status()",
           "",
           "    async def init(self, *args, **kwargs):",
           "        pass",
+          "",
+          "    def list_models(self):",
+          "        return [ModelItem('lite-id', '', '3.1 Flash-Lite'), ModelItem('flash35-id', 'gemini-3.5-flash', '3.5 Flash'), ModelItem('pro-id', 'gemini-3-pro', '3.1 Pro'), ModelItem('thinking-id', 'gemini-3-flash-thinking', 'Thinking legacy')]",
           "",
           "    async def generate_content(self, prompt, **kwargs):",
           "        return Response(json.dumps({'model': kwargs.get('model', '')}))",
@@ -383,14 +407,17 @@ describe("GeminiWrapperClient", () => {
       await writeFile(cookiesPath, JSON.stringify({ cookies: { "__Secure-1PSID": "psid-value" } }), "utf8");
 
       const client = new GeminiWrapperClient("", "", { maxTokens: 256, temperature: 0.2, bridgeMinIntervalMs: 0 }, "python", pythonShimPath, cookiesPath);
+      await expect(client.chat({ model: "flash-lite", messages: [{ role: "user", content: "hello" }] })).resolves.toMatchObject({
+        content: '{"model": "lite-id"}'
+      });
       await expect(client.chat({ model: "flash", messages: [{ role: "user", content: "hello" }] })).resolves.toMatchObject({
-        content: '{"model": "gemini-3-flash"}'
+        content: '{"model": "flash35-id"}'
       });
       await expect(client.chat({ model: "thinking", messages: [{ role: "user", content: "hello" }] })).resolves.toMatchObject({
         content: '{"model": "gemini-3-flash-thinking"}'
       });
       await expect(client.chat({ model: "pro", messages: [{ role: "user", content: "hello" }] })).resolves.toMatchObject({
-        content: '{"model": "gemini-3-pro"}'
+        content: '{"model": "pro-id"}'
       });
     } finally {
       if (originalConfigDir === undefined) {
@@ -431,7 +458,7 @@ describe("GeminiWrapperClient", () => {
           "        pass",
           "",
           "    async def generate_content(self, prompt, **kwargs):",
-          "        return Response(json.dumps({'prompt': prompt, 'files': kwargs.get('files', [])}))",
+          "        return Response(json.dumps({'prompt': prompt, 'files': kwargs.get('files', []), 'model': kwargs.get('model', '')}))",
           "",
           "    async def close(self):",
           "        pass",
@@ -445,8 +472,8 @@ describe("GeminiWrapperClient", () => {
       await writeFile(imagePath, "fake image", "utf8");
 
       const client = new GeminiWrapperClient("", "", { maxTokens: 256, temperature: 0.2, bridgeMinIntervalMs: 0 }, "python", pythonShimPath, cookiesPath);
-      const result = await client.analyzeFile({ model: "flash", path: imagePath, prompt: "Describe this" });
-      expect(JSON.parse(result.content)).toEqual({ prompt: "Describe this", files: [imagePath] });
+      const result = await client.analyzeFile({ model: "dynamic-model-id", path: imagePath, prompt: "Describe this" });
+      expect(JSON.parse(result.content)).toEqual({ prompt: "Describe this", files: [imagePath], model: "dynamic-model-id" });
     } finally {
       if (originalConfigDir === undefined) {
         delete process.env.PATCHPILOT_CONFIG_DIR;
@@ -619,7 +646,7 @@ describe("GeminiWrapperClient", () => {
       )
     );
 
-    await expect(new GeminiWrapperClient("http://localhost:8787/v1", "", undefined, "http").listModels()).resolves.toEqual(["auto", "flash", "thinking", "pro", "gemini-2.5-flash"]);
+    await expect(new GeminiWrapperClient("http://localhost:8787/v1", "", undefined, "http").listModels()).resolves.toEqual(["auto", "flash-lite", "flash", "pro", "thinking", "gemini-2.5-flash"]);
   });
 
   it("includes response body details for non-JSON wrapper errors", async () => {

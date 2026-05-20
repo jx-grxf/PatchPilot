@@ -51,7 +51,7 @@ export const slashCommands: SlashCommand[] = [
     usage: "/reasoning low|medium|high|xhigh|adaptive",
     description: "Set provider reasoning effort where the provider supports it.",
     category: "model",
-    detail: "Codex supports low, medium, high, and xhigh. OpenRouter receives reasoning.effort for compatible models. Gemini maps xhigh to high. Ollama has no common reasoning-effort API, so the value is ignored there. adaptive chooses effort from task complexity."
+    detail: "Codex supports low, medium, high, and xhigh. OpenRouter receives reasoning.effort for compatible models. Gemini maps xhigh to high. Gemini-Wrapper does not expose Gemini Web Denkaufwand controls yet. Ollama has no common reasoning-effort API, so the value is ignored there. adaptive chooses effort from task complexity."
   },
   {
     name: "onboarding",

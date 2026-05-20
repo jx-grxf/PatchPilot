@@ -48,9 +48,9 @@ describe("provider reasoning capabilities", () => {
     expect(formatReasoningSupport("nvidia", "meta/llama-3.1-70b-instruct", "high")).toContain("not supported");
   });
 
-  it("treats Gemini-Wrapper thinking as a model mode", () => {
-    expect(resolveProviderReasoning({ provider: "gemini-wrapper", model: "thinking", requested: "high" })).toBe("high");
-    expect(formatReasoningSupport("gemini-wrapper", "thinking", "high")).toContain("Gemini Web thinking model");
+  it("does not pretend Gemini-Wrapper controls Gemini Web Denkaufwand", () => {
+    expect(resolveProviderReasoning({ provider: "gemini-wrapper", model: "thinking", requested: "high" })).toBeUndefined();
+    expect(formatReasoningSupport("gemini-wrapper", "thinking", "high")).toContain("does not expose Gemini Web Denkaufwand controls yet");
     expect(resolveProviderReasoning({ provider: "gemini-wrapper", model: "flash", requested: "high" })).toBeUndefined();
   });
 });

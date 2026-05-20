@@ -1,4 +1,4 @@
-export function selectableModels(query: string, models: string[]): string[] {
+export function selectableModels(query: string, models: string[], labelForModel: (model: string) => string = (model) => model): string[] {
   const normalizedQuery = query.trim().toLowerCase();
   if (!normalizedQuery) {
     return models;
@@ -7,20 +7,22 @@ export function selectableModels(query: string, models: string[]): string[] {
   return models
     .map((model) => ({
       model,
-      score: scoreModelMatch(model, normalizedQuery)
+      score: scoreModelMatch(model, normalizedQuery, labelForModel(model))
     }))
     .filter((item): item is { model: string; score: number } => item.score !== null)
     .sort((left, right) => left.score - right.score || left.model.localeCompare(right.model))
     .map((item) => item.model);
 }
 
-function scoreModelMatch(model: string, query: string): number | null {
-  const normalizedModel = model.toLowerCase();
-  if (normalizedModel === query) {
+function scoreModelMatch(model: string, query: string, label: string): number | null {
+  const normalizedModel = `${model} ${label}`.toLowerCase();
+  const normalizedId = model.toLowerCase();
+  const normalizedLabel = label.toLowerCase();
+  if (normalizedId === query || normalizedLabel === query) {
     return 0;
   }
 
-  if (normalizedModel.startsWith(query)) {
+  if (normalizedId.startsWith(query) || normalizedLabel.startsWith(query)) {
     return 1;
   }
 

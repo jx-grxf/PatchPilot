@@ -30,7 +30,7 @@ Do not paste these values into issues, logs, chats, or commits. `__Secure-1PSID`
 ```sh
 patchpilot --provider gemini-wrapper
 patchpilot --provider gemini-wrapper --model flash
-patchpilot --provider gemini-wrapper --model thinking
+patchpilot --provider gemini-wrapper --model flash-lite
 patchpilot --provider gemini-wrapper --model pro
 ```
 
@@ -64,16 +64,17 @@ If a pasted `__Secure-1PSIDTS` expires, PatchPilot retries the bridge request on
 
 The default bridge timeout is 180 seconds. `gemini-3-pro` can take longer through the unofficial WebAPI bridge, so PatchPilot gives Pro models at least 240 seconds. For fast local test loops, use `auto`; PatchPilot omits the model parameter and lets Gemini Web pick its current default.
 
-PatchPilot exposes four stable model shortcuts for the Python bridge:
+PatchPilot exposes current Gemini Web shortcuts through live bridge discovery:
 
-| PatchPilot model | Gemini Web model |
+| PatchPilot model | Bridge behavior |
 | --- | --- |
 | `auto` | omit model and let Gemini Web choose |
-| `flash` | `gemini-3-flash` |
-| `thinking` | `gemini-3-flash-thinking` |
-| `pro` | `gemini-3-pro` |
+| `flash-lite` | resolve the live Flash-Lite model from `client.list_models()` and pass its `model_id` |
+| `flash` | prefer a live 3.5 Flash descriptor when the bridge exposes it; otherwise fall back to the current Flash descriptor or `gemini-3-flash` |
+| `pro` | resolve the live Pro descriptor when available; otherwise fall back to `gemini-3-pro` |
+| `thinking` | legacy compatibility alias for `gemini-3-flash-thinking` when available |
 
-`thinking` is a Gemini Web model mode exposed by `gemini_webapi`. It is not the same as the official Gemini API `thinkingBudget` or `thinkingLevel` controls.
+Gemini Web now presents Denkaufwand/Thinking-Level controls rather than a recommended standalone `thinking` model. The unofficial `gemini_webapi` bridge does not expose that control as a stable PatchPilot option yet, so `/reasoning` reports the limitation instead of pretending to change Web Denkaufwand.
 
 ## File Analysis
 

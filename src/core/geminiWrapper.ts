@@ -1,13 +1,15 @@
 import { spawn } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import type { ModelChatOptions, ModelChatResult, ModelFileAnalysisOptions, ModelTelemetry } from "./types.js";
+import type { ModelChatOptions, ModelChatResult, ModelDescriptor, ModelFileAnalysisOptions, ModelTelemetry } from "./types.js";
 import { getPatchPilotConfigDir } from "./env.js";
 import { fetchWithTimeout } from "./http.js";
 import { attachTokenCost, estimateTokens } from "./tokenAccounting.js";
 
 export const defaultGeminiWrapperModel = "auto";
-export const geminiWrapperCuratedModels = ["auto", "flash", "thinking", "pro"] as const;
+export const geminiWrapperShortcutModels = ["auto", "flash-lite", "flash", "pro"] as const;
+export const geminiWrapperLegacyModels = ["thinking"] as const;
+export const geminiWrapperCuratedModels = [...geminiWrapperShortcutModels, ...geminiWrapperLegacyModels] as const;
 export const geminiWebApiVersion = "2.0.0";
 export const geminiWebApiInstallCommand = `PatchPilot managed install: python3 -m venv ~/.patchpilot/gemini-wrapper-venv && ~/.patchpilot/gemini-wrapper-venv/bin/python -m pip install gemini_webapi==${geminiWebApiVersion}`;
 
@@ -65,6 +67,7 @@ type PythonBridgeOutput = {
   content?: string;
   error?: string;
   models?: string[];
+  modelDescriptors?: ModelDescriptor[];
   accountStatus?: string;
   model?: string;
   warning?: string;
@@ -77,6 +80,7 @@ export class GeminiWrapperClient {
   private readonly mode: GeminiWrapperMode;
   private readonly pythonCommand: string;
   private readonly cookiesJson: string;
+  private modelDescriptorCache: { descriptors: ModelDescriptor[]; expiresAt: number } | null = null;
 
   constructor(
     baseUrl = readGeminiWrapperBaseUrl(),
@@ -139,6 +143,10 @@ export class GeminiWrapperClient {
   }
 
   async listModels(): Promise<string[]> {
+    return (await this.listModelDescriptors()).map((model) => model.id);
+  }
+
+  async listModelDescriptors(): Promise<ModelDescriptor[]> {
     if (this.usesPythonBridge()) {
       await this.assertPythonBridgeReady();
       const result = await this.runPythonBridge({
@@ -149,14 +157,13 @@ export class GeminiWrapperClient {
         throw new Error(result.error);
       }
 
-      const models = [
-        ...new Set(
-          (result.models ?? [])
-            .map((model) => model.trim())
-            .filter((model) => model && isLikelyGeminiWrapperChatModel(model))
-        )
-      ];
-      return mergeGeminiWrapperModels(models);
+      const descriptors = normalizeGeminiWrapperModelDescriptors(result.modelDescriptors && result.modelDescriptors.length > 0 ? result.modelDescriptors : result.models ?? []);
+      const mergedDescriptors = mergeGeminiWrapperModelDescriptors(descriptors);
+      this.modelDescriptorCache = {
+        descriptors: mergedDescriptors,
+        expiresAt: Date.now() + 5 * 60_000
+      };
+      return mergedDescriptors;
     }
 
     this.assertConfigured();
@@ -169,15 +176,18 @@ export class GeminiWrapperClient {
       throw new Error(`Gemini-Wrapper models failed with HTTP ${response.status}.${reason}`);
     }
 
-    const models = [
-      ...new Set(
-        payload.data
-          ?.map((model) => model.id?.trim())
-          .filter((model): model is string => Boolean(model))
-          .filter(isLikelyGeminiWrapperChatModel) ?? []
-      )
-    ].sort();
-    return mergeGeminiWrapperModels(models);
+    const descriptors = normalizeGeminiWrapperModelDescriptors(
+      payload.data
+        ?.map((model) => model.id?.trim())
+        .filter((model): model is string => Boolean(model))
+        .filter(isLikelyGeminiWrapperChatModel) ?? []
+    );
+    const mergedDescriptors = mergeGeminiWrapperModelDescriptors(descriptors);
+    this.modelDescriptorCache = {
+      descriptors: mergedDescriptors,
+      expiresAt: Date.now() + 5 * 60_000
+    };
+    return mergedDescriptors;
   }
 
   async analyzeFile(options: ModelFileAnalysisOptions): Promise<ModelChatResult> {
@@ -187,7 +197,7 @@ export class GeminiWrapperClient {
 
     await this.assertPythonBridgeReady();
     const startedAt = Date.now();
-    const bridgeModel = normalizeGeminiWrapperBridgeModel(options.model);
+    const bridgeModel = await this.resolveGeminiWrapperBridgeModel(options.model);
     const result = await this.runPythonBridge(
       {
         command: "chat",
@@ -270,7 +280,7 @@ export class GeminiWrapperClient {
     await this.assertPythonBridgeReady();
     const startedAt = Date.now();
     const prompt = toBridgePrompt(options.messages, options.formatJson);
-    const bridgeModel = normalizeGeminiWrapperBridgeModel(options.model);
+    const bridgeModel = await this.resolveGeminiWrapperBridgeModel(options.model);
     const result = await this.runPythonBridge(
       {
         command: "chat",
@@ -324,6 +334,33 @@ export class GeminiWrapperClient {
       this.runtimeOptions.bridgeMinIntervalMs,
       timeoutMs
     );
+  }
+
+  private async resolveGeminiWrapperBridgeModel(model: string): Promise<string> {
+    const normalizedModel = normalizeGeminiWrapperModel(model).trim();
+    if (normalizedModel === defaultGeminiWrapperModel || normalizedModel === "gemini-web-default") {
+      return "";
+    }
+
+    if (!isGeminiWrapperShortcutModel(normalizedModel)) {
+      return normalizedModel;
+    }
+
+    const descriptors = await this.getCachedModelDescriptors().catch(() => []);
+    const descriptor = resolveGeminiWrapperShortcutDescriptor(normalizedModel, descriptors);
+    if (descriptor) {
+      return descriptor.id;
+    }
+
+    return normalizeGeminiWrapperBridgeModelFallback(normalizedModel);
+  }
+
+  private async getCachedModelDescriptors(): Promise<ModelDescriptor[]> {
+    if (this.modelDescriptorCache && this.modelDescriptorCache.expiresAt > Date.now()) {
+      return this.modelDescriptorCache.descriptors;
+    }
+
+    return await this.listModelDescriptors();
   }
 
   private async assertPythonBridgeReady(): Promise<void> {
@@ -496,10 +533,14 @@ function normalizeGeminiWrapperModel(model: string): string {
   return trimmedModel || defaultGeminiWrapperModel;
 }
 
-function normalizeGeminiWrapperBridgeModel(model: string): string {
+function normalizeGeminiWrapperBridgeModelFallback(model: string): string {
   const normalizedModel = normalizeGeminiWrapperModel(model).trim();
   if (normalizedModel === defaultGeminiWrapperModel || normalizedModel === "gemini-web-default") {
     return "";
+  }
+
+  if (normalizedModel === "flash-lite") {
+    return "flash-lite";
   }
 
   if (normalizedModel === "flash") {
@@ -517,11 +558,124 @@ function normalizeGeminiWrapperBridgeModel(model: string): string {
   return normalizedModel;
 }
 
-function mergeGeminiWrapperModels(models: string[]): string[] {
-  return [
-    ...geminiWrapperCuratedModels,
-    ...models.filter((model) => !geminiWrapperCuratedModels.includes(model as typeof geminiWrapperCuratedModels[number]))
+function normalizeGeminiWrapperModelDescriptors(models: Array<string | ModelDescriptor>): ModelDescriptor[] {
+  return models
+    .map((model) => (typeof model === "string" ? descriptorFromModelId(model) : normalizeGeminiWrapperModelDescriptor(model)))
+    .filter((model): model is ModelDescriptor => Boolean(model?.id && isLikelyGeminiWrapperChatModel(formatModelDescriptorSearchText(model))));
+}
+
+function normalizeGeminiWrapperModelDescriptor(model: ModelDescriptor): ModelDescriptor | null {
+  const id = String(model.id || model.modelName || model.displayName || "").trim();
+  if (!id) {
+    return null;
+  }
+
+  return cleanUndefined({
+    id,
+    modelName: model.modelName?.trim() || undefined,
+    displayName: model.displayName?.trim() || undefined,
+    description: model.description?.trim() || undefined,
+    isAvailable: model.isAvailable,
+    capacity: typeof model.capacity === "number" && Number.isFinite(model.capacity) ? model.capacity : undefined,
+    capacityField: typeof model.capacityField === "number" && Number.isFinite(model.capacityField) ? model.capacityField : undefined,
+    advancedOnly: model.advancedOnly,
+    legacy: model.legacy
+  }) as ModelDescriptor;
+}
+
+function descriptorFromModelId(model: string): ModelDescriptor {
+  const id = model.trim();
+  return {
+    id,
+    modelName: id,
+    displayName: id
+  };
+}
+
+function mergeGeminiWrapperModelDescriptors(models: ModelDescriptor[]): ModelDescriptor[] {
+  const descriptors: ModelDescriptor[] = [
+    {
+      id: "auto",
+      displayName: "Auto",
+      description: "Let Gemini Web choose its current default model."
+    },
+    {
+      id: "flash-lite",
+      displayName: "Flash-Lite",
+      description: "Shortcut resolved from live Gemini Web discovery."
+    },
+    {
+      id: "flash",
+      displayName: "Flash",
+      description: "Shortcut resolved from live Gemini Web discovery, preferring Gemini 3.5 Flash when the bridge exposes it."
+    },
+    {
+      id: "pro",
+      displayName: "Pro",
+      description: "Shortcut resolved from live Gemini Web discovery."
+    },
+    {
+      id: "thinking",
+      modelName: "gemini-3-flash-thinking",
+      displayName: "Thinking legacy",
+      description: "Legacy gemini_webapi shortcut; Gemini Web now exposes Denkaufwand instead of a recommended thinking model.",
+      legacy: true
+    }
   ];
+
+  for (const model of models) {
+    if (!hasGeminiWrapperDescriptor(descriptors, model)) {
+      descriptors.push(model);
+    }
+  }
+
+  return descriptors;
+}
+
+function hasGeminiWrapperDescriptor(descriptors: ModelDescriptor[], model: ModelDescriptor): boolean {
+  const keys = descriptorKeys(model);
+  return descriptors.some((descriptor) => descriptorKeys(descriptor).some((key) => keys.includes(key)));
+}
+
+function descriptorKeys(model: ModelDescriptor): string[] {
+  return [model.id, model.modelName, model.displayName]
+    .filter((value): value is string => Boolean(value?.trim()))
+    .map((value) => value.trim().toLowerCase());
+}
+
+function resolveGeminiWrapperShortcutDescriptor(shortcut: string, descriptors: ModelDescriptor[]): ModelDescriptor | null {
+  const dynamicDescriptors = descriptors.filter((descriptor) => !geminiWrapperCuratedModels.includes(descriptor.id as typeof geminiWrapperCuratedModels[number]));
+  const matches = (pattern: RegExp) => dynamicDescriptors.filter((descriptor) => pattern.test(formatModelDescriptorSearchText(descriptor)));
+
+  if (shortcut === "flash-lite") {
+    return matches(/flash[-\s]?lite/i)[0] ?? null;
+  }
+
+  if (shortcut === "flash") {
+    return (
+      matches(/3\.5.*flash/i).find((descriptor) => !/lite|thinking/i.test(formatModelDescriptorSearchText(descriptor))) ??
+      matches(/\bflash\b/i).find((descriptor) => !/lite|thinking/i.test(formatModelDescriptorSearchText(descriptor))) ??
+      null
+    );
+  }
+
+  if (shortcut === "pro") {
+    return matches(/\bpro\b/i)[0] ?? null;
+  }
+
+  if (shortcut === "thinking") {
+    return matches(/thinking/i)[0] ?? null;
+  }
+
+  return null;
+}
+
+function isGeminiWrapperShortcutModel(model: string): boolean {
+  return geminiWrapperCuratedModels.includes(model as typeof geminiWrapperCuratedModels[number]);
+}
+
+function formatModelDescriptorSearchText(model: ModelDescriptor): string {
+  return [model.id, model.modelName, model.displayName, model.description].filter(Boolean).join(" ");
 }
 
 function isLikelyGeminiWrapperChatModel(model: string): boolean {
@@ -812,13 +966,35 @@ async def main():
 
             if payload.get("command") == "models":
                 models = []
+                model_descriptors = []
                 for model in client.list_models() or []:
                     if not getattr(model, "is_available", True):
                         continue
-                    name = getattr(model, "model_name", None) or getattr(model, "display_name", None)
+                    model_id = getattr(model, "model_id", None) or ""
+                    name = getattr(model, "model_name", None) or ""
+                    display_name = getattr(model, "display_name", None) or ""
+                    description = getattr(model, "description", None) or ""
+                    selection_id = model_id or name or display_name
+                    if selection_id:
+                        descriptor = {
+                            "id": selection_id,
+                            "modelName": name or None,
+                            "displayName": display_name or name or selection_id,
+                            "description": description or None,
+                            "isAvailable": bool(getattr(model, "is_available", True)),
+                            "advancedOnly": bool(getattr(model, "advanced_only", False)),
+                        }
+                        capacity = getattr(model, "capacity", None)
+                        capacity_field = getattr(model, "capacity_field", None)
+                        if isinstance(capacity, (int, float)):
+                            descriptor["capacity"] = capacity
+                        if isinstance(capacity_field, (int, float)):
+                            descriptor["capacityField"] = capacity_field
+                        model_descriptors.append({key: value for key, value in descriptor.items() if value is not None})
+                    name = name or display_name or model_id
                     if name:
                         models.append(name)
-                return {"models": models, "accountStatus": status_name}
+                return {"models": models, "modelDescriptors": model_descriptors, "accountStatus": status_name}
 
             request_model = payload.get("model") or ""
             request_kwargs = {"temporary": True}

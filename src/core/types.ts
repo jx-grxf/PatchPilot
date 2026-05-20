@@ -29,9 +29,22 @@ export type ModelChatResult = {
   telemetry: ModelTelemetry;
 };
 
+export type ModelDescriptor = {
+  id: string;
+  modelName?: string;
+  displayName?: string;
+  description?: string;
+  isAvailable?: boolean;
+  capacity?: number;
+  capacityField?: number;
+  advancedOnly?: boolean;
+  legacy?: boolean;
+};
+
 export type ModelClient = {
   chat(options: ModelChatOptions): Promise<ModelChatResult>;
   listModels(): Promise<string[]>;
+  listModelDescriptors?(): Promise<ModelDescriptor[]>;
   analyzeFile?(options: ModelFileAnalysisOptions): Promise<ModelChatResult>;
 };
 

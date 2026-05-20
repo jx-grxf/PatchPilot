@@ -10,6 +10,7 @@ import { defaultGeminiModel, readGeminiApiKey } from "../core/gemini.js";
 import {
   defaultGeminiWrapperModel,
   geminiWrapperCuratedModels,
+  geminiWrapperShortcutModels,
   geminiWrapperRequiresApiKey,
   readGeminiWrapperApiKey,
   readGeminiWrapperBaseUrl,
@@ -26,7 +27,7 @@ import { ensurePatchPilotGitignore, patchPilotInitPrompt } from "../core/project
 import { formatReasoningSupport } from "../core/reasoning.js";
 import { buildSessionResumeContext, listWorkspaceSessions, loadSessionSummary, SessionStore } from "../core/session.js";
 import { addTelemetryToSession, emptySessionTelemetry, estimateTokens } from "../core/tokenAccounting.js";
-import type { AgentEvent, AgentTodoItem, AgentToolName, AgentWorkState, ApprovalRequest, ModelProvider, ModelTelemetry, PermissionDecision, SessionTelemetry } from "../core/types.js";
+import type { AgentEvent, AgentTodoItem, AgentToolName, AgentWorkState, ApprovalRequest, ModelDescriptor, ModelProvider, ModelTelemetry, PermissionDecision, SessionTelemetry } from "../core/types.js";
 import { getToolSpec, WorkspaceTools } from "../core/workspace.js";
 import { ApprovalPanel } from "./components/ApprovalPanel.js";
 import { CommandSuggestions, type CommandSuggestionItem } from "./components/CommandSuggestions.js";
@@ -54,7 +55,8 @@ type PaletteSuggestion = CommandSuggestionItem & {
 };
 
 const modelCacheTtlMs = 5 * 60_000;
-const modelCache = new Map<string, { models: string[]; expiresAt: number }>();
+const modelCache = new Map<string, { models: string[]; descriptors: ModelDescriptor[]; expiresAt: number }>();
+const modelDescriptorIndex = new Map<string, ModelDescriptor>();
 
 export function App(props: PatchPilotAppProps): React.ReactElement {
   const { exit } = useApp();
@@ -381,6 +383,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       setModelOptions(details.models);
       modelCache.set(`ollama:${verifiedHost.url}`, {
         models: details.models,
+        descriptors: details.models.map((model) => ({ id: model, displayName: model })),
         expiresAt: Date.now() + modelCacheTtlMs
       });
       setSettings((currentSettings) => ({
@@ -828,10 +831,12 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           return;
         }
 
-        const curatedModel = geminiWrapperCuratedModels[choice];
+        const curatedModel = geminiWrapperShortcutModels[choice];
         if (curatedModel) {
           setTelemetry(null);
-          setModelOptions([...geminiWrapperCuratedModels]);
+          const shortcutDescriptors = geminiWrapperShortcutModels.map((model) => ({ id: model, displayName: model }));
+          rememberModelDescriptors(shortcutDescriptors);
+          setModelOptions([...geminiWrapperShortcutModels]);
           setSettings((currentSettings) => ({
             ...currentSettings,
             provider: "gemini-wrapper",
@@ -1001,7 +1006,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         return;
       }
 
-      const visibleModels = selectableModels(onboardingInput, onboarding.models);
+      const visibleModels = selectableModels(onboardingInput, onboarding.models, formatModelLabel);
       const selectedModel = visibleModels[onboardingIndex] ?? selectModelFromInput(value, visibleModels, onboardingIndex, {
         allowManual: onboarding.provider !== "ollama" && onboarding.provider !== "gemini-wrapper"
       });
@@ -1390,7 +1395,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
                 tone: "warning",
                 label: "model",
                 text: `No unique model match for "${requestedModel}".`,
-                detail: formatModelOptions(selectableModels(requestedModel, models).slice(0, 12), settings.model)
+                detail: formatModelOptions(selectableModels(requestedModel, models, formatModelLabel).slice(0, 12), settings.model)
               });
               return;
             }
@@ -1442,7 +1447,13 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
                     ? "Pull a model on the selected host first."
                     : settings.provider === "gemini"
                       ? "Check GEMINI_API_KEY in PatchPilot config."
-                      : "Run codex login first."
+                      : settings.provider === "gemini-wrapper"
+                        ? "Check gemini_webapi install and PATCHPILOT_GEMINI_WRAPPER_COOKIES_JSON in PatchPilot config."
+                        : settings.provider === "openrouter"
+                          ? "Check OPENROUTER_API_KEY in PatchPilot config."
+                          : settings.provider === "nvidia"
+                            ? "Check NVIDIA_API_KEY in PatchPilot config."
+                            : "Run codex login first."
               });
               return;
             }
@@ -2075,7 +2086,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         return;
       }
 
-      const optionCount = onboarding.step === "model" ? selectableModels(onboardingInput, onboarding.models).length : getOnboardingOptionCount(onboarding);
+      const optionCount = onboarding.step === "model" ? selectableModels(onboardingInput, onboarding.models, formatModelLabel).length : getOnboardingOptionCount(onboarding);
       if (optionCount > 0 && key.upArrow) {
         setOnboardingIndex((currentIndex) => (currentIndex - 1 + optionCount) % optionCount);
         return;
@@ -2277,6 +2288,8 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           input={onboardingInput}
           busyMessage={onboardingBusyMessage}
           notice={onboardingNotice}
+          formatModelLabel={formatModelLabel}
+          formatModelDescription={formatModelDescription}
           onInputChange={setOnboardingInput}
           onInputSubmit={(value) => void handleOnboardingSubmit(value)}
         />
@@ -2343,16 +2356,23 @@ async function loadAvailableModels(
   const cacheKey = modelCacheKey(provider, ollamaUrl);
   const cachedModels = modelCache.get(cacheKey);
   if (!refresh && cachedModels && cachedModels.expiresAt > Date.now()) {
+    rememberModelDescriptors(cachedModels.descriptors);
     setModelOptions(cachedModels.models);
     return cachedModels.models;
   }
 
-  const models = await createModelClient({
+  const client = createModelClient({
     provider,
     ollamaUrl
-  }).listModels();
+  });
+  const descriptors = client.listModelDescriptors
+    ? await client.listModelDescriptors()
+    : (await client.listModels()).map((model) => ({ id: model, displayName: model }));
+  const models = descriptors.map((model) => model.id);
+  rememberModelDescriptors(descriptors);
   modelCache.set(cacheKey, {
     models,
+    descriptors,
     expiresAt: Date.now() + modelCacheTtlMs
   });
   setModelOptions(models);
@@ -2375,6 +2395,18 @@ function modelCacheKey(provider: ModelProvider, ollamaUrl: string): string {
   }
 
   return `${provider}:default`;
+}
+
+function rememberModelDescriptors(descriptors: ModelDescriptor[]): void {
+  for (const descriptor of descriptors) {
+    modelDescriptorIndex.set(descriptor.id, descriptor);
+    if (descriptor.modelName) {
+      modelDescriptorIndex.set(descriptor.modelName, descriptor);
+    }
+    if (descriptor.displayName) {
+      modelDescriptorIndex.set(descriptor.displayName, descriptor);
+    }
+  }
 }
 
 async function loadKnownOrAvailableModels(
@@ -2458,7 +2490,7 @@ async function switchModel(
   appendLine({
     tone: installedModels.includes(nextModel) ? "success" : "warning",
     label: "model",
-    text: installedModels.includes(nextModel) ? `switched to ${nextModel}` : `switched to unverified ${provider} model ${nextModel}`,
+    text: installedModels.includes(nextModel) ? `switched to ${formatModelLabel(nextModel)}` : `switched to unverified ${provider} model ${nextModel}`,
     detail: installedModels.includes(nextModel) ? undefined : "The provider did not list this model in discovery. PatchPilot will try it and surface the provider error if it is unavailable."
   });
   if (provider === "openrouter" && isOpenRouterFreeModel(nextModel)) {
@@ -2588,11 +2620,11 @@ function buildCommandSuggestionItems(options: {
       });
     } else {
       items.unshift(
-        ...selectableModels(modelQuery, options.modelOptions).slice(0, 8).map((model) => ({
+        ...selectableModels(modelQuery, options.modelOptions, formatModelLabel).slice(0, 8).map((model) => ({
           key: `model-${model}`,
           category: "model",
-          label: model,
-          detail: `${model === options.currentModel ? "current" : "available"}  ${options.provider}`,
+          label: formatModelLabel(model),
+          detail: `${model === options.currentModel ? "current" : "available"}  ${options.provider}${formatModelDescription(model)}`,
           command: `/model ${model}`,
           execute: true
         }))
@@ -2612,7 +2644,7 @@ function getOnboardingOptionCount(onboarding: OnboardingState): number {
     case "api-key-choice":
       return onboarding.hasExistingKey ? 2 : 1;
     case "gemini-wrapper-model-mode":
-      return geminiWrapperCuratedModels.length + 1;
+      return geminiWrapperShortcutModels.length + 1;
     case "model":
       return onboarding.models.length;
     default:
@@ -2703,7 +2735,12 @@ function selectModelFromInput(value: string, models: string[], selectedIndex?: n
     return normalizedValue;
   }
 
-  const matches = selectableModels(normalizedValue, models);
+  const labelMatch = models.find((model) => formatModelLabel(model).toLowerCase() === normalizedValue.toLowerCase());
+  if (labelMatch) {
+    return labelMatch;
+  }
+
+  const matches = selectableModels(normalizedValue, models, formatModelLabel);
   if (matches.length === 1) {
     return matches[0] ?? null;
   }
@@ -2729,7 +2766,7 @@ function defaultModelForProvider(provider: ModelProvider, currentModel: string):
   }
 
   if (provider === "gemini-wrapper") {
-    return geminiWrapperCuratedModels.includes(currentModel as typeof geminiWrapperCuratedModels[number]) || currentModel.startsWith("gemini-") ? currentModel : defaultGeminiWrapperModel;
+    return geminiWrapperCuratedModels.includes(currentModel as typeof geminiWrapperCuratedModels[number]) || currentModel.startsWith("gemini-") || modelDescriptorIndex.has(currentModel) ? currentModel : defaultGeminiWrapperModel;
   }
 
   if (provider === "gemini") {
@@ -3006,7 +3043,23 @@ function formatModelOptions(models: string[], currentModel: string): string {
   return models
     .map((model, index) => {
       const currentMarker = model === currentModel ? "  current" : "";
-      return `${index + 1}. ${model}${currentMarker}`;
+      return `${index + 1}. ${formatModelLabel(model)}${formatModelDescription(model)}${currentMarker}`;
     })
     .join("\n");
+}
+
+function formatModelLabel(model: string): string {
+  const descriptor = modelDescriptorIndex.get(model);
+  const label = descriptor?.displayName || descriptor?.modelName || model;
+  return label === model ? model : `${label} (${model})`;
+}
+
+function formatModelDescription(model: string): string {
+  const descriptor = modelDescriptorIndex.get(model);
+  if (!descriptor?.description) {
+    return "";
+  }
+
+  const legacySuffix = descriptor.legacy ? " legacy" : "";
+  return `  ${descriptor.description}${legacySuffix}`;
 }

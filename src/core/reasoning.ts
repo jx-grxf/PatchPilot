@@ -24,7 +24,7 @@ export function resolveProviderReasoning(options: {
   }
 
   if (options.provider === "gemini-wrapper") {
-    return isGeminiWrapperThinkingModel(options.model) && options.requested !== "none" ? options.requested : undefined;
+    return undefined;
   }
 
   if (options.provider === "codex") {
@@ -109,6 +109,10 @@ export function formatReasoningSupport(provider: ModelProvider, model: string, r
   }
 
   if (!resolved) {
+    if (provider === "gemini-wrapper") {
+      return "Gemini-Wrapper does not expose Gemini Web Denkaufwand controls yet; using the selected Web model";
+    }
+
     return `${requested} not supported by ${provider} for ${model}; using provider default`;
   }
 
@@ -118,10 +122,6 @@ export function formatReasoningSupport(provider: ModelProvider, model: string, r
 
   if (provider === "ollama" && /gpt-oss/i.test(model) && requested === "none") {
     return "gpt-oss reasoning cannot be fully disabled in Ollama; using provider default";
-  }
-
-  if (provider === "gemini-wrapper" && isGeminiWrapperThinkingModel(model)) {
-    return "Gemini-Wrapper uses the Gemini Web thinking model; explicit reasoning budgets are not exposed";
   }
 
   return `${provider} reasoning ${resolved}`;
@@ -149,8 +149,4 @@ function clampReasoningEffort(effort: ReasoningEffort, xhighFallback: "high"): "
 
 function supportsNvidiaReasoningEffort(model: string): boolean {
   return /gpt-oss-(20b|120b)|gpt-oss/i.test(model.toLowerCase());
-}
-
-function isGeminiWrapperThinkingModel(model: string): boolean {
-  return model === "thinking" || /thinking/i.test(model);
 }
