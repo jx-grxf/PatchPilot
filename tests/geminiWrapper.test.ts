@@ -281,6 +281,98 @@ describe("GeminiWrapperClient", () => {
     }
   });
 
+  it("retries transient curl 56 Gemini Web connection closures", async () => {
+    const tempRoot = await mkdtemp(path.join(tmpdir(), "patchpilot-gemini-curl56-"));
+    const originalConfigDir = process.env.PATCHPILOT_CONFIG_DIR;
+    try {
+      process.env.PATCHPILOT_CONFIG_DIR = tempRoot;
+      const modulePath = path.join(tempRoot, "gemini_webapi.py");
+      const pythonShimPath = path.join(tempRoot, "python-shim");
+      const cookiesPath = path.join(tempRoot, "cookies.json");
+      const counterPath = path.join(tempRoot, "curl56-count.txt");
+
+      await writeFile(
+        modulePath,
+        [
+          "from pathlib import Path",
+          "",
+          `COUNTER = Path(${JSON.stringify(counterPath)})`,
+          "",
+          "class Response:",
+          "    text = 'ok after curl 56 retry'",
+          "",
+          "class GeminiClient:",
+          "    def __init__(self, secure_1psid, secure_1psidts='', cookies=None, proxy=None):",
+          "        pass",
+          "",
+          "    async def init(self, timeout=90, auto_refresh=True, verbose=False):",
+          "        pass",
+          "",
+          "    async def generate_content(self, prompt, model='gemini-3-flash', temporary=True):",
+          "        count = int(COUNTER.read_text() or '0') if COUNTER.exists() else 0",
+          "        COUNTER.write_text(str(count + 1))",
+          "        if count == 0:",
+          "            raise Exception('Failed to perform, curl: (56) Connection closed abruptly. See https://curl.se/libcurl/c/libcurl-errors.html first for more details.')",
+          "        return Response()",
+          "",
+          "    async def close(self):",
+          "        pass",
+          ""
+        ].join("\n"),
+        "utf8"
+      );
+      await writeFile(
+        pythonShimPath,
+        `#!/bin/sh\nPYTHONPATH="${tempRoot}" python3 "$@"\n`,
+        "utf8"
+      );
+      await chmod(pythonShimPath, 0o755);
+      await writeFile(
+        cookiesPath,
+        JSON.stringify({
+          cookies: {
+            "__Secure-1PSID": "psid-value"
+          }
+        }),
+        "utf8"
+      );
+
+      const result = await new GeminiWrapperClient(
+        "",
+        "",
+        {
+          maxTokens: 256,
+          temperature: 0.2,
+          bridgeMinIntervalMs: 0
+        },
+        "python",
+        pythonShimPath,
+        cookiesPath
+      ).chat({
+        model: "gemini-3-flash",
+        messages: [
+          {
+            role: "user",
+            content: "hello"
+          }
+        ]
+      });
+
+      expect(result.content).toBe("ok after curl 56 retry");
+      await expect(readFile(counterPath, "utf8")).resolves.toBe("2");
+    } finally {
+      if (originalConfigDir === undefined) {
+        delete process.env.PATCHPILOT_CONFIG_DIR;
+      } else {
+        process.env.PATCHPILOT_CONFIG_DIR = originalConfigDir;
+      }
+      await rm(tempRoot, {
+        recursive: true,
+        force: true
+      });
+    }
+  });
+
   it("lists Gemini Web models through the Python bridge instead of a static model list", async () => {
     const tempRoot = await mkdtemp(path.join(tmpdir(), "patchpilot-gemini-models-"));
     const originalConfigDir = process.env.PATCHPILOT_CONFIG_DIR;

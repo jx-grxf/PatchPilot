@@ -1267,7 +1267,14 @@ async def main():
         lower = message.lower()
         return (
             "curl: (28)" in lower
+            or "curl: (56)" in lower
             or "connection timed out" in lower
+            or "connection closed abruptly" in lower
+            or "connection reset" in lower
+            or "server returned nothing" in lower
+            or "unexpected eof" in lower
+            or "stream error" in lower
+            or "http/2 stream" in lower
             or "operation timed out" in lower
             or "readtimeout" in lower
             or "timeouterror" in lower
