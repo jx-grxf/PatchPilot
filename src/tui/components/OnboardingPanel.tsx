@@ -9,6 +9,9 @@ export type ApiKeyProvider = "gemini" | "gemini-wrapper" | "openrouter" | "nvidi
 
 export type OnboardingState =
   | {
+      step: "welcome";
+    }
+  | {
       step: "entry";
     }
   | {
@@ -107,7 +110,7 @@ export function OnboardingPanel(props: {
   onInputSubmit: (value: string) => void;
 }): React.ReactElement {
   const currentStepIndex =
-    props.state.step === "entry"
+    props.state.step === "welcome" || props.state.step === "entry"
       ? 0
       : props.state.step === "host" || props.state.step === "host-input"
         ? 1
@@ -126,7 +129,7 @@ export function OnboardingPanel(props: {
       </Text>
       <Text color="gray">Choose where inference runs before the workspace session starts.</Text>
       <Box marginTop={1}>
-        {["mode", "host", "auth", "model"].map((step, index) => (
+        {["workflow", "host", "auth", "model"].map((step, index) => (
           <Text key={step} color={index <= currentStepIndex ? "cyan" : "gray"}>
             {index > 0 ? "  " : ""}
             [{index + 1}] {step}
@@ -143,6 +146,9 @@ export function OnboardingPanel(props: {
           <Text color={props.notice.tone === "success" ? "green" : props.notice.tone === "warning" ? "yellow" : "red"}>{props.notice.text}</Text>
           {props.notice.detail ? <Text color="gray">{props.notice.detail}</Text> : null}
         </Box>
+      ) : null}
+      {props.state.step === "welcome" ? (
+        <WelcomeStep />
       ) : null}
       {props.state.step === "entry" ? (
         <SelectionList
@@ -345,6 +351,24 @@ export function OnboardingPanel(props: {
       ) : null}
       <Box marginTop={1}>
         <Text color="gray">Remote host mode keeps file reads, writes, shell, Git, and tests on this device. Only inference moves.</Text>
+      </Box>
+    </Box>
+  );
+}
+
+function WelcomeStep(): React.ReactElement {
+  return (
+    <Box marginTop={1} flexDirection="column">
+      <Text color="cyan" bold>What PatchPilot does</Text>
+      <Text color="gray">Local-first coding agent for repo work you can inspect before it mutates files.</Text>
+      <Box marginTop={1} flexDirection="column">
+        <Text color="white">1. Plan: read files, summarize architecture, and keep a visible todo list.</Text>
+        <Text color="white">2. Build: request scoped approvals for edits, scripts, tests, and shell commands.</Text>
+        <Text color="white">3. Review: show diffs, run checks, then leave Git history ready for you.</Text>
+      </Box>
+      <Box marginTop={1} flexDirection="column">
+        <Text color="yellow">First task to try: "summarize this repo and list the safest next fixes".</Text>
+        <Text color="gray">Enter continues setup. Escape skips. You can reopen this with /onboarding.</Text>
       </Box>
     </Box>
   );

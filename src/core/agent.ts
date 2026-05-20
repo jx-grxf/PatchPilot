@@ -830,18 +830,24 @@ function createToolCallId(tool: AgentToolName): string {
 }
 
 async function buildWorkspaceSummary(workspaceRoot: string): Promise<string> {
-  const [patchPilotInstructions, packageJson, tsconfig, readme] = await Promise.all([
+  const [patchPilotInstructions, packageJson, tsconfig, readme, productContext, architecture, commands] = await Promise.all([
     readWorkspaceFile(workspaceRoot, "PATCHPILOT.md", 4000),
     readWorkspaceFile(workspaceRoot, "package.json", 4000),
     readWorkspaceFile(workspaceRoot, "tsconfig.json", 1600),
-    readWorkspaceFile(workspaceRoot, "README.md", 3000)
+    readWorkspaceFile(workspaceRoot, "README.md", 3000),
+    readWorkspaceFile(workspaceRoot, "docs/product-context.md", 4000),
+    readWorkspaceFile(workspaceRoot, "docs/architecture.md", 2200),
+    readWorkspaceFile(workspaceRoot, "src/tui/commands.ts", 2400)
   ]);
 
   return [
     patchPilotInstructions ? `PATCHPILOT.md instructions:\n${patchPilotInstructions}` : "",
+    productContext ? `PatchPilot product context:\n${productContext}` : "",
     packageJson ? `package.json:\n${packageJson}` : "",
     tsconfig ? `tsconfig.json:\n${tsconfig}` : "",
-    readme ? `README excerpt:\n${readme}` : ""
+    readme ? `README excerpt:\n${readme}` : "",
+    architecture ? `Architecture excerpt:\n${architecture}` : "",
+    commands ? `TUI command definitions excerpt:\n${commands}` : ""
   ]
     .filter(Boolean)
     .join("\n\n");

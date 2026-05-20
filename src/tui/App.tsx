@@ -151,7 +151,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   const rootHeight = Math.max(24, terminalRows);
   const headerReservedHeight = 5;
   const transcriptWidth = Math.max(42, terminalColumns - 38);
-  const paletteReservedHeight = !onboarding && paletteItems.length > 0 ? Math.min(8, paletteItems.length) + 4 : 0;
+  const paletteReservedHeight = !onboarding && paletteItems.length > 0 ? Math.min(8, paletteItems.length) + 7 : 0;
   const composerReservedHeight = onboarding || experimentalOpen ? 0 : computeComposerLayout({ input, width: transcriptWidth }).height;
   const footerReservedHeight = onboarding || experimentalOpen ? 0 : 1;
   const approvalReservedHeight = !onboarding && !experimentalOpen && (pendingApproval || bypassConfirmation) ? 7 : 0;
@@ -505,6 +505,9 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
     setOnboardingIndex(0);
 
     switch (onboarding.step) {
+      case "welcome":
+        setOnboarding(null);
+        return;
       case "entry":
         setOnboarding(null);
         return;
@@ -584,6 +587,14 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       }
 
       setOnboardingNotice(null);
+
+      if (onboarding.step === "welcome") {
+        setOnboarding({
+          step: "entry"
+        });
+        setOnboardingIndex(0);
+        return;
+      }
 
       if (onboarding.step === "entry") {
         const selection = readEntrySelection(value, onboardingIndex);
@@ -1316,7 +1327,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         }
         case "onboarding":
           setOnboarding({
-            step: "entry"
+            step: "welcome"
           });
           setOnboardingIndex(0);
           setOnboardingInput("");
@@ -1950,7 +1961,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
 
     didOpenDefaultOnboarding.current = true;
     setOnboarding({
-      step: "entry"
+      step: "welcome"
     });
     setOnboardingIndex(0);
     setOnboardingInput("");
@@ -2690,6 +2701,8 @@ function buildCommandSuggestionItems(options: {
 
 function getOnboardingOptionCount(onboarding: OnboardingState): number {
   switch (onboarding.step) {
+    case "welcome":
+      return 1;
     case "entry":
       return 7;
     case "host":

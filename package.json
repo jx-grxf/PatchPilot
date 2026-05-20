@@ -12,6 +12,7 @@
     ".env.example",
     "docs/architecture.md",
     "docs/gemini-wrapper.md",
+    "docs/product-context.md",
     "docs/releases",
     "docs/showcase/patchpilot-banner.png",
     "docs/showcase/patchpilot-logo.png",

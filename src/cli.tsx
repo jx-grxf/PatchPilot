@@ -179,6 +179,19 @@ program
   .option("--allow-shell", "Allow shell commands inside the workspace.", false)
   .option("--subagents", "Enable planner and reviewer subagents.", readBooleanEnv(process.env.PATCHPILOT_SUBAGENTS, false))
   .option("--no-subagents", "Disable planner and reviewer subagents for faster local runs.")
+  .addHelpText(
+    "after",
+    [
+      "",
+      "Examples:",
+      "  $ patchpilot",
+      "  $ patchpilot \"summarize this repo and list the safest next fixes\"",
+      "  $ patchpilot --provider codex --model gpt-5.5 --workspace .",
+      "  $ patchpilot --provider gemini-wrapper --model auto",
+      "",
+      "First-run setup opens automatically. Reopen it anytime with /onboarding."
+    ].join("\n")
+  )
   .action((taskParts: string[], options: Record<string, unknown>) => {
     const workspace = path.resolve(String(options.workspace));
     const maxSteps = Number.parseInt(String(options.steps), 10);
