@@ -41,6 +41,7 @@ import { Transcript } from "./components/Transcript.js";
 import { filterSlashCommands, formatCommandDetail, formatCommandHelp } from "./commands.js";
 import { formatCost, formatSessionTokens, formatTokens, normalizeModelAlias, readToggle } from "./format.js";
 import { checkOllamaHost, discoverOllamaHosts, normalizeOllamaUrl, readOllamaHostDetails, startLocalOllamaAppAndWait, type OllamaHost, type OllamaHostDetails } from "./hosts.js";
+import { computeComposerLayout } from "./layout.js";
 import { initialAgentMode, modeDescription, modePermissionLabel, nextAgentMode, permissionsForMode } from "./modes.js";
 import { selectableModels } from "./modelSelection.js";
 import { readGpuStats, readSystemStats, type GpuStats, type SystemStats } from "./systemStats.js";
@@ -149,13 +150,15 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       : [];
   const rootHeight = Math.max(24, terminalRows);
   const headerReservedHeight = 5;
+  const transcriptWidth = Math.max(42, terminalColumns - 38);
   const paletteReservedHeight = !onboarding && paletteItems.length > 0 ? Math.min(8, paletteItems.length) + 4 : 0;
-  const composerReservedHeight = onboarding || experimentalOpen ? 0 : 2;
+  const composerReservedHeight = onboarding || experimentalOpen ? 0 : computeComposerLayout({ input, width: transcriptWidth }).height;
   const footerReservedHeight = onboarding || experimentalOpen ? 0 : 1;
   const approvalReservedHeight = !onboarding && !experimentalOpen && (pendingApproval || bypassConfirmation) ? 7 : 0;
-  const panelHeight = Math.max(8, rootHeight - headerReservedHeight - composerReservedHeight - paletteReservedHeight - footerReservedHeight - approvalReservedHeight);
-  const transcriptWidth = Math.max(42, terminalColumns - 38);
-  const scrollStep = Math.max(4, Math.floor(panelHeight * 0.8));
+  const bodyHeight = Math.max(8, rootHeight - headerReservedHeight);
+  const transcriptHeight = Math.max(4, bodyHeight - composerReservedHeight - paletteReservedHeight - footerReservedHeight - approvalReservedHeight);
+  const panelHeight = onboarding || experimentalOpen ? bodyHeight : transcriptHeight;
+  const scrollStep = Math.max(4, Math.floor(transcriptHeight * 0.8));
   const appendLine = useCallback((line: LogLineInput) => {
     setLines((currentLines) =>
       [
@@ -2323,12 +2326,12 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         <ExperimentalPanel
           flags={experimentalFlags}
           selectedIndex={experimentalIndex}
-          height={panelHeight}
+          height={bodyHeight}
         />
       ) : onboarding ? (
         <OnboardingPanel
           state={onboarding}
-          height={panelHeight}
+          height={bodyHeight}
           selectedIndex={onboardingIndex}
           input={onboardingInput}
           busyMessage={onboardingBusyMessage}
@@ -2339,7 +2342,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           onInputSubmit={(value) => void handleOnboardingSubmit(value)}
         />
       ) : (
-        <Box flexDirection="row" height={panelHeight + approvalReservedHeight + composerReservedHeight + paletteReservedHeight + footerReservedHeight} overflowY="hidden">
+        <Box flexDirection="row" height={bodyHeight} overflowY="hidden">
           <Sidebar
             workspace={settings.workspace}
             model={settings.model}
@@ -2356,29 +2359,34 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
             telemetry={telemetry}
             sessionTelemetry={sessionTelemetry}
             draftTokens={draftTokens}
-            height={panelHeight}
+            height={bodyHeight}
             scrollOffset={sessionScrollOffset}
             advisors={advisorNotes}
             isActive={activeScrollPane === "session"}
             activeHost={activeHost}
           />
-          <Box flexDirection="column" flexGrow={1} height={panelHeight + approvalReservedHeight + composerReservedHeight + paletteReservedHeight + footerReservedHeight} overflowY="hidden">
+          <Box flexDirection="column" flexGrow={1} height={bodyHeight} overflowY="hidden">
             <Transcript
               lines={lines}
               isRunning={isRunning}
               isActive={activeScrollPane === "transcript"}
-              height={panelHeight}
+              height={transcriptHeight}
               width={transcriptWidth}
               scrollOffset={transcriptScrollOffset}
               todos={todos}
               todoFrame={todoFrame}
+              status={status}
+              workState={workState}
+              isApprovalWaiting={Boolean(pendingApproval || bypassConfirmation)}
             />
             <ApprovalPanel request={pendingApproval} bypassConfirmation={bypassConfirmation} />
             <Composer
               input={input}
               isRunning={isRunning}
               status={status}
+              workState={workState}
               draftTokens={draftTokens}
+              width={transcriptWidth}
               isApprovalWaiting={Boolean(pendingApproval || bypassConfirmation)}
               onChange={setInput}
               onSubmit={(value) => void handleSubmit(value)}

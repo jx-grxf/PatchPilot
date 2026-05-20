@@ -1,8 +1,10 @@
 import React from "react";
 import { Box, Text } from "ink";
 import { toneToColor, toneToMarker, type InkColor } from "../format.js";
+import { formatWorkingStatus } from "../layout.js";
 import type { LogLine } from "../types.js";
-import type { AgentTodoItem } from "../../core/types.js";
+import type { AgentTodoItem, AgentWorkState } from "../../core/types.js";
+import { StartupBanner } from "./StartupBanner.js";
 
 type TranscriptRow = {
   marker: string;
@@ -22,15 +24,30 @@ export function Transcript(props: {
   scrollOffset: number;
   todos?: AgentTodoItem[];
   todoFrame?: number;
+  status: string;
+  workState: AgentWorkState;
+  isApprovalWaiting?: boolean;
 }): React.ReactElement {
-  const rows = props.lines.length === 0 ? emptyRows() : buildTranscriptRows(props.lines, props.width);
+  const rows = buildTranscriptRows(props.lines, props.width);
   const visibleRowCount = Math.max(1, props.height - 2);
   const todoRows = buildTodoRows(props.todos ?? [], props.width, props.todoFrame ?? 0);
+  const dockRows = buildDockRows({
+    isRunning: props.isRunning,
+    isApprovalWaiting: Boolean(props.isApprovalWaiting),
+    status: props.status,
+    workState: props.workState,
+    todos: props.todos ?? [],
+    width: props.width,
+    frame: props.todoFrame ?? 0
+  });
+  const reservedDockRows = Math.min(dockRows.length, Math.max(0, Math.floor(visibleRowCount / 3)));
   const reservedTodoRows = todoRows.length > 0 ? Math.min(todoRows.length, Math.max(1, Math.floor(visibleRowCount / 3))) : 0;
+  const reservedAuxRows = Math.min(visibleRowCount - 1, reservedTodoRows + reservedDockRows);
   const hasOverflow = rows.length > visibleRowCount;
-  const contentRowCount = hasOverflow ? Math.max(1, visibleRowCount - reservedTodoRows - 1) : Math.max(1, visibleRowCount - reservedTodoRows);
+  const contentRowCount = hasOverflow ? Math.max(1, visibleRowCount - reservedAuxRows - 1) : Math.max(1, visibleRowCount - reservedAuxRows);
   const clampedOffset = clampScrollOffset(props.scrollOffset, rows.length, contentRowCount);
   const visibleRows = rows.slice(Math.max(0, rows.length - contentRowCount - clampedOffset), rows.length - clampedOffset);
+  const showBanner = props.lines.length === 0 && visibleRows.length === 0;
 
   return (
     <Box
@@ -42,14 +59,14 @@ export function Transcript(props: {
       overflowY="hidden"
       flexGrow={1}
     >
-      {Array.from({ length: Math.max(0, contentRowCount - visibleRows.length) }).map((_, index) => (
-        <Text key={`pad-${index}`}> </Text>
-      ))}
-      {visibleRows.map((row, index) => (
+      {showBanner ? <StartupBanner compact={props.height < 22 || props.width < 92} /> : visibleRows.map((row, index) => (
         <TranscriptRowView key={`${index}-${row.marker}-${row.label}-${row.text}`} row={row} />
       ))}
       {todoRows.slice(0, reservedTodoRows).map((row, index) => (
         <TranscriptRowView key={`todo-${index}-${row.text}`} row={row} />
+      ))}
+      {dockRows.slice(0, reservedDockRows).map((row, index) => (
+        <TranscriptRowView key={`dock-${index}-${row.text}`} row={row} />
       ))}
       {hasOverflow ? <ScrollHint offset={clampedOffset} total={rows.length} visible={contentRowCount} /> : null}
     </Box>
@@ -130,23 +147,6 @@ function buildTranscriptRows(lines: LogLine[], width: number): TranscriptRow[] {
   });
 }
 
-function emptyRows(): TranscriptRow[] {
-  return [
-    {
-      marker: "",
-      label: "",
-      text: "No session activity yet.",
-      color: "gray"
-    },
-    {
-      marker: "",
-      label: "",
-      text: "Ask for a repo summary, a focused patch, or type /help.",
-      color: "gray"
-    }
-  ];
-}
-
 function buildTodoRows(todos: AgentTodoItem[], width: number, frame: number): TranscriptRow[] {
   if (todos.length === 0) {
     return [];
@@ -174,6 +174,50 @@ function buildTodoRows(todos: AgentTodoItem[], width: number, frame: number): Tr
       color,
       bold: todo.status === "in_progress",
       dim: todo.status === "pending"
+    });
+  }
+
+  return rows;
+}
+
+function buildDockRows(options: {
+  isRunning: boolean;
+  isApprovalWaiting: boolean;
+  status: string;
+  workState: AgentWorkState;
+  todos: AgentTodoItem[];
+  width: number;
+  frame: number;
+}): TranscriptRow[] {
+  const textWidth = Math.max(18, options.width - 19);
+  const rows: TranscriptRow[] = [];
+
+  if (options.isApprovalWaiting) {
+    rows.push({
+      marker: "?",
+      label: "approval",
+      text: "Review the request below. Session approvals are scoped to the concrete target.",
+      color: "yellow",
+      bold: true
+    });
+  }
+
+  if (options.isRunning) {
+    rows.push({
+      marker: "#",
+      label: "run",
+      text: truncate(formatWorkingStatus(options.workState, options.frame, options.status), textWidth),
+      color: "cyan",
+      bold: true
+    });
+  }
+
+  if (options.todos.length === 0 && !options.isRunning && !options.isApprovalWaiting) {
+    rows.push({
+      marker: "",
+      label: "ready",
+      text: "Ask for a repo summary, a focused patch, or type /help.",
+      color: "gray"
     });
   }
 
