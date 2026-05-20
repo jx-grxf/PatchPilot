@@ -9,8 +9,8 @@
 [![CI](https://github.com/jx-grxf/PatchPilot/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/jx-grxf/PatchPilot/actions/workflows/ci.yml)
 [![npm](https://img.shields.io/npm/v/@jx-grxf/patchpilot?logo=npm&color=cb3837)](https://www.npmjs.com/package/@jx-grxf/patchpilot)
 [![npm downloads](https://img.shields.io/npm/dm/@jx-grxf/patchpilot?logo=npm&color=0ea5e9)](https://www.npmjs.com/package/@jx-grxf/patchpilot)
-![Status](https://img.shields.io/badge/status-v1.0.0-0ea5e9)
-![TypeScript](https://img.shields.io/badge/TypeScript-5.9-3178C6?logo=typescript&logoColor=white)
+![Status](https://img.shields.io/badge/status-v1.1.0-0ea5e9)
+![TypeScript](https://img.shields.io/badge/TypeScript-6.0-3178C6?logo=typescript&logoColor=white)
 ![Node](https://img.shields.io/badge/Node.js-22%2B-339933?logo=node.js&logoColor=white)
 ![Ink](https://img.shields.io/badge/TUI-Ink-111827)
 ![Ollama](https://img.shields.io/badge/LLM-Ollama-000000)
@@ -39,7 +39,7 @@
 PatchPilot is a terminal interface for running coding-agent tasks inside a repository. It shows what the agent is doing, keeps risky actions behind explicit permissions, and supports local Ollama, remote Ollama, Google Gemini, experimental Gemini Web wrapper routing, OpenRouter, NVIDIA NIM-compatible endpoints, and Codex CLI OAuth.
 
 > [!IMPORTANT]
-> PatchPilot v1.0.0 is the first stable CLI release for visible, permissioned coding-agent runs. Experimental provider and memory/file-analysis features remain opt-in.
+> PatchPilot v1.1.0 improves the stable CLI with safer file tools, Gemini-Wrapper document analysis, visible run todos, refreshed dependencies, and release-to-website automation.
 
 ---
 
@@ -418,6 +418,8 @@ Release notes are kept in [docs/releases](docs/releases).
 
 | Version | Notes |
 |---|---|
+| `v1.1.0` | [Release notes](docs/releases/v1.1.0.md) |
+| `v1.0.1` | [Release notes](docs/releases/v1.0.1.md) |
 | `v1.0.0` | [Release notes](docs/releases/v1.0.0.md) |
 | `v0.4.0` | [Release notes](docs/releases/v0.4.0.md) |
 | `v0.3.1-beta` | [Release notes](docs/releases/v0.3.1-beta.md) |
