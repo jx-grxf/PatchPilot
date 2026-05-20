@@ -45,6 +45,7 @@ export type ModelClient = {
   chat(options: ModelChatOptions): Promise<ModelChatResult>;
   listModels(): Promise<string[]>;
   listModelDescriptors?(): Promise<ModelDescriptor[]>;
+  supportsFileAnalysis?(): boolean;
   analyzeFile?(options: ModelFileAnalysisOptions): Promise<ModelChatResult>;
 };
 

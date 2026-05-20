@@ -10,6 +10,7 @@ import {
   getGeminiWrapperVenvDir,
   getManagedGeminiWrapperPythonPath,
   importGeminiWrapperBrowserCookies,
+  isGeminiBrowserCookieImportInstalled,
   readGeminiWrapperApiKey,
   readGeminiWrapperBaseUrl,
   readGeminiWrapperBootstrapPythonCommand,
@@ -49,6 +50,11 @@ describe("GeminiWrapperClient", () => {
     expect(getGeminiWrapperVenvDir(env)).toBe("/tmp/patchpilot-test-config/gemini-wrapper-venv");
     expect(getGeminiWrapperCookieCacheDir(env)).toBe("/tmp/patchpilot-test-config/gemini-webapi-cache");
     expect(readGeminiWrapperPythonCommand(env)).toBe(getManagedGeminiWrapperPythonPath(env));
+  });
+
+  it("only advertises file analysis for Python bridge mode", () => {
+    expect(new GeminiWrapperClient("http://localhost:8787/v1", "", undefined, "http").supportsFileAnalysis()).toBe(false);
+    expect(new GeminiWrapperClient("", "", undefined, "python", "python3", "").supportsFileAnalysis()).toBe(true);
   });
 
   it("writes pasted Gemini cookies into PatchPilot config with owner-only permissions", async () => {
@@ -860,6 +866,43 @@ describe("GeminiWrapperClient", () => {
     );
 
     await expect(new GeminiWrapperClient("http://localhost:8787/v1", "", undefined, "http").listModels()).resolves.toEqual(["auto", "flash-lite", "flash", "pro", "thinking", "gemini-2.5-flash"]);
+  });
+
+  it("caches wrapper model descriptors for repeated model listings", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          data: [{ id: "gemini-2.5-flash" }]
+        }),
+        {
+          status: 200,
+          headers: {
+            "Content-Type": "application/json"
+          }
+        }
+      )
+    );
+    const client = new GeminiWrapperClient("http://localhost:8787/v1", "", undefined, "http");
+
+    await expect(client.listModels()).resolves.toContain("gemini-2.5-flash");
+    await expect(client.listModelDescriptors()).resolves.toContainEqual(expect.objectContaining({ id: "gemini-2.5-flash" }));
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("requires browser-cookie3 for browser cookie bridge readiness", async () => {
+    const tempRoot = await mkdtemp(path.join(tmpdir(), "patchpilot-gemini-ready-deps-"));
+    try {
+      const modulePath = path.join(tempRoot, "gemini_webapi.py");
+      const pythonShimPath = path.join(tempRoot, "python-shim");
+      await writeFile(modulePath, "", "utf8");
+      await writeFile(pythonShimPath, `#!/bin/sh\nPYTHONPATH="${tempRoot}" python3 "$@"\n`, "utf8");
+      await chmod(pythonShimPath, 0o755);
+
+      await expect(isGeminiBrowserCookieImportInstalled(pythonShimPath)).resolves.toBe(false);
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
   });
 
   it("memoizes Python bridge readiness checks for repeated chats", async () => {

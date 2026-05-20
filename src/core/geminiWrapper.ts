@@ -14,6 +14,7 @@ export const geminiWebApiVersion = "2.0.0";
 export const geminiWebApiInstallCommand = `PatchPilot managed install: python3 -m venv ~/.patchpilot/gemini-wrapper-venv && ~/.patchpilot/gemini-wrapper-venv/bin/python -m pip install gemini_webapi==${geminiWebApiVersion} browser-cookie3`;
 const pythonBridgeReadyTtlMs = 5 * 60_000;
 const geminiBrowserCookieImportTimeoutMs = 60_000;
+const geminiBridgeOutputMaxBytes = 2 * 1024 * 1024;
 const geminiWrapperBrowserCookieNames = new Set([
   "__Secure-1PSID",
   "__Secure-1PSIDTS",
@@ -196,6 +197,10 @@ export class GeminiWrapperClient {
   }
 
   async listModelDescriptors(): Promise<ModelDescriptor[]> {
+    if (this.modelDescriptorCache && this.modelDescriptorCache.expiresAt > Date.now()) {
+      return this.modelDescriptorCache.descriptors;
+    }
+
     if (this.usesPythonBridge()) {
       await this.assertPythonBridgeReady();
       const result = await this.runPythonBridge({
@@ -237,6 +242,10 @@ export class GeminiWrapperClient {
       expiresAt: Date.now() + 5 * 60_000
     };
     return mergedDescriptors;
+  }
+
+  supportsFileAnalysis(): boolean {
+    return this.usesPythonBridge();
   }
 
   async analyzeFile(options: ModelFileAnalysisOptions): Promise<ModelChatResult> {
@@ -662,7 +671,7 @@ export async function ensureGeminiWebApiInstalled(
   }
 
   const installResult = await runQuietCommand(pythonCommand, ["-m", "pip", "install", `gemini_webapi==${geminiWebApiVersion}`, "browser-cookie3"], 180_000);
-  return installResult.ok && (await isGeminiWebApiInstalled(pythonCommand));
+  return installResult.ok && (await isGeminiBrowserCookieImportInstalled(pythonCommand));
 }
 
 function isLocalWrapperUrl(baseUrl: string): boolean {
@@ -1005,10 +1014,10 @@ function runGeminiWebApiBridge(pythonCommand: string, input: PythonBridgeInput, 
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (chunk: Buffer) => {
-      stdout += chunk.toString("utf8");
+      stdout = appendClipped(stdout, chunk.toString("utf8"), geminiBridgeOutputMaxBytes);
     });
     child.stderr.on("data", (chunk: Buffer) => {
-      stderr += chunk.toString("utf8");
+      stderr = appendClipped(stderr, chunk.toString("utf8"), geminiBridgeOutputMaxBytes);
     });
     child.on("error", (error) => {
       settleReject(error);
@@ -1059,10 +1068,10 @@ function runGeminiBrowserCookieImportBridge(pythonCommand: string, timeoutMs: nu
     }, timeoutMs);
 
     child.stdout.on("data", (chunk: Buffer) => {
-      stdout += chunk.toString("utf8");
+      stdout = appendClipped(stdout, chunk.toString("utf8"), geminiBridgeOutputMaxBytes);
     });
     child.stderr.on("data", (chunk: Buffer) => {
-      stderr += chunk.toString("utf8");
+      stderr = appendClipped(stderr, chunk.toString("utf8"), geminiBridgeOutputMaxBytes);
     });
     child.on("error", (error) => {
       if (settled) {
@@ -1147,6 +1156,16 @@ function redactCookieValues(value: string): string {
   return value
     .replace(/(__Secure-[A-Za-z0-9_-]+)\s*=\s*([^\s,;]+)/g, "$1=<redacted>")
     .replace(/(PSID[A-Z]*)\s*[:=]\s*([^\s,;]+)/gi, "$1=<redacted>");
+}
+
+function appendClipped(currentValue: string, chunk: string, maxLength: number): string {
+  const nextValue = currentValue + chunk;
+  if (nextValue.length <= maxLength) {
+    return nextValue;
+  }
+
+  const clippedMarker = `\n...[clipped ${nextValue.length - maxLength} chars]...\n`;
+  return `${clippedMarker}${nextValue.slice(-maxLength + clippedMarker.length)}`;
 }
 
 const geminiBrowserCookieImportScript = String.raw`

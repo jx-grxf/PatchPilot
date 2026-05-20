@@ -40,7 +40,7 @@ export class AgentRunner {
       ollamaUrl: options.ollamaUrl,
       workspace: options.workspace
     });
-    const documentAnalyzer = this.client.analyzeFile
+    const documentAnalyzer = this.client.analyzeFile && (this.client.supportsFileAnalysis?.() ?? true)
       ? async (request: { path: string; prompt: string; signal?: AbortSignal }) => {
           const result = await this.client.analyzeFile?.({
             model: options.model,
