@@ -36,7 +36,7 @@ export const slashCommands: SlashCommand[] = [
     usage: "/provider ollama|gemini|gemini-wrapper|openrouter|nvidia|codex",
     description: "Switch between Ollama, Gemini, Gemini-Wrapper, OpenRouter, NVIDIA, and Codex inference.",
     category: "model",
-    detail: "Provider controls where inference runs. Gemini-Wrapper runs the installed gemini_webapi bridge with a pasted cookie value and never scans browser profiles."
+    detail: "Provider controls where inference runs. Gemini-Wrapper runs the installed gemini_webapi bridge with pasted cookies or an explicit local browser-cookie import."
   },
   {
     name: "think",

@@ -9,13 +9,15 @@ import {
   getGeminiWrapperCookieCacheDir,
   getGeminiWrapperVenvDir,
   getManagedGeminiWrapperPythonPath,
+  importGeminiWrapperBrowserCookies,
   readGeminiWrapperApiKey,
   readGeminiWrapperBaseUrl,
   readGeminiWrapperBootstrapPythonCommand,
   readGeminiWrapperCookiesJson,
   readGeminiWrapperMode,
   readGeminiWrapperPythonCommand,
-  saveGeminiWrapperCookieFile
+  saveGeminiWrapperCookieFile,
+  saveGeminiWrapperCookieJarFile
 } from "../src/core/geminiWrapper.js";
 import { normalizeModelProvider } from "../src/core/modelClient.js";
 
@@ -67,6 +69,125 @@ describe("GeminiWrapperClient", () => {
       await expect(readFile(cookiesPath, "utf8")).resolves.toContain("__Secure-1PSID");
       await expect(readFile(cookiesPath, "utf8")).resolves.toContain("psidts-value");
       expect((await stat(cookiesPath)).mode & 0o777).toBe(0o600);
+    } finally {
+      await rm(tempRoot, {
+        recursive: true,
+        force: true
+      });
+    }
+  });
+
+  it("writes imported Gemini browser cookies without unrelated values", async () => {
+    const tempRoot = await mkdtemp(path.join(tmpdir(), "patchpilot-gemini-wrapper-"));
+    try {
+      const env = {
+        PATCHPILOT_CONFIG_DIR: tempRoot
+      } as NodeJS.ProcessEnv;
+      const cookiesPath = saveGeminiWrapperCookieJarFile(
+        [
+          {
+            name: "__Secure-1PSID",
+            value: "psid-value",
+            domain: ".google.com",
+            path: "/",
+            source: "chrome"
+          },
+          {
+            name: "unrelated",
+            value: "do-not-save",
+            domain: ".google.com"
+          }
+        ],
+        env
+      );
+
+      const content = await readFile(cookiesPath, "utf8");
+      expect(cookiesPath).toBe(getDefaultGeminiWrapperCookiesPath(env));
+      expect(content).toContain("__Secure-1PSID");
+      expect(content).toContain("chrome");
+      expect(content).not.toContain("do-not-save");
+      expect((await stat(cookiesPath)).mode & 0o777).toBe(0o600);
+    } finally {
+      await rm(tempRoot, {
+        recursive: true,
+        force: true
+      });
+    }
+  });
+
+  it("imports Gemini browser cookies through an explicit local bridge call", async () => {
+    const tempRoot = await mkdtemp(path.join(tmpdir(), "patchpilot-gemini-import-"));
+    try {
+      const pythonShimPath = path.join(tempRoot, "python-shim");
+      await writeFile(
+        pythonShimPath,
+        [
+          "#!/bin/sh",
+          "case \"$2\" in",
+          "  *load_browser_cookies*) printf '%s' '{\"cookies\":[{\"name\":\"__Secure-1PSID\",\"value\":\"psid-value\",\"domain\":\".google.com\",\"path\":\"/\",\"source\":\"chrome\"},{\"name\":\"__Secure-1PSIDTS\",\"value\":\"ts-value\",\"domain\":\".google.com\",\"path\":\"/\",\"source\":\"chrome\"}],\"source\":\"chrome\",\"availableSources\":[\"chrome\"]}' ;;",
+          "  *) exit 0 ;;",
+          "esac",
+          ""
+        ].join("\n"),
+        "utf8"
+      );
+      await chmod(pythonShimPath, 0o755);
+
+      const env = {
+        PATCHPILOT_CONFIG_DIR: tempRoot
+      } as NodeJS.ProcessEnv;
+      const result = await importGeminiWrapperBrowserCookies({
+        pythonCommand: pythonShimPath,
+        env
+      });
+      const content = await readFile(result.cookiesPath, "utf8");
+
+      expect(result).toMatchObject({
+        cookieCount: 2,
+        source: "chrome",
+        hasSecure1psid: true,
+        hasSecure1psidts: true
+      });
+      expect(content).toContain("__Secure-1PSIDTS");
+      expect(content).toContain("ts-value");
+    } finally {
+      await rm(tempRoot, {
+        recursive: true,
+        force: true
+      });
+    }
+  });
+
+  it("redacts browser cookie values from import bridge failures", async () => {
+    const tempRoot = await mkdtemp(path.join(tmpdir(), "patchpilot-gemini-import-fail-"));
+    try {
+      const pythonShimPath = path.join(tempRoot, "python-shim");
+      await writeFile(
+        pythonShimPath,
+        [
+          "#!/bin/sh",
+          "case \"$2\" in",
+          "  *load_browser_cookies*) echo '__Secure-1PSID=secret-cookie-value PSIDTS: another-secret-value' >&2; exit 1 ;;",
+          "  *) exit 0 ;;",
+          "esac",
+          ""
+        ].join("\n"),
+        "utf8"
+      );
+      await chmod(pythonShimPath, 0o755);
+
+      await importGeminiWrapperBrowserCookies({
+        pythonCommand: pythonShimPath,
+        env: {
+          PATCHPILOT_CONFIG_DIR: tempRoot
+        } as NodeJS.ProcessEnv
+      }).catch((error: unknown) => {
+        expect(error).toBeInstanceOf(Error);
+        const message = error instanceof Error ? error.message : String(error);
+        expect(message).toContain("<redacted>");
+        expect(message).not.toContain("secret-cookie-value");
+        expect(message).not.toContain("another-secret-value");
+      });
     } finally {
       await rm(tempRoot, {
         recursive: true,
@@ -484,7 +605,7 @@ describe("GeminiWrapperClient", () => {
     }
   });
 
-  it("requires explicit bridge auth and does not fall back to browser cookies", async () => {
+  it("requires explicit bridge auth unless browser cookies are explicitly imported", async () => {
     const client = new GeminiWrapperClient("", "");
     await expect(
       client.chat({
@@ -496,7 +617,7 @@ describe("GeminiWrapperClient", () => {
           }
         ]
       })
-    ).rejects.toThrow("PatchPilot will not scan browser cookies");
+    ).rejects.toThrow("patchpilot gemini-wrapper import-cookies");
   });
 
   it("fails auth checks when the Python bridge reports an unauthenticated account", async () => {

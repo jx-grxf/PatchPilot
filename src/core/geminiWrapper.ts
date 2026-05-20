@@ -11,8 +11,29 @@ export const geminiWrapperShortcutModels = ["auto", "flash-lite", "flash", "pro"
 export const geminiWrapperLegacyModels = ["thinking"] as const;
 export const geminiWrapperCuratedModels = [...geminiWrapperShortcutModels, ...geminiWrapperLegacyModels] as const;
 export const geminiWebApiVersion = "2.0.0";
-export const geminiWebApiInstallCommand = `PatchPilot managed install: python3 -m venv ~/.patchpilot/gemini-wrapper-venv && ~/.patchpilot/gemini-wrapper-venv/bin/python -m pip install gemini_webapi==${geminiWebApiVersion}`;
+export const geminiWebApiInstallCommand = `PatchPilot managed install: python3 -m venv ~/.patchpilot/gemini-wrapper-venv && ~/.patchpilot/gemini-wrapper-venv/bin/python -m pip install gemini_webapi==${geminiWebApiVersion} browser-cookie3`;
 const pythonBridgeReadyTtlMs = 5 * 60_000;
+const geminiBrowserCookieImportTimeoutMs = 60_000;
+const geminiWrapperBrowserCookieNames = new Set([
+  "__Secure-1PSID",
+  "__Secure-1PSIDTS",
+  "__Secure-1PSIDCC",
+  "__Secure-1PAPISID",
+  "__Secure-3PSID",
+  "__Secure-3PSIDTS",
+  "__Secure-3PSIDCC",
+  "__Secure-3PAPISID",
+  "__Secure-ENID",
+  "AEC",
+  "COMPASS",
+  "GOOGLE_ABUSE_EXEMPTION",
+  "NID",
+  "SID",
+  "HSID",
+  "SSID",
+  "APISID",
+  "SAPISID"
+]);
 
 type GeminiWrapperModelsResponse = {
   data?: Array<{
@@ -72,6 +93,31 @@ type PythonBridgeOutput = {
   accountStatus?: string;
   model?: string;
   warning?: string;
+};
+
+export type GeminiWrapperBrowserCookie = {
+  name: string;
+  value: string;
+  domain?: string;
+  path?: string;
+  expires?: number | null;
+  source?: string;
+};
+
+export type GeminiWrapperBrowserCookieImportResult = {
+  cookiesPath: string;
+  cookieCount: number;
+  source: string;
+  availableSources: string[];
+  hasSecure1psid: boolean;
+  hasSecure1psidts: boolean;
+};
+
+type GeminiBrowserCookieImportOutput = {
+  cookies?: GeminiWrapperBrowserCookie[];
+  source?: string;
+  availableSources?: string[];
+  error?: string;
 };
 
 export class GeminiWrapperClient {
@@ -369,7 +415,7 @@ export class GeminiWrapperClient {
   private async assertPythonBridgeReady(): Promise<void> {
     if (!this.cookiesJson && !readGeminiWrapperSecure1psid()) {
       throw new Error(
-        "Gemini-API bridge needs explicit auth. Set PATCHPILOT_GEMINI_WRAPPER_COOKIES_JSON to a JSON cookie file, or set GEMINI_SECURE_1PSID / GEMINI_SECURE_1PSIDTS. PatchPilot will not scan browser cookies."
+        "Gemini-API bridge needs explicit auth. Run `patchpilot gemini-wrapper import-cookies`, set PATCHPILOT_GEMINI_WRAPPER_COOKIES_JSON to a JSON cookie file, or set GEMINI_SECURE_1PSID / GEMINI_SECURE_1PSIDTS."
       );
     }
 
@@ -459,6 +505,83 @@ export function saveGeminiWrapperCookieFile(
   return cookiesPath;
 }
 
+export function saveGeminiWrapperCookieJarFile(
+  cookies: GeminiWrapperBrowserCookie[],
+  env: NodeJS.ProcessEnv = process.env
+): string {
+  const sanitizedCookies = sanitizeGeminiWrapperBrowserCookies(cookies);
+  if (!sanitizedCookies.some((cookie) => cookie.name === "__Secure-1PSID")) {
+    throw new Error("Imported Gemini browser cookies did not include __Secure-1PSID.");
+  }
+
+  const configDir = getPatchPilotConfigDir(env);
+  mkdirSync(configDir, {
+    recursive: true,
+    mode: 0o700
+  });
+  tryChmod(configDir, 0o700);
+
+  const cookiesPath = getDefaultGeminiWrapperCookiesPath(env);
+  writeFileSync(
+    cookiesPath,
+    `${JSON.stringify(
+      {
+        cookies: sanitizedCookies
+      },
+      null,
+      2
+    )}\n`,
+    {
+      encoding: "utf8",
+      mode: 0o600
+    }
+  );
+  tryChmod(cookiesPath, 0o600);
+  clearGeminiWrapperCookieCache(env);
+  return cookiesPath;
+}
+
+export async function importGeminiWrapperBrowserCookies(options: {
+  pythonCommand?: string;
+  env?: NodeJS.ProcessEnv;
+  timeoutMs?: number;
+} = {}): Promise<GeminiWrapperBrowserCookieImportResult> {
+  const env = options.env ?? process.env;
+  const pythonCommand = options.pythonCommand ?? readGeminiWrapperPythonCommand(env);
+  const isInstalled = await ensureGeminiWebApiInstalled(pythonCommand, env);
+  if (!isInstalled) {
+    throw new Error(`Gemini browser cookie import needs the managed bridge. Run /doctor fix or install manually: ${geminiWebApiInstallCommand}`);
+  }
+  if (!(await isGeminiBrowserCookieImportInstalled(pythonCommand))) {
+    throw new Error("Gemini browser cookie import needs the optional browser-cookie3 dependency. Run `patchpilot doctor --provider gemini-wrapper --fix`, then retry.");
+  }
+
+  const output = await runGeminiBrowserCookieImportBridge(
+    pythonCommand,
+    options.timeoutMs ?? geminiBrowserCookieImportTimeoutMs
+  );
+  if (output.error) {
+    throw new Error(output.error);
+  }
+
+  const cookies = sanitizeGeminiWrapperBrowserCookies(output.cookies ?? []);
+  const hasSecure1psid = cookies.some((cookie) => cookie.name === "__Secure-1PSID");
+  const hasSecure1psidts = cookies.some((cookie) => cookie.name === "__Secure-1PSIDTS");
+  if (!hasSecure1psid) {
+    throw new Error("No __Secure-1PSID cookie was found in supported browsers. Sign in to Gemini in a supported browser, then retry the explicit import.");
+  }
+
+  const cookiesPath = saveGeminiWrapperCookieJarFile(cookies, env);
+  return {
+    cookiesPath,
+    cookieCount: cookies.length,
+    source: output.source ?? "browser",
+    availableSources: output.availableSources ?? [],
+    hasSecure1psid,
+    hasSecure1psidts
+  };
+}
+
 export function readGeminiWrapperPythonCommand(env: NodeJS.ProcessEnv = process.env): string {
   return env.PATCHPILOT_GEMINI_WRAPPER_PYTHON?.trim() || getManagedGeminiWrapperPythonPath(env);
 }
@@ -509,11 +632,16 @@ export async function isGeminiWebApiInstalled(pythonCommand = readGeminiWrapperP
   return result.ok;
 }
 
+export async function isGeminiBrowserCookieImportInstalled(pythonCommand = readGeminiWrapperPythonCommand()): Promise<boolean> {
+  const result = await runQuietCommand(pythonCommand, ["-c", "import gemini_webapi, browser_cookie3"], 20_000);
+  return result.ok;
+}
+
 export async function ensureGeminiWebApiInstalled(
   pythonCommand = readGeminiWrapperPythonCommand(),
   env: NodeJS.ProcessEnv = process.env
 ): Promise<boolean> {
-  if (await isGeminiWebApiInstalled(pythonCommand)) {
+  if ((await isGeminiWebApiInstalled(pythonCommand)) && (await isGeminiBrowserCookieImportInstalled(pythonCommand))) {
     return true;
   }
 
@@ -533,7 +661,7 @@ export async function ensureGeminiWebApiInstalled(
     }
   }
 
-  const installResult = await runQuietCommand(pythonCommand, ["-m", "pip", "install", `gemini_webapi==${geminiWebApiVersion}`], 180_000);
+  const installResult = await runQuietCommand(pythonCommand, ["-m", "pip", "install", `gemini_webapi==${geminiWebApiVersion}`, "browser-cookie3"], 180_000);
   return installResult.ok && (await isGeminiWebApiInstalled(pythonCommand));
 }
 
@@ -909,6 +1037,199 @@ function runGeminiWebApiBridge(pythonCommand: string, input: PythonBridgeInput, 
   });
 }
 
+function runGeminiBrowserCookieImportBridge(pythonCommand: string, timeoutMs: number): Promise<GeminiBrowserCookieImportOutput> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(pythonCommand, ["-c", geminiBrowserCookieImportScript], {
+      env: process.env,
+      stdio: ["ignore", "pipe", "pipe"],
+      detached: process.platform !== "win32",
+      windowsHide: true
+    });
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+
+    const timeout = setTimeout(() => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      killChildProcess(child, "SIGTERM");
+      reject(new Error("Gemini browser cookie import timed out."));
+    }, timeoutMs);
+
+    child.stdout.on("data", (chunk: Buffer) => {
+      stdout += chunk.toString("utf8");
+    });
+    child.stderr.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString("utf8");
+    });
+    child.on("error", (error) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timeout);
+      reject(error);
+    });
+    child.on("close", (code) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timeout);
+      if (code !== 0) {
+        reject(new Error(`Gemini browser cookie import failed.${stderr.trim() ? ` ${redactCookieValues(stderr.trim())}` : ""}`));
+        return;
+      }
+
+      try {
+        resolve(JSON.parse(stdout.trim() || "{}") as GeminiBrowserCookieImportOutput);
+      } catch {
+        reject(new Error("Gemini browser cookie import did not return valid JSON."));
+      }
+    });
+  });
+}
+
+function killChildProcess(child: ReturnType<typeof spawn>, signalName: NodeJS.Signals): void {
+  if (child.pid && process.platform !== "win32") {
+    try {
+      process.kill(-child.pid, signalName);
+      return;
+    } catch {
+      // Fall through to killing the child directly.
+    }
+  }
+  child.kill(signalName);
+}
+
+function sanitizeGeminiWrapperBrowserCookies(cookies: GeminiWrapperBrowserCookie[]): GeminiWrapperBrowserCookie[] {
+  const byName = new Map<string, GeminiWrapperBrowserCookie>();
+  for (const cookie of cookies) {
+    if (!cookie || typeof cookie.name !== "string" || typeof cookie.value !== "string") {
+      continue;
+    }
+
+    const name = cookie.name.trim();
+    const value = cookie.value.trim();
+    if (!name || !value || !geminiWrapperBrowserCookieNames.has(name)) {
+      continue;
+    }
+
+    const domain = typeof cookie.domain === "string" ? cookie.domain.trim() : "";
+    const normalizedDomain = domain.replace(/^\./, "").toLowerCase();
+    if (normalizedDomain && normalizedDomain !== "google.com" && !normalizedDomain.endsWith(".google.com")) {
+      continue;
+    }
+
+    const previousCookie = byName.get(name);
+    const previousExpires = typeof previousCookie?.expires === "number" ? previousCookie.expires : 0;
+    const nextExpires = typeof cookie.expires === "number" ? cookie.expires : 0;
+    if (previousCookie && previousExpires > nextExpires) {
+      continue;
+    }
+
+    byName.set(name, {
+      name,
+      value,
+      ...(domain ? { domain } : {}),
+      ...(typeof cookie.path === "string" && cookie.path ? { path: cookie.path } : {}),
+      ...(typeof cookie.expires === "number" ? { expires: cookie.expires } : {}),
+      ...(typeof cookie.source === "string" && cookie.source ? { source: cookie.source } : {})
+    });
+  }
+
+  return [...byName.values()].sort((left, right) => left.name.localeCompare(right.name));
+}
+
+function redactCookieValues(value: string): string {
+  return value
+    .replace(/(__Secure-[A-Za-z0-9_-]+)\s*=\s*([^\s,;]+)/g, "$1=<redacted>")
+    .replace(/(PSID[A-Z]*)\s*[:=]\s*([^\s,;]+)/gi, "$1=<redacted>");
+}
+
+const geminiBrowserCookieImportScript = String.raw`
+import json
+
+ALLOWED_COOKIE_NAMES = {
+    "__Secure-1PSID",
+    "__Secure-1PSIDTS",
+    "__Secure-1PSIDCC",
+    "__Secure-1PAPISID",
+    "__Secure-3PSID",
+    "__Secure-3PSIDTS",
+    "__Secure-3PSIDCC",
+    "__Secure-3PAPISID",
+    "__Secure-ENID",
+    "AEC",
+    "COMPASS",
+    "GOOGLE_ABUSE_EXEMPTION",
+    "NID",
+    "SID",
+    "HSID",
+    "SSID",
+    "APISID",
+    "SAPISID",
+}
+
+def normalize_domain(value):
+    return (value or "").lstrip(".").lower()
+
+def is_google_domain(value):
+    domain = normalize_domain(value)
+    return not domain or domain == "google.com" or domain.endswith(".google.com")
+
+try:
+    from gemini_webapi.utils.load_browser_cookies import load_browser_cookies
+
+    browser_cookies = load_browser_cookies(domain_name="google.com", verbose=False)
+    candidates = []
+    available_sources = []
+    for browser_name, cookies in browser_cookies.items():
+        filtered = []
+        for cookie in cookies or []:
+            name = cookie.get("name")
+            value = cookie.get("value")
+            if name not in ALLOWED_COOKIE_NAMES or not value or not is_google_domain(cookie.get("domain")):
+                continue
+            filtered.append({
+                "name": name,
+                "value": value,
+                "domain": cookie.get("domain") or ".google.com",
+                "path": cookie.get("path") or "/",
+                "expires": cookie.get("expires"),
+                "source": browser_name,
+            })
+        if filtered:
+            available_sources.append(browser_name)
+            has_psid = any(cookie["name"] == "__Secure-1PSID" for cookie in filtered)
+            has_psidts = any(cookie["name"] == "__Secure-1PSIDTS" for cookie in filtered)
+            candidates.append({
+                "browser": browser_name,
+                "cookies": filtered,
+                "score": (1 if has_psid else 0, 1 if has_psidts else 0, len(filtered), browser_name),
+            })
+
+    candidates.sort(key=lambda item: item["score"], reverse=True)
+    if not candidates or not any(cookie["name"] == "__Secure-1PSID" for cookie in candidates[0]["cookies"]):
+        print(json.dumps({
+            "error": "No Gemini browser cookies were found in supported browsers. Sign in to Gemini in Chrome, Brave, Edge, Firefox, Safari, or another supported browser, then retry the explicit import.",
+            "availableSources": available_sources,
+        }))
+    else:
+        selected = candidates[0]
+        print(json.dumps({
+            "cookies": selected["cookies"],
+            "source": selected["browser"],
+            "availableSources": available_sources,
+        }))
+except Exception as exc:
+    print(json.dumps({
+        "error": f"Gemini browser cookie import failed: {type(exc).__name__}. Unlock the browser profile or macOS Keychain access, then retry."
+    }))
+`;
+
 const geminiWebApiBridgeScript = String.raw`
 import asyncio
 import json
@@ -973,7 +1294,7 @@ async def main():
 
     async def generate_once(psidts_value):
         client = GeminiClient(secure_1psid=psid, secure_1psidts=psidts_value, cookies=extra or None, proxy=payload.get("proxy"))
-        await client.init(timeout=attempt_timeout, auto_refresh=False, verbose=False)
+        await client.init(timeout=attempt_timeout, auto_refresh=True, verbose=False)
         try:
             status_name = account_status_name(client)
             if "unauth" in status_name.lower() or "expired" in status_name.lower() or "invalid" in status_name.lower():

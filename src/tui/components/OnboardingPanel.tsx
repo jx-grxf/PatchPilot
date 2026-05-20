@@ -192,6 +192,14 @@ export function OnboardingPanel(props: {
                   }
                 ]
               : []),
+            ...(props.state.provider === "gemini-wrapper"
+              ? [
+                  {
+                    label: "Import From Browser",
+                    description: "Read Gemini Web cookies locally after this explicit choice"
+                  }
+                ]
+              : []),
             {
               label: props.state.provider === "gemini-wrapper" ? "Paste Cookie" : "Enter New Key",
               description: props.state.provider === "gemini-wrapper" ? "Replace the Gemini Web cookie file in PatchPilot config" : "Replace or add the key in PatchPilot config"

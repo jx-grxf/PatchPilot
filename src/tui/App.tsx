@@ -17,6 +17,7 @@ import {
   readGeminiWrapperCookiesJson,
   readGeminiWrapperMode,
   readGeminiWrapperPythonCommand,
+  importGeminiWrapperBrowserCookies,
   saveGeminiWrapperCookieFile
 } from "../core/geminiWrapper.js";
 import { createModelClient } from "../core/modelClient.js";
@@ -727,8 +728,8 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           return;
         }
 
-        if (choice === 0 && onboarding.hasExistingKey) {
-          if (onboarding.provider === "gemini-wrapper") {
+        if (onboarding.provider === "gemini-wrapper") {
+          if (choice === 0 && onboarding.hasExistingKey) {
             setOnboarding({
               step: "gemini-wrapper-model-mode"
             });
@@ -737,13 +738,57 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
             return;
           }
 
+          const importChoice = onboarding.hasExistingKey ? 1 : 0;
+          if (choice === importChoice) {
+            setOnboardingBusyMessage("Importing Gemini browser cookies...");
+            try {
+              const result = await importGeminiWrapperBrowserCookies();
+              process.env.PATCHPILOT_GEMINI_WRAPPER_MODE = "python";
+              process.env.PATCHPILOT_GEMINI_WRAPPER_COOKIES_JSON = result.cookiesPath;
+              savePatchPilotEnvValues({
+                PATCHPILOT_PROVIDER: "gemini-wrapper",
+                PATCHPILOT_MODEL: defaultGeminiWrapperModel,
+                PATCHPILOT_GEMINI_WRAPPER_MODE: "python",
+                PATCHPILOT_GEMINI_WRAPPER_COOKIES_JSON: result.cookiesPath
+              });
+              setOnboardingNotice({
+                tone: "success",
+                text: `Imported ${result.cookieCount} Gemini browser cookies from ${result.source}.`,
+                detail: `${result.cookiesPath} was written with owner-only permissions. Secret values were not printed.`
+              });
+              setOnboarding({
+                step: "gemini-wrapper-model-mode"
+              });
+              setOnboardingInput("");
+              setOnboardingIndex(0);
+            } catch (error) {
+              setOnboardingNotice({
+                tone: "warning",
+                text: "Gemini browser cookie import failed.",
+                detail: error instanceof Error ? error.message : String(error)
+              });
+            } finally {
+              setOnboardingBusyMessage(null);
+            }
+            return;
+          }
+
+          setOnboarding({
+            step: "gemini-wrapper-psid"
+          });
+          setOnboardingInput("");
+          setOnboardingIndex(0);
+          return;
+        }
+
+        if (choice === 0 && onboarding.hasExistingKey) {
           await openModelSelection(onboarding.provider, {
             currentModel: defaultModelForProvider(onboarding.provider, settings.model)
           });
           return;
         }
 
-        setOnboarding(onboarding.provider === "gemini-wrapper" ? { step: "gemini-wrapper-psid" } : {
+        setOnboarding({
           step: `${onboarding.provider}-key` as "gemini-key" | "openrouter-key" | "nvidia-key"
         });
         setOnboardingInput("");
@@ -2642,6 +2687,9 @@ function getOnboardingOptionCount(onboarding: OnboardingState): number {
     case "host":
       return onboarding.hosts.length + 1;
     case "api-key-choice":
+      if (onboarding.provider === "gemini-wrapper") {
+        return onboarding.hasExistingKey ? 3 : 2;
+      }
       return onboarding.hasExistingKey ? 2 : 1;
     case "gemini-wrapper-model-mode":
       return geminiWrapperShortcutModels.length + 1;
