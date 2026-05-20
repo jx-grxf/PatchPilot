@@ -649,6 +649,71 @@ describe("GeminiWrapperClient", () => {
     await expect(new GeminiWrapperClient("http://localhost:8787/v1", "", undefined, "http").listModels()).resolves.toEqual(["auto", "flash-lite", "flash", "pro", "thinking", "gemini-2.5-flash"]);
   });
 
+  it("memoizes Python bridge readiness checks for repeated chats", async () => {
+    const tempRoot = await mkdtemp(path.join(tmpdir(), "patchpilot-gemini-ready-"));
+    const originalConfigDir = process.env.PATCHPILOT_CONFIG_DIR;
+    try {
+      process.env.PATCHPILOT_CONFIG_DIR = tempRoot;
+      const modulePath = path.join(tempRoot, "gemini_webapi.py");
+      const pythonShimPath = path.join(tempRoot, "python-shim");
+      const cookiesPath = path.join(tempRoot, "cookies.json");
+      const checksPath = path.join(tempRoot, "checks.log");
+
+      await writeFile(
+        modulePath,
+        [
+          "class Response:",
+          "    text = 'ok from bridge'",
+          "",
+          "class GeminiClient:",
+          "    def __init__(self, *args, **kwargs):",
+          "        pass",
+          "",
+          "    async def init(self, *args, **kwargs):",
+          "        pass",
+          "",
+          "    async def generate_content(self, prompt, **kwargs):",
+          "        return Response()",
+          "",
+          "    async def close(self):",
+          "        pass",
+          ""
+        ].join("\n"),
+        "utf8"
+      );
+      await writeFile(
+        pythonShimPath,
+        `#!/bin/sh\nif [ "$1" = "-c" ] && [ "$2" = "import gemini_webapi" ]; then\n  printf 'check\\n' >> "${checksPath}"\nfi\nPYTHONPATH="${tempRoot}" python3 "$@"\n`,
+        "utf8"
+      );
+      await chmod(pythonShimPath, 0o755);
+      await writeFile(cookiesPath, JSON.stringify({ cookies: { "__Secure-1PSID": "psid-value" } }), "utf8");
+
+      const client = new GeminiWrapperClient("", "", { maxTokens: 256, temperature: 0.2, bridgeMinIntervalMs: 0 }, "python", pythonShimPath, cookiesPath);
+      const request = {
+        model: "gemini-3-flash",
+        messages: [
+          {
+            role: "user" as const,
+            content: "hello"
+          }
+        ]
+      };
+
+      await expect(client.chat(request)).resolves.toMatchObject({ content: "ok from bridge" });
+      await expect(client.chat(request)).resolves.toMatchObject({ content: "ok from bridge" });
+
+      await expect(readFile(checksPath, "utf8")).resolves.toBe("check\n");
+    } finally {
+      if (originalConfigDir === undefined) {
+        delete process.env.PATCHPILOT_CONFIG_DIR;
+      } else {
+        process.env.PATCHPILOT_CONFIG_DIR = originalConfigDir;
+      }
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
   it("includes response body details for non-JSON wrapper errors", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response("<html>bad gateway</html>", {

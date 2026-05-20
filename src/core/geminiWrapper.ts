@@ -12,6 +12,7 @@ export const geminiWrapperLegacyModels = ["thinking"] as const;
 export const geminiWrapperCuratedModels = [...geminiWrapperShortcutModels, ...geminiWrapperLegacyModels] as const;
 export const geminiWebApiVersion = "2.0.0";
 export const geminiWebApiInstallCommand = `PatchPilot managed install: python3 -m venv ~/.patchpilot/gemini-wrapper-venv && ~/.patchpilot/gemini-wrapper-venv/bin/python -m pip install gemini_webapi==${geminiWebApiVersion}`;
+const pythonBridgeReadyTtlMs = 5 * 60_000;
 
 type GeminiWrapperModelsResponse = {
   data?: Array<{
@@ -81,6 +82,8 @@ export class GeminiWrapperClient {
   private readonly pythonCommand: string;
   private readonly cookiesJson: string;
   private modelDescriptorCache: { descriptors: ModelDescriptor[]; expiresAt: number } | null = null;
+  private pythonBridgeReadyUntil = 0;
+  private pythonBridgeReadyPromise: Promise<void> | null = null;
 
   constructor(
     baseUrl = readGeminiWrapperBaseUrl(),
@@ -370,10 +373,25 @@ export class GeminiWrapperClient {
       );
     }
 
+    if (this.pythonBridgeReadyUntil > Date.now()) {
+      return;
+    }
+
+    if (!this.pythonBridgeReadyPromise) {
+      this.pythonBridgeReadyPromise = this.checkPythonBridgeReady().finally(() => {
+        this.pythonBridgeReadyPromise = null;
+      });
+    }
+
+    await this.pythonBridgeReadyPromise;
+  }
+
+  private async checkPythonBridgeReady(): Promise<void> {
     const installed = await isGeminiWebApiInstalled(this.pythonCommand);
     if (!installed) {
       throw new Error(`Gemini-API Python wrapper is not installed for ${this.pythonCommand}. Run /doctor fix or patchpilot doctor --fix to install the pinned managed bridge. Manual fallback: ${geminiWebApiInstallCommand}`);
     }
+    this.pythonBridgeReadyUntil = Date.now() + pythonBridgeReadyTtlMs;
   }
 }
 

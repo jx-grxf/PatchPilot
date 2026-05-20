@@ -188,7 +188,7 @@ export class AgentRunner {
       try {
         parsedResponse = parseAgentResponse(rawResponse);
       } catch (error) {
-        const recoveredResponse = recoverMalformedToolResponse(rawResponse, lastReadFilePath);
+        const recoveredResponse = recoverMalformedToolResponse(rawResponse);
         if (recoveredResponse) {
           parsedResponse = recoveredResponse;
           const recoveredPath = recoveredResponse.tool_calls[0]?.arguments.path ?? "workspace file";
@@ -308,6 +308,7 @@ export class AgentRunner {
         call: toolCall,
         workState: workStateForTool(toolCall.name)
       }));
+      const workspaceCallById = new Map(toolCallRecords.map((record) => [record.id, record.call]));
       for (const record of toolCallRecords) {
         await this.options.sessionStore?.append({
           type: "tool.requested",
@@ -321,11 +322,11 @@ export class AgentRunner {
       }
       const toolResults = [
         ...todoResults,
-        ...(await executeToolCallsSequentially(this.tools, toolCallRecords))
+        ...(await executeToolCallsWithReadParallelism(this.tools, toolCallRecords))
       ];
 
       for (const toolResult of toolResults) {
-        const sourceCall = workspaceCalls.find((toolCall) => toolCall.name === toolResult.tool);
+        const sourceCall = workspaceCallById.get(toolResult.toolCallId);
         if (toolResult.ok && sourceCall?.name === "read_file") {
           const readPath = readToolString(sourceCall.arguments.path);
           if (readPath) {
@@ -415,9 +416,8 @@ export class AgentRunner {
   }
 }
 
-export function recoverMalformedToolResponse(rawContent: string, lastReadFilePath: string): { action: "tools"; message: string; tool_calls: Array<{ name: "write_file"; arguments: { path: string; content: string } }> } | null {
-  const pathFromResponse = readFirstRegexGroup(rawContent, /"path"\s*:\s*"([^"]+)"/);
-  const targetPath = pathFromResponse;
+export function recoverMalformedToolResponse(rawContent: string): { action: "tools"; message: string; tool_calls: Array<{ name: "write_file"; arguments: { path: string; content: string } }> } | null {
+  const targetPath = readWriteFileToolPath(rawContent);
   if (!targetPath) {
     return null;
   }
@@ -454,6 +454,13 @@ function readFirstRegexGroup(value: string, pattern: RegExp, groupIndex = 1): st
   const match = value.match(pattern);
   const group = match?.[groupIndex];
   return typeof group === "string" && group.trim() ? group : null;
+}
+
+function readWriteFileToolPath(rawContent: string): string | null {
+  return readFirstRegexGroup(
+    rawContent,
+    /"tool_calls"\s*:\s*\[[\s\S]*?"name"\s*:\s*"write_file"[\s\S]*?"arguments"\s*:\s*\{[\s\S]*?"path"\s*:\s*"([^"]+)"/
+  );
 }
 
 function readToolString(value: unknown): string {
@@ -578,7 +585,7 @@ function buildSystemPrompt(
     "- list_changed_files: {}",
     "- list_scripts: {} for package manager scripts from package.json",
     "- write_file: {\"path\":\"test2/test.txt\",\"content\":\"full file content\"} for new files or intentional full-file replacement",
-    "- edit_file: {\"path\":\"src/index.ts\",\"find\":\"old unique text\",\"replace\":\"new text\"} or {\"path\":\"src/index.ts\",\"startLine\":10,\"endLine\":12,\"replacement\":\"new lines\"} for existing files",
+    "- edit_file: {\"path\":\"src/index.ts\",\"find\":\"old unique text\",\"replace\":\"new text\"} or {\"path\":\"src/index.ts\",\"startLine\":10,\"endLine\":12,\"expected\":\"current lines\",\"replacement\":\"new lines\"} for existing files. Include expected with line-range edits when you have read the target lines.",
     "- create_pdf: {\"path\":\"docs/summary.pdf\",\"title\":\"Summary\",\"content\":\"plain text\"}",
     "- create_docx: {\"path\":\"docs/summary.docx\",\"title\":\"Summary\",\"content\":\"plain text\"}",
     "- apply_patch: {\"patch\":\"unified git patch\"}",
@@ -701,20 +708,44 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
-async function executeToolCallsSequentially(
+type WorkspaceToolCallRecord = {
+  id: string;
+  call: Parameters<WorkspaceTools["execute"]>[0];
+  workState: AgentWorkState;
+};
+
+export async function executeToolCallsWithReadParallelism(
   tools: WorkspaceTools,
-  toolCalls: Array<{
-    id: string;
-    call: Parameters<WorkspaceTools["execute"]>[0];
-    workState: AgentWorkState;
-  }>
+  toolCalls: WorkspaceToolCallRecord[]
 ) {
-  const results = [];
-  for (const toolCall of toolCalls) {
-    results.push(await executeToolSafely(tools, toolCall.call, toolCall.id));
+  const results: Array<Awaited<ReturnType<typeof executeToolSafely>>> = [];
+  for (let index = 0; index < toolCalls.length;) {
+    const currentCall = toolCalls[index];
+    if (!isParallelSafeToolCall(currentCall)) {
+      results.push(await executeToolSafely(tools, currentCall.call, currentCall.id));
+      index += 1;
+      continue;
+    }
+
+    const batch: WorkspaceToolCallRecord[] = [];
+    while (index < toolCalls.length && isParallelSafeToolCall(toolCalls[index])) {
+      batch.push(toolCalls[index]);
+      index += 1;
+    }
+
+    results.push(...(await Promise.all(batch.map((toolCall) => executeToolSafely(tools, toolCall.call, toolCall.id)))));
   }
 
   return results;
+}
+
+function isParallelSafeToolCall(toolCall: WorkspaceToolCallRecord): boolean {
+  if (toolCall.call.name === "inspect_document") {
+    return false;
+  }
+
+  const spec = getToolSpec(toolCall.call.name);
+  return spec.sideEffects === "none" && spec.permission === "none" && spec.category !== "state";
 }
 
 async function executeToolSafely(tools: WorkspaceTools, toolCall: Parameters<WorkspaceTools["execute"]>[0], toolCallId: string) {

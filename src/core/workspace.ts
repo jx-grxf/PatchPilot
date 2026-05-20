@@ -214,7 +214,7 @@ export const toolSpecs: Record<AgentToolName, ToolSpec> = {
   },
   edit_file: {
     name: "edit_file",
-    description: "Edit an existing text file by unique find/replace or by replacing a bounded line range.",
+    description: "Edit an existing text file by unique find/replace or by replacing a bounded line range with an optional expected-content guard.",
     risk: "high",
     sideEffects: "write",
     permission: "write",
@@ -342,7 +342,8 @@ export class WorkspaceTools {
             readString(call.arguments.replace, ""),
             readNumber(call.arguments.startLine, 0),
             readNumber(call.arguments.endLine, 0),
-            readString(call.arguments.replacement, "")
+            readString(call.arguments.replacement, ""),
+            readOptionalString(call.arguments.expected)
           );
         case "create_pdf":
           return await this.createPdf(readString(call.arguments.path, ""), readString(call.arguments.content, ""), readString(call.arguments.title, ""));
@@ -856,7 +857,7 @@ export class WorkspaceTools {
     return null;
   }
 
-  private async editFile(requestedPath: string, findText: string, replaceText: string, startLine: number, endLine: number, replacementText: string): Promise<ToolResult> {
+  private async editFile(requestedPath: string, findText: string, replaceText: string, startLine: number, endLine: number, replacementText: string, expectedText: string | undefined): Promise<ToolResult> {
     if (!requestedPath) {
       return denied("edit_file requires a path.", "edit_file");
     }
@@ -889,6 +890,7 @@ export class WorkspaceTools {
     });
     const normalizedReplaceText = normalizePossiblyEscapedFileContent(replaceText, absolutePath).content;
     const normalizedReplacementText = normalizePossiblyEscapedFileContent(replacementText, absolutePath).content;
+    const normalizedExpectedText = expectedText === undefined ? undefined : normalizePossiblyEscapedFileContent(expectedText, absolutePath).content;
     let nextContent = originalContent;
     let editSummary = "";
 
@@ -905,6 +907,10 @@ export class WorkspaceTools {
         return denied(`edit_file line range exceeds file length (${lines.length} lines).`, "edit_file");
       }
       const replacementLines = normalizedReplacementText.split(/\r?\n/);
+      const currentRange = lines.slice(startLine - 1, endLine).join("\n");
+      if (normalizedExpectedText !== undefined && currentRange !== normalizedExpectedText) {
+        return denied("edit_file expected content did not match the current line range.", "edit_file");
+      }
       lines.splice(startLine - 1, endLine - startLine + 1, ...replacementLines);
       nextContent = lines.join("\n");
       editSummary = `replaced lines ${startLine}-${endLine} in ${path.relative(this.root, absolutePath)}`;
@@ -923,6 +929,7 @@ export class WorkspaceTools {
           startLine: usesLineRange ? startLine : undefined,
           endLine: usesLineRange ? endLine : undefined,
           findLength: usesFindReplace ? findText.length : undefined,
+          expectedLength: normalizedExpectedText?.length,
           replacementLength: usesLineRange ? normalizedReplacementText.length : normalizedReplaceText.length
         },
         `Edit ${requestedPath}: ${editSummary}`
@@ -1586,6 +1593,10 @@ function runGitApply(patchContent: string, cwd: string, timeoutMs: number, signa
 
 function readString(value: unknown, fallback: string): string {
   return typeof value === "string" ? value : fallback;
+}
+
+function readOptionalString(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
 }
 
 function countOccurrences(value: string, needle: string): number {

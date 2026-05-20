@@ -156,6 +156,53 @@ describe("WorkspaceTools", () => {
     await expect(readFile(path.join(tempRoot, "style.css"), "utf8")).resolves.toBe("body {\n  color: white;\n  background: navy;\n}\n");
   });
 
+  it("edits a line range when the expected guard matches", async () => {
+    await writeFile(path.join(tempRoot, "style.css"), "body {\n  color: black;\n  margin: 0;\n}\n");
+    const tools = new WorkspaceTools({
+      root: tempRoot,
+      allowWrite: true,
+      allowShell: false
+    });
+
+    const result = await tools.execute({
+      name: "edit_file",
+      arguments: {
+        path: "style.css",
+        startLine: 2,
+        endLine: 3,
+        expected: "  color: black;\n  margin: 0;",
+        replacement: "  color: white;\n  background: navy;"
+      }
+    });
+
+    expect(result.ok).toBe(true);
+    await expect(readFile(path.join(tempRoot, "style.css"), "utf8")).resolves.toBe("body {\n  color: white;\n  background: navy;\n}\n");
+  });
+
+  it("rejects stale line range edits when the expected guard does not match", async () => {
+    await writeFile(path.join(tempRoot, "style.css"), "body {\n  color: black;\n  margin: 0;\n}\n");
+    const tools = new WorkspaceTools({
+      root: tempRoot,
+      allowWrite: true,
+      allowShell: false
+    });
+
+    const result = await tools.execute({
+      name: "edit_file",
+      arguments: {
+        path: "style.css",
+        startLine: 2,
+        endLine: 3,
+        expected: "  color: red;\n  margin: 0;",
+        replacement: "  color: white;\n  background: navy;"
+      }
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.summary).toContain("expected content");
+    await expect(readFile(path.join(tempRoot, "style.css"), "utf8")).resolves.toBe("body {\n  color: black;\n  margin: 0;\n}\n");
+  });
+
   it("normalizes escaped multiline line-range replacements", async () => {
     await writeFile(path.join(tempRoot, "script.js"), "function run() {\n  return false;\n}\n");
     const tools = new WorkspaceTools({

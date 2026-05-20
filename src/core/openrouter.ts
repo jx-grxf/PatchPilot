@@ -276,7 +276,8 @@ async function toTelemetry(payload: OpenRouterChatResponse, durationMs: number, 
   const totalTokens = payload.usage?.total_tokens ?? promptTokens + responseTokens;
   const cachedPromptTokens = payload.usage?.prompt_tokens_details?.cached_tokens ?? 0;
   const cacheWriteTokens = payload.usage?.prompt_tokens_details?.cache_write_tokens ?? 0;
-  const rates = await getOpenRouterModelRates(model);
+  const providerCostUsd = payload.usage?.cost;
+  const rates = providerCostUsd === undefined ? await getOpenRouterModelRates(model) : null;
 
   return attachTokenCost(
     {
@@ -294,7 +295,7 @@ async function toTelemetry(payload: OpenRouterChatResponse, durationMs: number, 
     "openrouter",
     model,
     rates,
-    payload.usage?.cost
+    providerCostUsd
   );
 }
 

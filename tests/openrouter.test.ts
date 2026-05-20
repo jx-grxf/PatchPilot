@@ -208,6 +208,50 @@ describe("OpenRouterClient", () => {
     });
   });
 
+  it("uses provider-reported cost without fetching model pricing", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: "ok"
+              }
+            }
+          ],
+          usage: {
+            prompt_tokens: 10,
+            completion_tokens: 5,
+            total_tokens: 15,
+            cost: 0.00042
+          }
+        }),
+        {
+          status: 200,
+          headers: {
+            "Content-Type": "application/json"
+          }
+        }
+      )
+    );
+
+    const result = await new OpenRouterClient("test-key", "https://openrouter.test/api/v1").chat({
+      model: "a/model",
+      messages: [
+        {
+          role: "user",
+          content: "hello"
+        }
+      ]
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(result.telemetry).toMatchObject({
+      estimatedCostUsd: 0.00042,
+      costSource: "api-pricing"
+    });
+  });
+
   it("normalizes provider aliases and free model names", () => {
     expect(normalizeModelProvider("openrouter")).toBe("openrouter");
     expect(normalizeModelProvider("open-router")).toBe("openrouter");

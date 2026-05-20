@@ -96,8 +96,13 @@ export class OllamaClient {
       throw new Error(payload.error);
     }
 
+    const content = payload.message?.content?.trim() ?? "";
+    if (!content) {
+      throw new Error(`Ollama returned an empty response for model "${options.model}".`);
+    }
+
     return {
-      content: payload.message?.content?.trim() ?? "",
+      content,
       telemetry: toTelemetry(payload, options.model)
     };
   }
