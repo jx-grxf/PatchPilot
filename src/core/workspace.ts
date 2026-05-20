@@ -1,4 +1,5 @@
 import { execFile, spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { access, lstat, mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { platform, tmpdir } from "node:os";
@@ -188,6 +189,22 @@ export const toolSpecs: Record<AgentToolName, ToolSpec> = {
     permission: "none",
     category: "git"
   },
+  git_log: {
+    name: "git_log",
+    description: "Read recent Git commits.",
+    risk: "low",
+    sideEffects: "none",
+    permission: "none",
+    category: "git"
+  },
+  git_show: {
+    name: "git_show",
+    description: "Read a compact Git commit or revision summary.",
+    risk: "low",
+    sideEffects: "none",
+    permission: "none",
+    category: "git"
+  },
   list_changed_files: {
     name: "list_changed_files",
     description: "List changed files from Git porcelain status.",
@@ -199,6 +216,30 @@ export const toolSpecs: Record<AgentToolName, ToolSpec> = {
   list_scripts: {
     name: "list_scripts",
     description: "List package.json scripts.",
+    risk: "low",
+    sideEffects: "none",
+    permission: "none",
+    category: "read"
+  },
+  repo_overview: {
+    name: "repo_overview",
+    description: "Read a compact repository overview: package metadata, top-level files, and Git state.",
+    risk: "low",
+    sideEffects: "none",
+    permission: "none",
+    category: "read"
+  },
+  test_list: {
+    name: "test_list",
+    description: "List likely tests and test scripts without running them.",
+    risk: "low",
+    sideEffects: "none",
+    permission: "none",
+    category: "test"
+  },
+  dependency_tree: {
+    name: "dependency_tree",
+    description: "Read top-level package dependencies from package.json.",
     risk: "low",
     sideEffects: "none",
     permission: "none",
@@ -329,10 +370,20 @@ export class WorkspaceTools {
           return await this.gitStatus();
         case "git_diff":
           return await this.gitDiff(readString(call.arguments.path, ""));
+        case "git_log":
+          return await this.gitLog(readNumber(call.arguments.limit, 8));
+        case "git_show":
+          return await this.gitShow(readString(call.arguments.revision, "HEAD"), readString(call.arguments.path, ""));
         case "list_changed_files":
           return await this.listChangedFiles();
         case "list_scripts":
           return await this.listScripts();
+        case "repo_overview":
+          return await this.repoOverview();
+        case "test_list":
+          return await this.testList();
+        case "dependency_tree":
+          return await this.dependencyTree();
         case "write_file":
           return await this.writeFile(readString(call.arguments.path, ""), readString(call.arguments.content, ""));
         case "edit_file":
@@ -993,6 +1044,54 @@ export class WorkspaceTools {
     };
   }
 
+  private async gitLog(limit: number): Promise<ToolResult> {
+    const normalizedLimit = Math.max(1, Math.min(50, Math.floor(limit || 8)));
+    const { stdout } = await execFileAsync("git", ["log", "--oneline", "--decorate", `--max-count=${normalizedLimit}`], {
+      cwd: this.root,
+      timeout: Math.min(this.timeoutMs, 8000),
+      maxBuffer: 200_000,
+      signal: this.signal,
+      windowsHide: true
+    });
+
+    return {
+      ok: true,
+      summary: `read ${normalizedLimit} git commit${normalizedLimit === 1 ? "" : "s"}`,
+      content: stdout.trim() || "No commits found.",
+      tool: "git_log",
+      category: toolSpecs.git_log.category
+    };
+  }
+
+  private async gitShow(revision: string, requestedPath: string): Promise<ToolResult> {
+    const normalizedRevision = revision.trim() || "HEAD";
+    if (!/^[A-Za-z0-9_./:@{}^~+-]+$/.test(normalizedRevision)) {
+      return denied("git_show revision contains unsupported characters.", "git_show");
+    }
+
+    const args = ["show", "--stat", "--oneline", "--decorate", "--no-ext-diff", normalizedRevision, "--"];
+    if (requestedPath.trim()) {
+      const absolutePath = this.resolveInsideWorkspace(requestedPath);
+      args.push(path.relative(this.root, absolutePath));
+    }
+
+    const { stdout } = await execFileAsync("git", args, {
+      cwd: this.root,
+      timeout: Math.min(this.timeoutMs, 8000),
+      maxBuffer: 500_000,
+      signal: this.signal,
+      windowsHide: true
+    });
+
+    return {
+      ok: true,
+      summary: `read git revision ${normalizedRevision}`,
+      content: clip(stdout.trim() || "No revision output.", 20_000),
+      tool: "git_show",
+      category: toolSpecs.git_show.category
+    };
+  }
+
   private async listChangedFiles(): Promise<ToolResult> {
     const { stdout } = await execFileAsync("git", ["status", "--porcelain"], {
       cwd: this.root,
@@ -1032,6 +1131,89 @@ export class WorkspaceTools {
     };
   }
 
+  private async repoOverview(): Promise<ToolResult> {
+    const packageJson: Record<string, unknown> = await this.readPackageJsonObject().catch(() => ({}));
+    const rootRealPath = await this.rootRealPath;
+    const files = await walkFiles(this.root, this.root, rootRealPath, 1, 80).catch(() => []);
+    const gitStatus = await execFileAsync("git", ["status", "--short", "--branch"], {
+      cwd: this.root,
+      timeout: Math.min(this.timeoutMs, 5000),
+      maxBuffer: 100_000,
+      signal: this.signal,
+      windowsHide: true
+    }).then((result) => result.stdout.trim()).catch(() => "No git repository detected.");
+    const scripts = Object.keys(readStringRecord(packageJson.scripts)).sort();
+    const dependencies = Object.keys(readStringRecord(packageJson.dependencies)).length;
+    const devDependencies = Object.keys(readStringRecord(packageJson.devDependencies)).length;
+
+    return {
+      ok: true,
+      summary: "read repository overview",
+      content: [
+        `name: ${typeof packageJson.name === "string" ? packageJson.name : path.basename(this.root)}`,
+        `version: ${typeof packageJson.version === "string" ? packageJson.version : "unknown"}`,
+        `description: ${typeof packageJson.description === "string" ? packageJson.description : "none"}`,
+        `scripts: ${scripts.join(", ") || "none"}`,
+        `dependencies: ${dependencies} runtime, ${devDependencies} dev`,
+        "",
+        "git:",
+        gitStatus || "clean",
+        "",
+        "top-level files:",
+        files.join("\n") || "No files found."
+      ].join("\n"),
+      tool: "repo_overview",
+      category: toolSpecs.repo_overview.category
+    };
+  }
+
+  private async testList(): Promise<ToolResult> {
+    const packageJson: Record<string, unknown> = await this.readPackageJsonObject().catch(() => ({}));
+    const scripts = Object.entries(readStringRecord(packageJson.scripts))
+      .filter(([name, command]) => /test|spec|vitest|jest|playwright|check/i.test(`${name} ${command}`))
+      .sort(([left], [right]) => left.localeCompare(right));
+    const files = await walkFiles(this.root, this.root, await this.rootRealPath, 8, 500).catch(() => []);
+    const testFiles = files.filter((filePath) => /(^|\/)(__tests__|tests?|specs?)\/|[.-](test|spec)\.[cm]?[jt]sx?$|\.test\./i.test(filePath));
+
+    return {
+      ok: true,
+      summary: `listed ${testFiles.length} likely test file${testFiles.length === 1 ? "" : "s"}`,
+      content: [
+        "test scripts:",
+        scripts.map(([name, command]) => `${name}: ${command}`).join("\n") || "No test-related scripts found.",
+        "",
+        "test files:",
+        testFiles.slice(0, 120).join("\n") || "No likely test files found."
+      ].join("\n"),
+      tool: "test_list",
+      category: toolSpecs.test_list.category
+    };
+  }
+
+  private async dependencyTree(): Promise<ToolResult> {
+    const packageJson = await this.readPackageJsonObject();
+    const sections: Array<[string, Record<string, string>]> = [
+      ["dependencies", readStringRecord(packageJson.dependencies)],
+      ["devDependencies", readStringRecord(packageJson.devDependencies)],
+      ["peerDependencies", readStringRecord(packageJson.peerDependencies)],
+      ["optionalDependencies", readStringRecord(packageJson.optionalDependencies)]
+    ];
+    const content = sections
+      .map(([sectionName, dependencies]) => {
+        const entries = Object.entries(dependencies).sort(([left], [right]) => left.localeCompare(right));
+        return [`${sectionName}:`, entries.map(([name, version]) => `- ${name}@${version}`).join("\n") || "- none"].join("\n");
+      })
+      .join("\n\n");
+
+    return {
+      ok: true,
+      summary: "read dependency tree",
+      content,
+      tool: "dependency_tree",
+      category: toolSpecs.dependency_tree.category
+    };
+  }
+
   private async applyPatch(patchContent: string): Promise<ToolResult> {
     if (!patchContent.trim()) {
       return denied("apply_patch requires a unified patch.", "apply_patch");
@@ -1047,7 +1229,8 @@ export class WorkspaceTools {
         "apply_patch",
         "write",
         {
-          patch: clip(patchContent, 1200)
+          patch: clip(patchContent, 1200),
+          patchHash: stableHash(patchContent)
         },
         previewPatch(patchContent)
       );
@@ -1068,20 +1251,33 @@ export class WorkspaceTools {
   }
 
   private async runScript(scriptName: string): Promise<ToolResult> {
+    return await this.runPackageScript("run_script", scriptName);
+  }
+
+  private async runTests(): Promise<ToolResult> {
+    return await this.runPackageScript("run_tests", "test");
+  }
+
+  private async runPackageScript(tool: "run_script" | "run_tests", scriptName: string): Promise<ToolResult> {
     const normalizedScript = scriptName.trim();
     if (!/^[\w:.-]+$/.test(normalizedScript)) {
-      return denied("run_script requires a package script name such as test or build.", "run_script");
+      return denied(`${tool} requires a package script name such as test or build.`, tool);
     }
 
     const scripts = await this.readPackageScripts();
     if (!scripts[normalizedScript]) {
-      return denied(`package script not found: ${normalizedScript}`, "run_script");
+      return denied(`package script not found: ${normalizedScript}`, tool);
     }
 
     const scriptCommand = scripts[normalizedScript];
+    const scriptSafetyError = validatePackageScriptCommand(scriptCommand, this.root);
+    if (scriptSafetyError) {
+      return denied(`${tool} denied package script before approval. ${scriptSafetyError}`, tool);
+    }
+
     if (!this.allowShell) {
       const approval = await this.requestApproval(
-        "run_script",
+        tool,
         "shell",
         {
           script: normalizedScript,
@@ -1090,7 +1286,7 @@ export class WorkspaceTools {
         previewPackageScript(normalizedScript, scriptCommand, this.root)
       );
       if (approval.decision === "deny") {
-        return denied("run_script denied by permission policy.", "run_script", approval);
+        return denied(`${tool} denied by permission policy.`, tool, approval);
       }
     }
 
@@ -1099,24 +1295,9 @@ export class WorkspaceTools {
       ok: output.exitCode === 0,
       summary: `npm run ${normalizedScript} exited ${output.exitCode}`,
       content: clip(output.output, 20_000),
-      tool: "run_script",
-      category: toolSpecs.run_script.category,
+      tool,
+      category: toolSpecs[tool].category,
       preview: previewPackageScript(normalizedScript, scriptCommand, this.root)
-    };
-  }
-
-  private async runTests(): Promise<ToolResult> {
-    const scripts = await this.readPackageScripts();
-    if (!scripts.test) {
-      return denied("No package test script found.", "run_tests");
-    }
-
-    const result = await this.runScript("test");
-    return {
-      ...result,
-      tool: "run_tests",
-      category: toolSpecs.run_tests.category,
-      preview: "npm test"
     };
   }
 
@@ -1156,9 +1337,13 @@ export class WorkspaceTools {
   }
 
   private async readPackageScripts(): Promise<Record<string, string>> {
-    const packageJsonPath = await this.resolveReadPath("package.json");
-    const packageJson = JSON.parse(await readFile(packageJsonPath, "utf8")) as { scripts?: Record<string, unknown> };
+    const packageJson = await this.readPackageJsonObject();
     return Object.fromEntries(Object.entries(packageJson.scripts ?? {}).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
+  }
+
+  private async readPackageJsonObject(): Promise<Record<string, unknown> & { scripts?: Record<string, unknown> }> {
+    const packageJsonPath = await this.resolveReadPath("package.json");
+    return JSON.parse(await readFile(packageJsonPath, "utf8")) as Record<string, unknown> & { scripts?: Record<string, unknown> };
   }
 
   private async requestApproval(
@@ -1177,7 +1362,7 @@ export class WorkspaceTools {
       arguments: args
     };
 
-    const approvalKey = `${permission}:${tool}`;
+    const approvalKey = approvalScopeKey(tool, permission, args);
     if (this.sessionApprovals.has(approvalKey)) {
       return {
         request,
@@ -2279,6 +2464,92 @@ function validateShellCommand(command: string, workspaceRoot: string): string | 
   return null;
 }
 
+function validatePackageScriptCommand(command: string, workspaceRoot: string): string | null {
+  const trimmedCommand = command.trim();
+  if (!trimmedCommand) {
+    return "package script is empty.";
+  }
+
+  if (/[;<>`$\n\r]/.test(trimmedCommand)) {
+    return "dangerous shell metacharacters are blocked in package scripts before approval.";
+  }
+
+  if (/(^|\s)&($|\s)/.test(trimmedCommand)) {
+    return "background shell execution is blocked in package scripts.";
+  }
+
+  const tokens = trimmedCommand.match(/"[^"]*"|'[^']*'|\S+/g) ?? [];
+  for (const commandTokens of splitPackageCommandTokens(tokens)) {
+    for (const segment of splitPipeline(commandTokens)) {
+      const segmentError = validatePackageScriptSegment(segment);
+      if (segmentError) {
+        return segmentError;
+      }
+    }
+  }
+
+  for (const token of tokens.filter((value) => value !== "|" && value !== "&&" && value !== "||")) {
+    const normalizedToken = stripQuotes(token);
+    if (isSensitivePath(normalizedToken)) {
+      return "sensitive path arguments are blocked.";
+    }
+
+    if (/(^|[\\/])\.\.([\\/]|$)/.test(normalizedToken)) {
+      return "parent directory traversal is blocked.";
+    }
+
+    const absolutePath = toAbsoluteShellPath(normalizedToken);
+    if (absolutePath) {
+      const relativePath = path.relative(workspaceRoot, absolutePath);
+      if (relativePath.startsWith("..") || path.isAbsolute(relativePath)) {
+        return "absolute path arguments outside the workspace are blocked.";
+      }
+    }
+  }
+
+  return null;
+}
+
+function splitPackageCommandTokens(tokens: string[]): string[][] {
+  const commands: string[][] = [[]];
+  for (const token of tokens) {
+    if (token === "&&" || token === "||") {
+      commands.push([]);
+      continue;
+    }
+
+    commands.at(-1)?.push(token);
+  }
+
+  return commands;
+}
+
+function validatePackageScriptSegment(tokens: string[]): string | null {
+  if (tokens.length === 0) {
+    return "empty shell pipeline segment.";
+  }
+
+  const executable = stripQuotes(tokens[0] ?? "").toLowerCase();
+  const subcommand = findCommandSubcommand(executable, tokens.slice(1));
+  if (["bash", "sh", "zsh", "fish", "pwsh", "powershell", "powershell.exe"].includes(executable)) {
+    return `executable "${executable}" is blocked in package scripts.`;
+  }
+
+  if (["rm", "rmdir", "mv", "cp"].includes(executable) && tokens.some((token) => /^-.*[fRr]/.test(stripQuotes(token)))) {
+    return `destructive ${executable} flags are blocked.`;
+  }
+
+  if (executable === "git" && subcommand && ["clean", "reset", "push", "checkout", "switch", "branch", "tag"].includes(subcommand)) {
+    return `git ${subcommand} is blocked in package scripts.`;
+  }
+
+  if (executable === "npm" && subcommand && ["publish", "unpublish", "dist-tag"].includes(subcommand)) {
+    return `npm ${subcommand} is blocked in package scripts.`;
+  }
+
+  return null;
+}
+
 function validateShellSegment(tokens: string[]): string | null {
   if (tokens.length === 0) {
     return "empty shell pipeline segment.";
@@ -2363,9 +2634,62 @@ function toAbsoluteShellPath(value: string): string | null {
 }
 
 function previewPackageScript(name: string, command: string, workspaceRoot: string): string {
-  const risk = validateShellCommand(command, workspaceRoot);
+  const risk = validatePackageScriptCommand(command, workspaceRoot);
   const prefix = risk ? `Risky package script (${risk})` : "Run package script";
   return `${prefix}: npm run ${name} -> ${clip(command, 220)}`;
+}
+
+function approvalScopeKey(tool: AgentToolName, permission: Exclude<ToolPermission, "none">, args: Record<string, unknown>): string {
+  const target = approvalScopeTarget(tool, args);
+  return `${permission}:${tool}:${target}`;
+}
+
+function approvalScopeTarget(tool: AgentToolName, args: Record<string, unknown>): string {
+  switch (tool) {
+    case "write_file":
+    case "edit_file":
+    case "create_pdf":
+    case "create_docx":
+      return `path:${normalizeScopeValue(readString(args.path, ""))}`;
+    case "apply_patch":
+      return `patch:${readString(args.patchHash, "") || stableHash(readString(args.patch, ""))}`;
+    case "run_script":
+    case "run_tests": {
+      const script = normalizeScopeValue(readString(args.script, tool === "run_tests" ? "test" : ""));
+      const command = normalizeCommandForScope(readString(args.command, ""));
+      return `script:${script}:${stableHash(command)}`;
+    }
+    case "run_shell":
+      return `command:${stableHash(normalizeCommandForScope(readString(args.command, "")))}`;
+    case "inspect_document":
+      return `external:${normalizeScopeValue(readString(args.path, ""))}`;
+    case "memory_remember":
+      return `memory:${stableHash(readString(args.content, ""))}`;
+    default:
+      return stableHash(JSON.stringify(args));
+  }
+}
+
+function normalizeScopeValue(value: string): string {
+  return value.trim().replaceAll("\\", "/").replace(/\/+/g, "/").replace(/^\.\//, "") || ".";
+}
+
+function normalizeCommandForScope(value: string): string {
+  return value.trim().replace(/\s+/g, " ");
+}
+
+function stableHash(value: string): string {
+  return createHash("sha256").update(value).digest("hex").slice(0, 16);
+}
+
+function readStringRecord(value: unknown): Record<string, string> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {};
+  }
+
+  return Object.fromEntries(
+    Object.entries(value).filter((entry): entry is [string, string] => typeof entry[1] === "string")
+  );
 }
 
 function stripQuotes(value: string): string {

@@ -696,6 +696,85 @@ describe("WorkspaceTools", () => {
     expect(approvals).toEqual(["run_script", "run_shell"]);
   });
 
+  it("scopes allow-session write approvals to the concrete path", async () => {
+    const approvals: string[] = [];
+    const tools = new WorkspaceTools({
+      root: tempRoot,
+      allowWrite: false,
+      allowShell: false,
+      approvalHandler: async (request) => {
+        approvals.push(String(request.arguments.path));
+        return request.arguments.path === "a.txt" ? "allow_session" : "deny";
+      }
+    });
+
+    await expect(tools.execute({ name: "write_file", arguments: { path: "a.txt", content: "one" } })).resolves.toMatchObject({ ok: true });
+    await expect(tools.execute({ name: "write_file", arguments: { path: "a.txt", content: "two" } })).resolves.toMatchObject({ ok: true });
+    const otherFile = await tools.execute({ name: "write_file", arguments: { path: "b.txt", content: "three" } });
+
+    expect(otherFile.ok).toBe(false);
+    expect(approvals).toEqual(["a.txt", "b.txt"]);
+  });
+
+  it("scopes allow-session script approvals to the script body", async () => {
+    await writeFile(
+      path.join(tempRoot, "package.json"),
+      JSON.stringify({
+        scripts: {
+          echo: "node -e \"console.log('ok')\"",
+          build: "node -e \"console.log('build')\""
+        }
+      })
+    );
+    const approvals: string[] = [];
+    const tools = new WorkspaceTools({
+      root: tempRoot,
+      allowWrite: false,
+      allowShell: false,
+      approvalHandler: async (request) => {
+        approvals.push(`${request.arguments.script}:${request.arguments.command}`);
+        return request.arguments.script === "echo" ? "allow_session" : "deny";
+      }
+    });
+
+    await expect(tools.execute({ name: "run_script", arguments: { script: "echo" } })).resolves.toMatchObject({ ok: true });
+    await expect(tools.execute({ name: "run_script", arguments: { script: "echo" } })).resolves.toMatchObject({ ok: true });
+    const build = await tools.execute({ name: "run_script", arguments: { script: "build" } });
+
+    expect(build.ok).toBe(false);
+    expect(approvals).toEqual([
+      "echo:node -e \"console.log('ok')\"",
+      "build:node -e \"console.log('build')\""
+    ]);
+  });
+
+  it("blocks dangerous package script content before requesting approval", async () => {
+    await writeFile(
+      path.join(tempRoot, "package.json"),
+      JSON.stringify({
+        scripts: {
+          bad: "git reset --hard"
+        }
+      })
+    );
+    let approvals = 0;
+    const tools = new WorkspaceTools({
+      root: tempRoot,
+      allowWrite: false,
+      allowShell: false,
+      approvalHandler: async () => {
+        approvals += 1;
+        return "allow_once";
+      }
+    });
+
+    const result = await tools.execute({ name: "run_script", arguments: { script: "bad" } });
+
+    expect(result.ok).toBe(false);
+    expect(result.summary).toContain("before approval");
+    expect(approvals).toBe(0);
+  });
+
   it("reads git status without enabling shell", async () => {
     await execFileAsync("git", ["init"], {
       cwd: tempRoot
@@ -713,6 +792,58 @@ describe("WorkspaceTools", () => {
 
     expect(result.ok).toBe(true);
     expect(result.content).toContain("##");
+  });
+
+  it("reads repo overview, git history, tests, and dependencies without enabling shell", async () => {
+    await execFileAsync("git", ["init"], {
+      cwd: tempRoot
+    });
+    await writeFile(
+      path.join(tempRoot, "package.json"),
+      JSON.stringify({
+        name: "sample",
+        version: "1.0.0",
+        scripts: {
+          test: "vitest run",
+          build: "tsc"
+        },
+        dependencies: {
+          ink: "^7.0.0"
+        },
+        devDependencies: {
+          vitest: "^4.0.0"
+        }
+      })
+    );
+    await mkdir(path.join(tempRoot, "tests"));
+    await writeFile(path.join(tempRoot, "tests", "sample.test.ts"), "import { it } from 'vitest';\n");
+    await execFileAsync("git", ["add", "."], {
+      cwd: tempRoot
+    });
+    await execFileAsync("git", ["-c", "commit.gpgsign=false", "commit", "-m", "init"], {
+      cwd: tempRoot,
+      env: {
+        ...process.env,
+        GIT_AUTHOR_NAME: "PatchPilot",
+        GIT_AUTHOR_EMAIL: "patchpilot@example.com",
+        GIT_COMMITTER_NAME: "PatchPilot",
+        GIT_COMMITTER_EMAIL: "patchpilot@example.com"
+      }
+    });
+    const tools = new WorkspaceTools({
+      root: tempRoot,
+      allowWrite: false,
+      allowShell: false
+    });
+
+    await expect(tools.execute({ name: "repo_overview", arguments: {} })).resolves.toMatchObject({ ok: true, tool: "repo_overview" });
+    await expect(tools.execute({ name: "git_log", arguments: { limit: 1 } })).resolves.toMatchObject({ ok: true, tool: "git_log" });
+    await expect(tools.execute({ name: "git_show", arguments: { revision: "HEAD" } })).resolves.toMatchObject({ ok: true, tool: "git_show" });
+    const tests = await tools.execute({ name: "test_list", arguments: {} });
+    const dependencies = await tools.execute({ name: "dependency_tree", arguments: {} });
+
+    expect(tests.content).toContain("tests/sample.test.ts");
+    expect(dependencies.content).toContain("ink@^7.0.0");
   });
 
   it("reads a bounded line range", async () => {
@@ -821,7 +952,7 @@ describe("WorkspaceTools", () => {
     });
 
     expect(result.ok).toBe(false);
-    expect(result.approval?.request.tool).toBe("run_script");
+    expect(result.approval?.request.tool).toBe("run_tests");
     expect(result.approval?.request.preview).toContain("npm run test");
     expect(result.approval?.request.arguments.command).toContain("node -e");
     expect(result.approval?.decision).toBe("deny");
