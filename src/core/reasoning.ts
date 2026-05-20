@@ -109,6 +109,10 @@ export function formatReasoningSupport(provider: ModelProvider, model: string, r
   }
 
   if (!resolved) {
+    if (provider === "gemini-wrapper") {
+      return "Gemini-Wrapper does not expose Gemini Web Denkaufwand controls yet; using the selected Web model";
+    }
+
     return `${requested} not supported by ${provider} for ${model}; using provider default`;
   }
 

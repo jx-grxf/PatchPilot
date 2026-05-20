@@ -263,7 +263,7 @@ async function checkGeminiWrapper(model?: string, options: { fix?: boolean } = {
       ok: Boolean(baseUrl),
       details: baseUrl
         ? `using explicit wrapper URL ${baseUrl}`
-        : "missing. Set PATCHPILOT_GEMINI_WRAPPER_BASE_URL. PatchPilot does not collect browser cookies or reuse web login sessions."
+        : "missing. Set PATCHPILOT_GEMINI_WRAPPER_BASE_URL, or use the Python bridge with explicit cookie auth."
     }
   ];
 
@@ -331,7 +331,7 @@ async function checkGeminiApiBridge(model?: string, options: { fix?: boolean } =
       ok: hasExplicitAuth,
       details: hasExplicitAuth
         ? "explicit cookie auth is configured"
-        : "missing. Set PATCHPILOT_GEMINI_WRAPPER_COOKIES_JSON or GEMINI_SECURE_1PSID. PatchPilot does not scan browser cookies."
+        : "missing. Run `patchpilot gemini-wrapper import-cookies`, set PATCHPILOT_GEMINI_WRAPPER_COOKIES_JSON, or set GEMINI_SECURE_1PSID."
     }
   ];
 

@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { AgentResponse } from "./types.js";
 
 const toolNameSchema = z.enum([
+  "update_todo",
   "list_files",
   "read_file",
   "read_range",
@@ -15,6 +16,9 @@ const toolNameSchema = z.enum([
   "list_changed_files",
   "list_scripts",
   "write_file",
+  "edit_file",
+  "create_pdf",
+  "create_docx",
   "apply_patch",
   "run_script",
   "run_tests",

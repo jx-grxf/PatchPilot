@@ -28,14 +28,33 @@ export function ApprovalPanel(props: {
   }
 
   return (
-    <Box borderStyle="double" borderColor="yellow" flexDirection="column" paddingX={1} marginTop={1} height={5} overflowY="hidden">
+    <Box borderStyle="double" borderColor="yellow" flexDirection="column" paddingX={1} marginTop={1} height={6} overflowY="hidden">
       <Text color="yellow" bold>
-        ACTION REQUIRED  {request.tool} needs {request.permission}
+        ACTION REQUIRED  {request.tool} needs {request.permission} approval
       </Text>
-      <Text color="white" bold wrap="truncate">
-        {request.preview}
+      <Text color="gray">
+        risk {request.risk}  scope allow-session applies only to this tool
+      </Text>
+      <Text color="white" bold wrap="wrap">
+        {request.preview} {formatApprovalTarget(request.arguments)}
       </Text>
       <Text color="cyan" bold>Press [y] allow once  [a] allow session  [n/Esc] deny</Text>
     </Box>
   );
+}
+
+function formatApprovalTarget(argumentsValue: Record<string, unknown>): string {
+  const pathValue = typeof argumentsValue.path === "string" ? argumentsValue.path : "";
+  const commandValue = typeof argumentsValue.command === "string" ? argumentsValue.command : "";
+  const scriptValue = typeof argumentsValue.script === "string" ? argumentsValue.script : "";
+  if (pathValue) {
+    return `target ${pathValue}`;
+  }
+  if (scriptValue) {
+    return `script ${scriptValue}`;
+  }
+  if (commandValue) {
+    return `command ${commandValue}`;
+  }
+  return "";
 }

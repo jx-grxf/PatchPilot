@@ -6,9 +6,9 @@ import { render } from "ink";
 import { Command } from "commander";
 import { defaultCodexModel } from "./core/codex.js";
 import { cleanupPatchPilot, readCleanupTarget } from "./core/cleanup.js";
-import { loadPatchPilotEnv } from "./core/env.js";
+import { loadPatchPilotEnv, savePatchPilotEnvValues } from "./core/env.js";
 import { defaultGeminiModel } from "./core/gemini.js";
-import { defaultGeminiWrapperModel } from "./core/geminiWrapper.js";
+import { defaultGeminiWrapperModel, importGeminiWrapperBrowserCookies } from "./core/geminiWrapper.js";
 import { normalizeModelProvider, readModelProvider } from "./core/modelClient.js";
 import { defaultNvidiaModel } from "./core/nvidia.js";
 import { runDoctor } from "./core/doctor.js";
@@ -97,6 +97,35 @@ program
     }
 
     process.exitCode = results.every((result) => result.ok) ? 0 : 1;
+  });
+
+const geminiWrapperCommand = program
+  .command("gemini-wrapper")
+  .description("Manage the local Gemini-Wrapper Python bridge.");
+
+geminiWrapperCommand
+  .command("import-cookies")
+  .description("Explicitly import Gemini Web cookies from a local supported browser.")
+  .action(async () => {
+    try {
+      const result = await importGeminiWrapperBrowserCookies();
+      process.env.PATCHPILOT_PROVIDER = "gemini-wrapper";
+      process.env.PATCHPILOT_MODEL = defaultGeminiWrapperModel;
+      process.env.PATCHPILOT_GEMINI_WRAPPER_MODE = "python";
+      process.env.PATCHPILOT_GEMINI_WRAPPER_COOKIES_JSON = result.cookiesPath;
+      savePatchPilotEnvValues({
+        PATCHPILOT_PROVIDER: "gemini-wrapper",
+        PATCHPILOT_MODEL: defaultGeminiWrapperModel,
+        PATCHPILOT_GEMINI_WRAPPER_MODE: "python",
+        PATCHPILOT_GEMINI_WRAPPER_COOKIES_JSON: result.cookiesPath
+      });
+      console.log(`imported ${result.cookieCount} Gemini browser cookies from ${result.source}`);
+      console.log(`saved ${result.cookiesPath}`);
+      console.log(`__Secure-1PSIDTS ${result.hasSecure1psidts ? "present" : "missing; bridge will try refresh fallback"}`);
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : String(error));
+      process.exitCode = 1;
+    }
   });
 
 program

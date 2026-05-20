@@ -48,6 +48,43 @@ describe("parseAgentResponse", () => {
     });
   });
 
+  it("accepts edit_file tool calls", () => {
+    expect(
+      parseAgentResponse(
+        '{"action":"tools","message":"edit","tool_calls":[{"name":"edit_file","arguments":{"path":"index.html","find":"old","replace":"new"}}]}'
+      )
+    ).toEqual({
+      action: "tools",
+      message: "edit",
+      tool_calls: [
+        {
+          name: "edit_file",
+          arguments: {
+            path: "index.html",
+            find: "old",
+            replace: "new"
+          }
+        }
+      ]
+    });
+  });
+
+  it("accepts document creation tool calls", () => {
+    expect(
+      parseAgentResponse(
+        '{"action":"tools","message":"create","tool_calls":[{"name":"create_pdf","arguments":{"path":"out.pdf","content":"hello"}},{"name":"create_docx","arguments":{"path":"out.docx","content":"hello"}}]}'
+      ).tool_calls.map((toolCall) => toolCall.name)
+    ).toEqual(["create_pdf", "create_docx"]);
+  });
+
+  it("accepts update_todo tool calls", () => {
+    expect(
+      parseAgentResponse(
+        '{"action":"tools","message":"plan","tool_calls":[{"name":"update_todo","arguments":{"items":[{"id":"inspect","content":"Inspect files","status":"in_progress"}]}}]}'
+      ).tool_calls[0]?.name
+    ).toBe("update_todo");
+  });
+
   it("repairs raw control characters inside JSON strings", () => {
     expect(parseAgentResponse('{"action":"final","message":"first line\nsecond line"}')).toEqual({
       action: "final",

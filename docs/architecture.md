@@ -70,7 +70,9 @@ Tool request:
 }
 ```
 
-PatchPilot exposes a `ToolSpec` registry for each tool. Specs describe risk, side effects, permission class, and transcript category. Read-only tools can run in parallel; write and shell-like tools run sequentially and pass through approval when the user has not globally enabled that permission.
+PatchPilot exposes a `ToolSpec` registry for each tool. Specs describe risk, side effects, permission class, and transcript category. Tool calls execute sequentially so approval-gated reads, writes, and shell actions cannot overwrite each other's pending approval state.
+
+Longer runs can also call `update_todo` with a compact task snapshot. The runner stores that state separately from the transcript and the TUI renders it in the lower transcript area, with `in_progress` items animated and `completed` items checked.
 
 Final answer:
 

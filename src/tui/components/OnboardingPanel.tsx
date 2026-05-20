@@ -101,6 +101,8 @@ export function OnboardingPanel(props: {
     text: string;
     detail?: string;
   } | null;
+  formatModelLabel?: (model: string) => string;
+  formatModelDescription?: (model: string) => string;
   onInputChange: (value: string) => void;
   onInputSubmit: (value: string) => void;
 }): React.ReactElement {
@@ -112,7 +114,9 @@ export function OnboardingPanel(props: {
         : props.state.step === "api-key-choice" || props.state.step === "gemini-key" || props.state.step === "gemini-wrapper-url" || props.state.step === "gemini-wrapper-psid" || props.state.step === "gemini-wrapper-psidts" || props.state.step === "gemini-wrapper-model-mode" || props.state.step === "gemini-wrapper-key" || props.state.step === "openrouter-key" || props.state.step === "nvidia-key" || props.state.step === "codex-login"
           ? 2
           : 3;
-  const visibleModels = props.state.step === "model" ? selectableModels(props.input, props.state.models) : [];
+  const formatModelLabel = props.formatModelLabel ?? ((model: string) => model);
+  const formatModelDescription = props.formatModelDescription ?? (() => "");
+  const visibleModels = props.state.step === "model" ? selectableModels(props.input, props.state.models, formatModelLabel) : [];
   const selectedModel = props.state.step === "model" ? visibleModels[props.selectedIndex] ?? null : null;
 
   return (
@@ -188,6 +192,14 @@ export function OnboardingPanel(props: {
                   }
                 ]
               : []),
+            ...(props.state.provider === "gemini-wrapper"
+              ? [
+                  {
+                    label: "Import From Browser",
+                    description: "Read Gemini Web cookies locally after this explicit choice"
+                  }
+                ]
+              : []),
             {
               label: props.state.provider === "gemini-wrapper" ? "Paste Cookie" : "Enter New Key",
               description: props.state.provider === "gemini-wrapper" ? "Replace the Gemini Web cookie file in PatchPilot config" : "Replace or add the key in PatchPilot config"
@@ -241,12 +253,24 @@ export function OnboardingPanel(props: {
       ) : null}
       {props.state.step === "gemini-wrapper-model-mode" ? (
         <SelectionList
-          title="Gemini-Wrapper model mode"
-          subtitle="Auto is fastest and most stable. Manual fetches models currently exposed by Gemini Web."
+          title="Gemini-Wrapper model"
+          subtitle="PatchPilot resolves shortcuts through live Gemini Web discovery; Denkaufwand is not exposed as a stable bridge control yet."
           rows={[
             {
               label: "Auto",
               description: "Let Gemini Web pick the current default model"
+            },
+            {
+              label: "Flash-Lite",
+              description: "Resolve the live Gemini Web Flash-Lite model"
+            },
+            {
+              label: "Flash",
+              description: "Resolve the live Flash model, preferring 3.5 Flash when the bridge lists it"
+            },
+            {
+              label: "Pro",
+              description: "Resolve the live Gemini Web Pro model"
             },
             {
               label: "Manual",
@@ -312,8 +336,8 @@ export function OnboardingPanel(props: {
             title=""
             subtitle={`${visibleModels.length} matching model${visibleModels.length === 1 ? "" : "s"}`}
             rows={visibleModels.map((model) => ({
-              label: model,
-              description: model === selectedModel ? "selected" : "available"
+              label: formatModelLabel(model),
+              description: `${model === selectedModel ? "selected" : "available"}${formatModelDescription(model)}`
             }))}
             selectedIndex={props.selectedIndex}
           />

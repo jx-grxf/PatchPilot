@@ -5,7 +5,7 @@ import { createModelClient } from "./modelClient.js";
 import { resolveProviderReasoning } from "./reasoning.js";
 import type { SessionStore } from "./session.js";
 import { formatSubagentContext, runSubagentAdvisors } from "./subagents.js";
-import type { AgentEvent, AgentToolName, AgentWorkState, ApprovalRequest, ChatMessage, ModelClient, ModelProvider, PermissionDecision, ProviderReasoningEffort, ToolResult } from "./types.js";
+import type { AgentEvent, AgentTodoItem, AgentToolName, AgentWorkState, ApprovalRequest, ChatMessage, ModelClient, ModelProvider, PermissionDecision, ProviderReasoningEffort, ToolResult } from "./types.js";
 import { getToolSpec, WorkspaceTools } from "./workspace.js";
 
 export type AgentRunnerOptions = {
@@ -40,11 +40,23 @@ export class AgentRunner {
       ollamaUrl: options.ollamaUrl,
       workspace: options.workspace
     });
+    const documentAnalyzer = this.client.analyzeFile
+      ? async (request: { path: string; prompt: string; signal?: AbortSignal }) => {
+          const result = await this.client.analyzeFile?.({
+            model: options.model,
+            path: request.path,
+            prompt: request.prompt,
+            signal: request.signal
+          });
+          return result?.content ?? "";
+        }
+      : undefined;
     this.tools = new WorkspaceTools({
       root: options.workspace,
       allowWrite: options.allowWrite,
       allowShell: options.allowShell,
       allowExternalFileAnalysis: options.allowExternalFileAnalysis,
+      documentAnalyzer,
       memoryEnabled: options.memoryEnabled,
       signal: options.signal,
       approvalHandler: options.approvalHandler
@@ -70,7 +82,9 @@ export class AgentRunner {
     });
     let stepIndex = 0;
     let repairs = 0;
+    let lastReadFilePath = "";
     let subagentContext = "";
+    let todos: AgentTodoItem[] = [];
     if (this.options.subagents && shouldUseSubagents(task)) {
       yield {
         type: "status",
@@ -174,36 +188,47 @@ export class AgentRunner {
       try {
         parsedResponse = parseAgentResponse(rawResponse);
       } catch (error) {
-        repairs += 1;
-        yield {
-          type: "status",
-          message: `repairing model protocol: ${formatParseError(error)}`,
-          workState: "planning"
-        };
-        messages.push({
-          role: "assistant",
-          content: clipPromptValue(rawResponse, 2000)
-        });
-        messages.push({
-          role: "user",
-          content:
-            "Your previous response was invalid. Return exactly one JSON object now. Do not explain. Use either {\"action\":\"tools\",\"message\":\"...\",\"tool_calls\":[...]} or {\"action\":\"final\",\"message\":\"...\"}. For simple file edits, call write_file with a workspace-relative path."
-        });
-        if (repairs >= 3) {
+        const recoveredResponse = recoverMalformedToolResponse(rawResponse);
+        if (recoveredResponse) {
+          parsedResponse = recoveredResponse;
+          const recoveredPath = recoveredResponse.tool_calls[0]?.arguments.path ?? "workspace file";
           yield {
-            type: "final",
-            message: "The model kept returning invalid tool protocol. Try a stronger coding model or switch advisors off for this task.",
-            workState: "error"
+            type: "status",
+            message: `recovered malformed model protocol as ${recoveredResponse.tool_calls[0]?.name ?? "tool"} for ${recoveredPath}`,
+            workState: "planning"
           };
-          await this.options.sessionStore?.append({
-            type: "run.failed",
-            runId,
-            message: "The model kept returning invalid tool protocol.",
-            failedAt: new Date().toISOString()
+        } else {
+          repairs += 1;
+          yield {
+            type: "status",
+            message: `repairing model protocol: ${formatParseError(error)}`,
+            workState: "planning"
+          };
+          messages.push({
+            role: "assistant",
+            content: clipPromptValue(rawResponse, 2000)
           });
-          return;
+          messages.push({
+            role: "user",
+            content:
+              "Your previous response was invalid. Return exactly one JSON object now. Do not explain. Use either {\"action\":\"tools\",\"message\":\"...\",\"tool_calls\":[...]} or {\"action\":\"final\",\"message\":\"...\"}. For simple file edits, call write_file with a workspace-relative path."
+          });
+          if (repairs >= 3) {
+            yield {
+              type: "final",
+              message: "The model kept returning invalid tool protocol. Try a stronger coding model or switch advisors off for this task.",
+              workState: "error"
+            };
+            await this.options.sessionStore?.append({
+              type: "run.failed",
+              runId,
+              message: "The model kept returning invalid tool protocol.",
+              failedAt: new Date().toISOString()
+            });
+            return;
+          }
+          continue;
         }
-        continue;
       }
 
       repairs = 0;
@@ -244,11 +269,46 @@ export class AgentRunner {
       };
 
       const toolCalls = parsedResponse.tool_calls.map(normalizeToolCall);
-      const toolCallRecords = toolCalls.map((toolCall) => ({
+      const { todoCalls, workspaceCalls } = splitTodoToolCalls(toolCalls);
+      const todoResults: Awaited<ReturnType<typeof executeToolSafely>>[] = [];
+      for (const todoCall of todoCalls) {
+        todos = normalizeTodoItems(todoCall.arguments, todos);
+        const summary = summarizeTodos(todos);
+        yield {
+          type: "todo",
+          items: todos,
+          summary,
+          workState: "planning"
+        };
+        await this.options.sessionStore?.append({
+          type: "todo.updated",
+          runId,
+          items: todos,
+          summary,
+          createdAt: new Date().toISOString()
+        });
+        todoResults.push({
+          tool: "update_todo",
+          ok: true,
+          summary,
+          content: JSON.stringify({ items: todos }),
+          toolCallId: createToolCallId("update_todo"),
+          category: "state",
+          preview: undefined,
+          approval: undefined,
+          metadata: {
+            items: todos
+          },
+          workState: "planning"
+        });
+      }
+
+      const toolCallRecords = workspaceCalls.map((toolCall) => ({
         id: createToolCallId(toolCall.name),
         call: toolCall,
         workState: workStateForTool(toolCall.name)
       }));
+      const workspaceCallById = new Map(toolCallRecords.map((record) => [record.id, record.call]));
       for (const record of toolCallRecords) {
         await this.options.sessionStore?.append({
           type: "tool.requested",
@@ -260,11 +320,20 @@ export class AgentRunner {
           createdAt: new Date().toISOString()
         });
       }
-      const toolResults = toolCalls.every(isReadOnlyToolCall)
-        ? await Promise.all(toolCallRecords.map((record) => executeToolSafely(this.tools, record.call, record.id)))
-        : await executeToolCallsSequentially(this.tools, toolCallRecords);
+      const toolResults = [
+        ...todoResults,
+        ...(await executeToolCallsWithReadParallelism(this.tools, toolCallRecords))
+      ];
 
       for (const toolResult of toolResults) {
+        const sourceCall = workspaceCallById.get(toolResult.toolCallId);
+        if (toolResult.ok && sourceCall?.name === "read_file") {
+          const readPath = readToolString(sourceCall.arguments.path);
+          if (readPath) {
+            lastReadFilePath = readPath;
+          }
+        }
+
         if (toolResult.approval) {
           yield {
             type: "approval",
@@ -291,6 +360,7 @@ export class AgentRunner {
           toolCallId: toolResult.toolCallId,
           category: toolResult.category,
           preview: toolResult.preview,
+          content: toolResult.ok ? undefined : toolResult.content,
           metadata: toolResult.metadata
         };
         await this.options.sessionStore?.append({
@@ -344,6 +414,57 @@ export class AgentRunner {
       failedAt: new Date().toISOString()
     });
   }
+}
+
+export function recoverMalformedToolResponse(rawContent: string): { action: "tools"; message: string; tool_calls: Array<{ name: "write_file"; arguments: { path: string; content: string } }> } | null {
+  const targetPath = readWriteFileToolPath(rawContent);
+  if (!targetPath) {
+    return null;
+  }
+
+  if (!/"tool_calls"\s*:/.test(rawContent) || !/"name"\s*:\s*"write_file"/.test(rawContent)) {
+    return null;
+  }
+
+  const htmlContent =
+    readFirstRegexGroup(rawContent, /(```(?:html)?\s*)([\s\S]*?<\/html>)\s*```/i, 2) ??
+    readFirstRegexGroup(rawContent, /(<!doctype html[\s\S]*?<\/html>)/i) ??
+    readFirstRegexGroup(rawContent, /(<html[\s\S]*?<\/html>)/i);
+
+  if (!htmlContent) {
+    return null;
+  }
+
+  return {
+    action: "tools",
+    message: "Recovered malformed HTML tool response.",
+    tool_calls: [
+      {
+        name: "write_file",
+        arguments: {
+          path: targetPath,
+          content: htmlContent.trim()
+        }
+      }
+    ]
+  };
+}
+
+function readFirstRegexGroup(value: string, pattern: RegExp, groupIndex = 1): string | null {
+  const match = value.match(pattern);
+  const group = match?.[groupIndex];
+  return typeof group === "string" && group.trim() ? group : null;
+}
+
+function readWriteFileToolPath(rawContent: string): string | null {
+  return readFirstRegexGroup(
+    rawContent,
+    /"tool_calls"\s*:\s*\[[\s\S]*?"name"\s*:\s*"write_file"[\s\S]*?"arguments"\s*:\s*\{[\s\S]*?"path"\s*:\s*"([^"]+)"/
+  );
+}
+
+function readToolString(value: unknown): string {
+  return typeof value === "string" ? value : "";
 }
 
 function shouldUseSubagents(task: string): boolean {
@@ -446,12 +567,13 @@ function buildSystemPrompt(
     "{\"action\":\"final\",\"message\":\"short useful answer\"}",
     "",
     "Available tools:",
+    "- update_todo: {\"items\":[{\"id\":\"inspect\",\"content\":\"Inspect relevant files\",\"status\":\"in_progress\"},{\"id\":\"verify\",\"content\":\"Run checks\",\"status\":\"pending\"}]} to maintain the visible task checklist. For multi-step implementation work, call this before and after meaningful task changes.",
     "- list_files: {\"path\":\".\"}",
     "- read_file: {\"path\":\"src/index.ts\"}",
     "- read_range: {\"path\":\"src/index.ts\",\"start\":1,\"end\":80}",
     "- file_info: {\"path\":\"src/index.ts\"}",
     "- search_text: {\"query\":\"functionName\"}",
-    "- inspect_document: {\"path\":\"docs/spec.pdf\"} for pdf, docx, and text/code files",
+    "- inspect_document: {\"path\":\"docs/spec.pdf\",\"mode\":\"auto\"} for pdf, docx, images, and text/code files. Use mode \"local\" or \"ocr\" only when the user explicitly asks for local text/OCR extraction.",
     ...(experimental.memoryEnabled
       ? [
           "- memory_search: {\"query\":\"provider setup\",\"limit\":5}",
@@ -462,7 +584,10 @@ function buildSystemPrompt(
     "- git_diff: {\"path\":\"src/index.ts\"} or {} for all current changes",
     "- list_changed_files: {}",
     "- list_scripts: {} for package manager scripts from package.json",
-    "- write_file: {\"path\":\"test2/test.txt\",\"content\":\"full file content\"}",
+    "- write_file: {\"path\":\"test2/test.txt\",\"content\":\"full file content\"} for new files or intentional full-file replacement",
+    "- edit_file: {\"path\":\"src/index.ts\",\"find\":\"old unique text\",\"replace\":\"new text\"} or {\"path\":\"src/index.ts\",\"startLine\":10,\"endLine\":12,\"expected\":\"current lines\",\"replacement\":\"new lines\"} for existing files. Include expected with line-range edits when you have read the target lines.",
+    "- create_pdf: {\"path\":\"docs/summary.pdf\",\"title\":\"Summary\",\"content\":\"plain text\"}",
+    "- create_docx: {\"path\":\"docs/summary.docx\",\"title\":\"Summary\",\"content\":\"plain text\"}",
     "- apply_patch: {\"patch\":\"unified git patch\"}",
     "- run_script: {\"script\":\"test\"}",
     "- run_tests: {}",
@@ -470,9 +595,9 @@ function buildSystemPrompt(
     "",
     "Act like a coding agent. For simple create/edit/run requests, use tools directly instead of over-warning.",
     "Do not call search_text with an empty query. Use list_files {\"path\":\".\"} to inspect a directory.",
-    "Prefer reading before risky edits; for explicit simple writes, write the requested file.",
-    "Batch independent read-only tool calls in one response when it helps avoid extra thinking steps.",
-    "Prefer parallel read-only context gathering over one file per step.",
+    "Prefer reading before risky edits. For existing files, prefer edit_file or apply_patch over full-file write_file.",
+    "Batch small related tool calls in one response when it helps avoid extra thinking steps.",
+    "Keep update_todo current: mark exactly what you are doing as in_progress and completed tasks as completed.",
     "In final answers, separate verified facts from remaining risks.",
     "Keep tool requests and final answers compact."
   ].join("\n");
@@ -484,10 +609,6 @@ function looksLikeClarification(message: string): boolean {
     normalizedMessage.endsWith("?") &&
     /\b(what|which|please provide|would you like|do you want|can you specify|welche|was genau|bitte)\b/.test(normalizedMessage)
   );
-}
-
-function isReadOnlyToolCall(toolCall: { name: string }): boolean {
-  return getToolSpec(toolCall.name as AgentToolName)?.sideEffects === "none";
 }
 
 function normalizeToolCall(toolCall: Parameters<WorkspaceTools["execute"]>[0]): Parameters<WorkspaceTools["execute"]>[0] {
@@ -506,20 +627,125 @@ function normalizeToolCall(toolCall: Parameters<WorkspaceTools["execute"]>[0]): 
   return toolCall;
 }
 
-async function executeToolCallsSequentially(
+function splitTodoToolCalls(toolCalls: Parameters<WorkspaceTools["execute"]>[0][]): {
+  todoCalls: Parameters<WorkspaceTools["execute"]>[0][];
+  workspaceCalls: Parameters<WorkspaceTools["execute"]>[0][];
+} {
+  return {
+    todoCalls: toolCalls.filter((toolCall) => toolCall.name === "update_todo"),
+    workspaceCalls: toolCalls.filter((toolCall) => toolCall.name !== "update_todo")
+  };
+}
+
+export function normalizeTodoItems(argumentsValue: Record<string, unknown>, existingItems: AgentTodoItem[] = []): AgentTodoItem[] {
+  const rawItems = Array.isArray(argumentsValue.items) ? argumentsValue.items : Array.isArray(argumentsValue.todos) ? argumentsValue.todos : [];
+  const existingById = new Map(existingItems.map((item) => [item.id, item]));
+  const normalizedItems: AgentTodoItem[] = [];
+
+  for (const rawItem of rawItems.slice(0, 12)) {
+    if (!isRecord(rawItem)) {
+      continue;
+    }
+    const content = readTodoString(rawItem.content) || readTodoString(rawItem.text) || readTodoString(rawItem.task);
+    if (!content) {
+      continue;
+    }
+    const explicitId = readTodoString(rawItem.id);
+    const id = sanitizeTodoId(explicitId || existingById.get(content)?.id || content);
+    const status = normalizeTodoStatus(rawItem.status);
+    normalizedItems.push({
+      id,
+      content: content.slice(0, 120),
+      status
+    });
+  }
+
+  return dedupeTodoItems(normalizedItems);
+}
+
+function summarizeTodos(items: AgentTodoItem[]): string {
+  const completed = items.filter((item) => item.status === "completed").length;
+  const active = items.find((item) => item.status === "in_progress");
+  return active ? `${completed}/${items.length} done, working on ${active.content}` : `${completed}/${items.length} todos done`;
+}
+
+function dedupeTodoItems(items: AgentTodoItem[]): AgentTodoItem[] {
+  const seen = new Set<string>();
+  const deduped: AgentTodoItem[] = [];
+  for (const item of items) {
+    const uniqueId = seen.has(item.id) ? `${item.id}-${deduped.length + 1}` : item.id;
+    seen.add(uniqueId);
+    deduped.push({ ...item, id: uniqueId });
+  }
+  return deduped;
+}
+
+function normalizeTodoStatus(value: unknown): AgentTodoItem["status"] {
+  const normalized = typeof value === "string" ? value.trim().toLowerCase().replace(/[- ]/g, "_") : "";
+  if (normalized === "done" || normalized === "complete" || normalized === "completed" || normalized === "checked") {
+    return "completed";
+  }
+  if (normalized === "active" || normalized === "doing" || normalized === "current" || normalized === "in_progress") {
+    return "in_progress";
+  }
+  return "pending";
+}
+
+function sanitizeTodoId(value: string): string {
+  const normalized = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return normalized.slice(0, 40) || `todo-${Date.now().toString(36)}`;
+}
+
+function readTodoString(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+type WorkspaceToolCallRecord = {
+  id: string;
+  call: Parameters<WorkspaceTools["execute"]>[0];
+  workState: AgentWorkState;
+};
+
+export async function executeToolCallsWithReadParallelism(
   tools: WorkspaceTools,
-  toolCalls: Array<{
-    id: string;
-    call: Parameters<WorkspaceTools["execute"]>[0];
-    workState: AgentWorkState;
-  }>
+  toolCalls: WorkspaceToolCallRecord[]
 ) {
-  const results = [];
-  for (const toolCall of toolCalls) {
-    results.push(await executeToolSafely(tools, toolCall.call, toolCall.id));
+  const results: Array<Awaited<ReturnType<typeof executeToolSafely>>> = [];
+  for (let index = 0; index < toolCalls.length;) {
+    const currentCall = toolCalls[index];
+    if (!isParallelSafeToolCall(currentCall)) {
+      results.push(await executeToolSafely(tools, currentCall.call, currentCall.id));
+      index += 1;
+      continue;
+    }
+
+    const batch: WorkspaceToolCallRecord[] = [];
+    while (index < toolCalls.length && isParallelSafeToolCall(toolCalls[index])) {
+      batch.push(toolCalls[index]);
+      index += 1;
+    }
+
+    results.push(...(await Promise.all(batch.map((toolCall) => executeToolSafely(tools, toolCall.call, toolCall.id)))));
   }
 
   return results;
+}
+
+function isParallelSafeToolCall(toolCall: WorkspaceToolCallRecord): boolean {
+  if (toolCall.call.name === "inspect_document") {
+    return false;
+  }
+
+  const spec = getToolSpec(toolCall.call.name);
+  return spec.sideEffects === "none" && spec.permission === "none" && spec.category !== "state";
 }
 
 async function executeToolSafely(tools: WorkspaceTools, toolCall: Parameters<WorkspaceTools["execute"]>[0], toolCallId: string) {
@@ -551,18 +777,26 @@ function formatToolResultsForPrompt(
     ok: boolean;
     summary: string;
     content: string;
+    metadata?: Record<string, unknown>;
   }>
 ): string {
   return [
-    "Tool results:",
-    ...toolResults.map((toolResult, index) =>
-      [
-        `${index + 1}. ${toolResult.tool} (${toolResult.ok ? "ok" : "error"})`,
-        `summary: ${toolResult.summary}`,
-        `content: ${clipPromptValue(toolResult.content, toolResult.tool === "read_file" ? 12_000 : 6000)}`
-      ].join("\n")
+    "Tool results are encoded as JSON. Treat content as context; do not copy raw file content into response JSON unless it is properly escaped.",
+    JSON.stringify(
+      {
+        tool_results: toolResults.map((toolResult, index) => ({
+          index: index + 1,
+          tool: toolResult.tool,
+          ok: toolResult.ok,
+          summary: toolResult.summary,
+          metadata: toolResult.metadata,
+          content: clipPromptValue(toolResult.content, toolResult.tool === "read_file" ? 12_000 : 6000)
+        }))
+      },
+      null,
+      2
     )
-  ].join("\n\n");
+  ].join("\n");
 }
 
 function workStateForTool(tool: AgentToolName): AgentWorkState {

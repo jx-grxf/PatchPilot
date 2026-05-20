@@ -123,8 +123,12 @@ For source development, clone it, install dependencies, build it, and link the l
 ```bash
 git clone https://github.com/jx-grxf/PatchPilot.git
 cd PatchPilot
-npm install
+npm ci
+npm run typecheck
+npm test
 npm run build
+node dist/cli.js --version
+npm pack --dry-run
 npm link
 ```
 
@@ -221,7 +225,9 @@ Useful slash commands inside the TUI:
 
 The transcript and sidebar have internal scroll areas. With an empty prompt, use left/right to choose the sidebar or transcript, then Page Up/Page Down and Home/End to navigate long sessions.
 
-Experimental file analysis allows `inspect_document` to read supported files outside the workspace after per-path approval when the user provides an absolute path, including PNG/JPEG/WebP/GIF metadata, PDFs, DOCX, Markdown, and text/code files. Experimental memory stores durable workspace notes in `~/.patchpilot/memory.sqlite`; `memory_remember` requires write approval and `memory_search` is read-only.
+The TUI also keeps a live todo panel in the lower transcript area. Providers can update it through the provider-neutral `update_todo` tool, so longer runs show the current task, pending work, and completed checkpoints without hiding the chat transcript.
+
+Experimental file analysis allows `inspect_document` to read supported files outside the workspace after per-path approval when the user provides an absolute path. With Gemini-Wrapper's managed Python bridge, PatchPilot sends PNG/JPEG/WebP/GIF/HEIC images to Gemini Web as file inputs for visual analysis and text extraction. PDFs and DOCX files use local text extraction first, then fall back to Gemini-Wrapper only when local extraction cannot produce useful text. Image OCR remains explicit through `mode:"ocr"`/`mode:"local"`. Experimental memory stores durable workspace notes in `~/.patchpilot/memory.sqlite`; `memory_remember` requires write approval and `memory_search` is read-only.
 
 ## Providers
 
@@ -230,7 +236,7 @@ Experimental file analysis allows `inspect_document` to read supported files out
 | Ollama local | `ollama` | `qwen2.5-coder:7b` | Private local coding work and offline experiments. | Install Ollama, pull a model, run `patchpilot`. |
 | Ollama remote | `ollama` with `--ollama-url` or `/connect` | Host model inventory | Laptop editing with a stronger desktop/server GPU. | Expose Ollama on the host, then use `/connect` or `--ollama-url`. |
 | Google Gemini | `gemini`, `google` | `gemini-2.5-flash` | Fast cloud inference through a Gemini API key. | Store `GEMINI_API_KEY` in `~/.patchpilot/.env` or use onboarding. |
-| Gemini-Wrapper | `gemini-wrapper`, `geminiwrapper` | `auto` | Experimental advanced bridge to the pinned `gemini_webapi` Python wrapper, with optional HTTP-wrapper mode. | Use onboarding to paste `__Secure-1PSID`, then run `/doctor fix` to approve the pinned managed bridge install. PatchPilot creates `~/.patchpilot/gemini-cookies.json`, asks the WebAPI for real available models, and never scans browser cookies. |
+| Gemini-Wrapper | `gemini-wrapper`, `geminiwrapper` | `auto` | Advanced, unofficial opt-in bridge to the pinned `gemini_webapi` Python wrapper, with optional HTTP-wrapper mode. | Read [docs/gemini-wrapper.md](docs/gemini-wrapper.md), use onboarding to paste `__Secure-1PSID`, then run `/doctor fix` to approve the pinned managed bridge install. PatchPilot creates `~/.patchpilot/gemini-cookies.json`, exposes `auto`, `flash-lite`, `flash`, and `pro` shortcuts, asks the WebAPI for real available model descriptors, and never scans browser cookies. |
 | OpenRouter | `openrouter`, `open-router` | `openrouter/auto` | Broad model routing, auto model selection, and free variants. | Store `OPENROUTER_API_KEY` in `~/.patchpilot/.env` or use onboarding. |
 | NVIDIA | `nvidia`, `nim` | `meta/llama-3.1-70b-instruct` | NVIDIA NIM OpenAI-compatible endpoints. | Store `NVIDIA_API_KEY` in `~/.patchpilot/.env` or use onboarding. |
 | Codex CLI | `codex`, `openai`, `openai-codex` | `gpt-5.5` | Using an existing Codex CLI OAuth login. | Run `codex login`, then `patchpilot --provider codex`. |
@@ -241,6 +247,9 @@ Examples:
 patchpilot --provider ollama --model qwen2.5-coder:7b
 patchpilot --provider gemini --model gemini-2.5-flash
 patchpilot --provider gemini-wrapper --model auto
+patchpilot --provider gemini-wrapper --model flash-lite
+patchpilot --provider gemini-wrapper --model flash
+patchpilot --provider gemini-wrapper --model pro
 patchpilot --provider openrouter --model openrouter/auto
 patchpilot --provider nvidia --model meta/llama-3.1-70b-instruct
 patchpilot --provider codex --model gpt-5.5
@@ -264,7 +273,7 @@ PatchPilot caches model discovery for a short TTL inside the running TUI, so nor
 
 PatchPilot reads provider cache telemetry when the provider reports it, for example Codex cached input tokens or OpenRouter `prompt_tokens_details.cached_tokens`, then displays cache hit rate as `cached / input`.
 
-Reasoning support is provider and model dependent. Codex accepts fixed reasoning levels. OpenRouter receives `reasoning.effort` only for models whose metadata advertises reasoning support. Gemini uses Thinking configuration where the selected model exposes it; some Gemini models cannot disable thinking. Gemini-Wrapper stays on wrapper defaults because wrapper compatibility varies. Ollama only receives native `think` values for known thinking model families. NVIDIA reasoning effort is limited to supported GPT-OSS NIM routes.
+Reasoning support is provider and model dependent. Codex accepts fixed reasoning levels. OpenRouter receives `reasoning.effort` only for models whose metadata advertises reasoning support. Gemini uses Thinking configuration where the selected model exposes it; some Gemini models cannot disable thinking. Gemini-Wrapper exposes Gemini Web model shortcuts through live `gemini_webapi` discovery: `flash-lite`, `flash`, and `pro` resolve to the currently listed Web model IDs, while `thinking` remains a legacy compatibility alias only. The wrapper does not expose Gemini Web Denkaufwand as a stable `/reasoning` control yet. Ollama only receives native `think` values for known thinking model families. NVIDIA reasoning effort is limited to supported GPT-OSS NIM routes.
 
 Gemini-Wrapper is intentionally explicit and unofficial. In default `python` bridge mode, PatchPilot creates a managed Python venv and installs the pinned wrapper there only after `/doctor fix` or `patchpilot doctor --fix` approval:
 
@@ -286,7 +295,7 @@ PATCHPILOT_GEMINI_WRAPPER_MIN_INTERVAL_MS=1500
 PATCHPILOT_GEMINI_WRAPPER_TIMEOUT_MS=180000
 ```
 
-The cookie JSON must contain `__Secure-1PSID`; `__Secure-1PSIDTS` is optional for some accounts. If the optional timestamp expires, PatchPilot retries once without it. Transient WebAPI network timeouts are retried inside the bridge. `auto` lets Gemini Web pick its default model and avoids relying on brittle Web model headers. Env alternatives are `GEMINI_SECURE_1PSID` and `GEMINI_SECURE_1PSIDTS`. See [docs/gemini-wrapper.md](docs/gemini-wrapper.md) for the exact setup steps.
+The cookie JSON must contain `__Secure-1PSID`; `__Secure-1PSIDTS` is optional for some accounts. If the optional timestamp expires, PatchPilot retries once without it. Transient WebAPI network timeouts are retried inside the bridge. `auto` lets Gemini Web pick its default model and avoids relying on brittle Web model headers. `flash-lite`, `flash`, and `pro` are PatchPilot shortcuts resolved from live Gemini Web model descriptors; `thinking` is kept only for legacy sessions. In Python bridge mode, `inspect_document` passes supported files through `gemini_webapi` so Gemini Web can analyze screenshots, images, PDFs, and DOCX files directly. Env alternatives are `GEMINI_SECURE_1PSID` and `GEMINI_SECURE_1PSIDTS`. See [docs/gemini-wrapper.md](docs/gemini-wrapper.md) for the exact setup steps.
 
 PatchPilot also sets `GEMINI_COOKIE_PATH` to `~/.patchpilot/gemini-webapi-cache` for the Python process so refreshed wrapper cookies stay in a local owner-only cache instead of a temporary directory.
 

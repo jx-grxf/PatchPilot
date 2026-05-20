@@ -1,14 +1,15 @@
 import { execFile, spawn } from "node:child_process";
 import { constants } from "node:fs";
-import { access, lstat, mkdir, readdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
-import { platform } from "node:os";
+import { access, lstat, mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { platform, tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { inflateRawSync } from "node:zlib";
+import { deflateRawSync, inflateRawSync } from "node:zlib";
 import { MemoryStore } from "./memory.js";
 import type { AgentToolCall, AgentToolName, ApprovalRequest, PermissionDecision, ToolCategory, ToolPermission, ToolResult, ToolRisk, ToolSpec } from "./types.js";
 
 const execFileAsync = promisify(execFile);
+type DocumentAnalyzer = (request: { path: string; prompt: string; signal?: AbortSignal }) => Promise<string>;
 
 const ignoredDirectories = new Set([
   ".git",
@@ -91,6 +92,7 @@ export type WorkspaceToolsOptions = {
   allowWrite: boolean;
   allowShell: boolean;
   allowExternalFileAnalysis?: boolean;
+  documentAnalyzer?: DocumentAnalyzer;
   memoryEnabled?: boolean;
   timeoutMs?: number;
   signal?: AbortSignal;
@@ -98,6 +100,14 @@ export type WorkspaceToolsOptions = {
 };
 
 export const toolSpecs: Record<AgentToolName, ToolSpec> = {
+  update_todo: {
+    name: "update_todo",
+    description: "Update the agent's visible task checklist.",
+    risk: "low",
+    sideEffects: "none",
+    permission: "none",
+    category: "state"
+  },
   list_files: {
     name: "list_files",
     description: "List workspace files under a directory.",
@@ -202,6 +212,30 @@ export const toolSpecs: Record<AgentToolName, ToolSpec> = {
     permission: "write",
     category: "write"
   },
+  edit_file: {
+    name: "edit_file",
+    description: "Edit an existing text file by unique find/replace or by replacing a bounded line range with an optional expected-content guard.",
+    risk: "high",
+    sideEffects: "write",
+    permission: "write",
+    category: "write"
+  },
+  create_pdf: {
+    name: "create_pdf",
+    description: "Create a simple text PDF file in the workspace.",
+    risk: "high",
+    sideEffects: "write",
+    permission: "write",
+    category: "write"
+  },
+  create_docx: {
+    name: "create_docx",
+    description: "Create a simple text DOCX file in the workspace.",
+    risk: "high",
+    sideEffects: "write",
+    permission: "write",
+    category: "write"
+  },
   apply_patch: {
     name: "apply_patch",
     description: "Apply a unified Git patch inside the workspace.",
@@ -247,10 +281,11 @@ export class WorkspaceTools {
   private readonly allowShell: boolean;
   private readonly allowExternalFileAnalysis: boolean;
   private readonly memoryEnabled: boolean;
+  private readonly documentAnalyzer?: DocumentAnalyzer;
   private readonly timeoutMs: number;
   private readonly signal?: AbortSignal;
   private readonly approvalHandler?: (request: ApprovalRequest) => Promise<PermissionDecision>;
-  private readonly sessionApprovals = new Set<ToolPermission>();
+  private readonly sessionApprovals = new Set<string>();
 
   constructor(options: WorkspaceToolsOptions) {
     this.root = path.resolve(options.root);
@@ -258,6 +293,7 @@ export class WorkspaceTools {
     this.allowWrite = options.allowWrite;
     this.allowShell = options.allowShell;
     this.allowExternalFileAnalysis = Boolean(options.allowExternalFileAnalysis);
+    this.documentAnalyzer = options.documentAnalyzer;
     this.memoryEnabled = Boolean(options.memoryEnabled);
     this.timeoutMs = options.timeoutMs ?? 60_000;
     this.signal = options.signal;
@@ -267,6 +303,8 @@ export class WorkspaceTools {
   async execute(call: AgentToolCall): Promise<ToolResult> {
     try {
       switch (call.name) {
+        case "update_todo":
+          return this.updateTodo(call.arguments);
         case "list_files":
           return await this.listFiles(readString(call.arguments.path, "."));
         case "read_file":
@@ -282,7 +320,7 @@ export class WorkspaceTools {
         case "search_text":
           return await this.searchText(readString(call.arguments.query, ""));
         case "inspect_document":
-          return await this.inspectDocument(readString(call.arguments.path, ""));
+          return await this.inspectDocument(readString(call.arguments.path, ""), readString(call.arguments.mode, "auto"));
         case "memory_remember":
           return await this.memoryRemember(readString(call.arguments.content, ""), readStringArray(call.arguments.tags));
         case "memory_search":
@@ -297,6 +335,20 @@ export class WorkspaceTools {
           return await this.listScripts();
         case "write_file":
           return await this.writeFile(readString(call.arguments.path, ""), readString(call.arguments.content, ""));
+        case "edit_file":
+          return await this.editFile(
+            readString(call.arguments.path, ""),
+            readString(call.arguments.find, ""),
+            readString(call.arguments.replace, ""),
+            readNumber(call.arguments.startLine, 0),
+            readNumber(call.arguments.endLine, 0),
+            readString(call.arguments.replacement, ""),
+            readOptionalString(call.arguments.expected)
+          );
+        case "create_pdf":
+          return await this.createPdf(readString(call.arguments.path, ""), readString(call.arguments.content, ""), readString(call.arguments.title, ""));
+        case "create_docx":
+          return await this.createDocx(readString(call.arguments.path, ""), readString(call.arguments.content, ""), readString(call.arguments.title, ""));
         case "apply_patch":
           return await this.applyPatch(readString(call.arguments.patch, ""));
         case "run_script":
@@ -311,6 +363,19 @@ export class WorkspaceTools {
     } catch (error) {
       return denied(error instanceof Error ? error.message : String(error));
     }
+  }
+
+  private updateTodo(argumentsValue: Record<string, unknown>): ToolResult {
+    return {
+      ok: true,
+      summary: "updated visible todo list",
+      content: JSON.stringify({ items: Array.isArray(argumentsValue.items) ? argumentsValue.items : [] }),
+      tool: "update_todo",
+      category: toolSpecs.update_todo.category,
+      metadata: {
+        items: Array.isArray(argumentsValue.items) ? argumentsValue.items : []
+      }
+    };
   }
 
   resolveInsideWorkspace(requestedPath: string): string {
@@ -396,7 +461,8 @@ export class WorkspaceTools {
       summary: `read ${path.relative(this.root, absolutePath)}`,
       content: clippedContent,
       tool: "read_file",
-      category: toolSpecs.read_file.category
+      category: toolSpecs.read_file.category,
+      metadata: textContentMetadata(content)
     };
   }
 
@@ -470,7 +536,7 @@ export class WorkspaceTools {
     };
   }
 
-  private async inspectDocument(requestedPath: string): Promise<ToolResult> {
+  private async inspectDocument(requestedPath: string, mode: string): Promise<ToolResult> {
     if (!requestedPath) {
       return denied("inspect_document requires a path.");
     }
@@ -502,16 +568,37 @@ export class WorkspaceTools {
       return await this.readTextDocument(absolutePath);
     }
 
+    const normalizedMode = normalizeDocumentInspectionMode(mode);
+    const wantsLocalOnly = normalizedMode === "local" || normalizedMode === "ocr";
+
     if (extension === ".pdf") {
-      return await extractPdfText(absolutePath, this.timeoutMs, this.signal);
+      const pdfFallback = await extractPdfText(absolutePath, this.timeoutMs, this.signal);
+      if (wantsLocalOnly || !this.documentAnalyzer || hasUsefulExtractedText(pdfFallback)) {
+        return pdfFallback;
+      }
+
+      const providerResult = await this.analyzeDocumentWithProvider(absolutePath, "Analyze this PDF for PatchPilot. Extract readable text, describe structure, and note important visual or scanned content.");
+      if (providerResult.ok) {
+        return providerResult;
+      }
+      return mergeFallbackDocumentResult(providerResult, pdfFallback);
     }
 
     if (extension === ".docx") {
-      return await extractDocxText(absolutePath);
+      const docxFallback = await extractDocxText(absolutePath);
+      if (wantsLocalOnly || !this.documentAnalyzer || hasUsefulExtractedText(docxFallback)) {
+        return docxFallback;
+      }
+
+      const providerResult = await this.analyzeDocumentWithProvider(absolutePath, "Analyze this DOCX for PatchPilot. Extract the relevant text, headings, and document structure.");
+      if (providerResult.ok) {
+        return providerResult;
+      }
+      return mergeFallbackDocumentResult(providerResult, docxFallback);
     }
 
     if (isImageFile(absolutePath)) {
-      return await inspectImageFile(absolutePath);
+      return await inspectImageFile(absolutePath, wantsLocalOnly ? undefined : this.documentAnalyzer, this.signal, normalizedMode, this.providerAnalysisTimeoutMs());
     }
 
     return denied(`inspect_document does not support ${extension || "this file type"} yet.`);
@@ -525,8 +612,36 @@ export class WorkspaceTools {
       summary: `inspected ${relativePath.startsWith("..") || path.isAbsolute(relativePath) ? absolutePath : relativePath}`,
       content: clip(content, 20_000),
       tool: "inspect_document",
-      category: toolSpecs.inspect_document.category
+      category: toolSpecs.inspect_document.category,
+      metadata: textContentMetadata(content)
     };
+  }
+
+  private async analyzeDocumentWithProvider(absolutePath: string, prompt: string): Promise<ToolResult> {
+    if (!this.documentAnalyzer) {
+      return denied("inspect_document has no provider document analyzer configured.", "inspect_document");
+    }
+
+    try {
+      const analysis = await runDocumentAnalyzer(this.documentAnalyzer, {
+        path: absolutePath,
+        prompt,
+        signal: this.signal
+      }, this.providerAnalysisTimeoutMs());
+      return {
+        ok: true,
+        summary: `analyzed ${path.basename(absolutePath)} with provider file input`,
+        content: clip(analysis, 20_000),
+        tool: "inspect_document",
+        category: toolSpecs.inspect_document.category
+      };
+    } catch (error) {
+      return denied(`provider file analysis failed for ${path.basename(absolutePath)}: ${error instanceof Error ? error.message : String(error)}`, "inspect_document");
+    }
+  }
+
+  private providerAnalysisTimeoutMs(): number {
+    return Math.min(this.timeoutMs, 90_000);
   }
 
   private async memoryRemember(content: string, tags: string[]): Promise<ToolResult> {
@@ -637,27 +752,202 @@ export class WorkspaceTools {
       return denied(`write_file denied sensitive path: ${requestedPath}`);
     }
 
+    const absolutePath = await this.resolveWritePath(requestedPath);
+    const normalized = normalizePossiblyEscapedFileContent(content, absolutePath);
+
     if (!this.allowWrite) {
       const approval = await this.requestApproval("write_file", "write", {
         path: requestedPath,
-        contentLength: content.length
-      }, `Write ${requestedPath} (${content.length} characters).`);
+        contentLength: normalized.content.length
+      }, `Write ${requestedPath} (${normalized.content.length} characters).`);
       if (approval.decision === "deny") {
         return denied("write_file denied by permission policy. Restart with --apply or approve the request in build mode.", "write_file", approval);
       }
     }
 
-    const absolutePath = await this.resolveWritePath(requestedPath);
     await mkdir(path.dirname(absolutePath), { recursive: true });
-    await writeFile(absolutePath, content, "utf8");
+    await writeFile(absolutePath, normalized.content, "utf8");
 
     return {
       ok: true,
       summary: `wrote ${path.relative(this.root, absolutePath)}`,
-      content: `Wrote ${content.length} characters.`,
+      content: `Wrote ${normalized.content.length} characters.${normalized.normalized ? " Normalized escaped newlines before writing." : ""}`,
       tool: "write_file",
       category: toolSpecs.write_file.category,
-      preview: `Write ${path.relative(this.root, absolutePath)}`
+      preview: `Write ${path.relative(this.root, absolutePath)}`,
+      metadata: {
+        normalizedEscapedContent: normalized.normalized
+      }
+    };
+  }
+
+  private async createPdf(requestedPath: string, content: string, title: string): Promise<ToolResult> {
+    if (!requestedPath) {
+      return denied("create_pdf requires a path.", "create_pdf");
+    }
+
+    const targetPath = requestedPath.toLowerCase().endsWith(".pdf") ? requestedPath : `${requestedPath}.pdf`;
+    const approval = await this.requestWriteApproval("create_pdf", targetPath, content.length, "Create PDF");
+    if (approval) {
+      return approval;
+    }
+
+    const absolutePath = await this.resolveWritePath(targetPath);
+    await mkdir(path.dirname(absolutePath), { recursive: true });
+    const pdf = createSimplePdf(content, title || path.basename(targetPath, ".pdf"));
+    await writeFile(absolutePath, pdf);
+
+    return {
+      ok: true,
+      summary: `created PDF ${path.relative(this.root, absolutePath)}`,
+      content: `Created ${pdf.length} byte PDF from ${content.length} characters.`,
+      tool: "create_pdf",
+      category: toolSpecs.create_pdf.category,
+      preview: `Create PDF ${path.relative(this.root, absolutePath)}`
+    };
+  }
+
+  private async createDocx(requestedPath: string, content: string, title: string): Promise<ToolResult> {
+    if (!requestedPath) {
+      return denied("create_docx requires a path.", "create_docx");
+    }
+
+    const targetPath = requestedPath.toLowerCase().endsWith(".docx") ? requestedPath : `${requestedPath}.docx`;
+    const approval = await this.requestWriteApproval("create_docx", targetPath, content.length, "Create DOCX");
+    if (approval) {
+      return approval;
+    }
+
+    const absolutePath = await this.resolveWritePath(targetPath);
+    await mkdir(path.dirname(absolutePath), { recursive: true });
+    const docx = createSimpleDocx(content, title);
+    await writeFile(absolutePath, docx);
+
+    return {
+      ok: true,
+      summary: `created DOCX ${path.relative(this.root, absolutePath)}`,
+      content: `Created ${docx.length} byte DOCX from ${content.length} characters.`,
+      tool: "create_docx",
+      category: toolSpecs.create_docx.category,
+      preview: `Create DOCX ${path.relative(this.root, absolutePath)}`
+    };
+  }
+
+  private async requestWriteApproval(tool: "create_pdf" | "create_docx", requestedPath: string, contentLength: number, action: string): Promise<ToolResult | null> {
+    if (isPlaceholderPath(requestedPath)) {
+      return denied(`${tool} denied placeholder path: ${requestedPath}`, tool);
+    }
+
+    if (isSensitivePath(requestedPath)) {
+      return denied(`${tool} denied sensitive path: ${requestedPath}`, tool);
+    }
+
+    if (this.allowWrite) {
+      return null;
+    }
+
+    const approval = await this.requestApproval(tool, "write", {
+      path: requestedPath,
+      contentLength
+    }, `${action} ${requestedPath} (${contentLength} characters).`);
+    if (approval.decision === "deny") {
+      return denied(`${tool} denied by permission policy. Restart with --apply or approve the request in build mode.`, tool, approval);
+    }
+
+    return null;
+  }
+
+  private async editFile(requestedPath: string, findText: string, replaceText: string, startLine: number, endLine: number, replacementText: string, expectedText: string | undefined): Promise<ToolResult> {
+    if (!requestedPath) {
+      return denied("edit_file requires a path.", "edit_file");
+    }
+
+    if (isPlaceholderPath(requestedPath)) {
+      return denied(`edit_file denied placeholder path: ${requestedPath}`, "edit_file");
+    }
+
+    if (isSensitivePath(requestedPath)) {
+      return denied(`edit_file denied sensitive path: ${requestedPath}`, "edit_file");
+    }
+
+    const usesLineRange = startLine > 0 || endLine > 0;
+    const usesFindReplace = findText.length > 0;
+    if (usesLineRange === usesFindReplace) {
+      return denied("edit_file requires either find/replace or startLine/endLine/replacement.", "edit_file");
+    }
+
+    if (usesLineRange && (startLine < 1 || endLine < startLine)) {
+      return denied("edit_file requires 1-based startLine/endLine values.", "edit_file");
+    }
+
+    const absolutePath = await this.resolveWritePath(requestedPath);
+    if (!isLikelyTextFile(absolutePath)) {
+      return denied(`edit_file supports text/code files. Use write_file only when replacing the full ${path.extname(absolutePath) || "file"} file is intentional.`, "edit_file");
+    }
+
+    const originalContent = await readFile(absolutePath, "utf8").catch((error: unknown) => {
+      throw new Error(`file not found or unreadable: ${requestedPath} (${error instanceof Error ? error.message : String(error)})`);
+    });
+    const normalizedReplaceText = normalizePossiblyEscapedFileContent(replaceText, absolutePath).content;
+    const normalizedReplacementText = normalizePossiblyEscapedFileContent(replacementText, absolutePath).content;
+    const normalizedExpectedText = expectedText === undefined ? undefined : normalizePossiblyEscapedFileContent(expectedText, absolutePath).content;
+    let nextContent = originalContent;
+    let editSummary = "";
+
+    if (usesFindReplace) {
+      const matches = countOccurrences(originalContent, findText);
+      if (matches !== 1) {
+        return denied(`edit_file find text must match exactly once; found ${matches} matches.`, "edit_file");
+      }
+      nextContent = originalContent.replace(findText, normalizedReplaceText);
+      editSummary = `replaced 1 match in ${path.relative(this.root, absolutePath)}`;
+    } else {
+      const lines = originalContent.split(/\r?\n/);
+      if (endLine > lines.length) {
+        return denied(`edit_file line range exceeds file length (${lines.length} lines).`, "edit_file");
+      }
+      const replacementLines = normalizedReplacementText.split(/\r?\n/);
+      const currentRange = lines.slice(startLine - 1, endLine).join("\n");
+      if (normalizedExpectedText !== undefined && currentRange !== normalizedExpectedText) {
+        return denied("edit_file expected content did not match the current line range.", "edit_file");
+      }
+      lines.splice(startLine - 1, endLine - startLine + 1, ...replacementLines);
+      nextContent = lines.join("\n");
+      editSummary = `replaced lines ${startLine}-${endLine} in ${path.relative(this.root, absolutePath)}`;
+    }
+
+    if (nextContent === originalContent) {
+      return denied("edit_file produced no changes.", "edit_file");
+    }
+
+    if (!this.allowWrite) {
+      const approval = await this.requestApproval(
+        "edit_file",
+        "write",
+        {
+          path: requestedPath,
+          startLine: usesLineRange ? startLine : undefined,
+          endLine: usesLineRange ? endLine : undefined,
+          findLength: usesFindReplace ? findText.length : undefined,
+          expectedLength: normalizedExpectedText?.length,
+          replacementLength: usesLineRange ? normalizedReplacementText.length : normalizedReplaceText.length
+        },
+        `Edit ${requestedPath}: ${editSummary}`
+      );
+      if (approval.decision === "deny") {
+        return denied("edit_file denied by permission policy. Restart with --apply or approve the request in build mode.", "edit_file", approval);
+      }
+    }
+
+    await writeFile(absolutePath, nextContent, "utf8");
+
+    return {
+      ok: true,
+      summary: editSummary,
+      content: `Edited ${path.relative(this.root, absolutePath)}.`,
+      tool: "edit_file",
+      category: toolSpecs.edit_file.category,
+      preview: `Edit ${path.relative(this.root, absolutePath)}`
     };
   }
 
@@ -745,6 +1035,11 @@ export class WorkspaceTools {
   private async applyPatch(patchContent: string): Promise<ToolResult> {
     if (!patchContent.trim()) {
       return denied("apply_patch requires a unified patch.", "apply_patch");
+    }
+
+    const validationError = await this.validatePatchTargets(patchContent);
+    if (validationError) {
+      return denied(validationError, "apply_patch");
     }
 
     if (!this.allowWrite) {
@@ -882,7 +1177,8 @@ export class WorkspaceTools {
       arguments: args
     };
 
-    if (this.sessionApprovals.has(permission)) {
+    const approvalKey = `${permission}:${tool}`;
+    if (this.sessionApprovals.has(approvalKey)) {
       return {
         request,
         decision: "allow_session"
@@ -898,7 +1194,7 @@ export class WorkspaceTools {
 
     const decision = await this.approvalHandler(request);
     if (decision === "allow_session") {
-      this.sessionApprovals.add(permission);
+      this.sessionApprovals.add(approvalKey);
     }
 
     return {
@@ -912,7 +1208,7 @@ export class WorkspaceTools {
     const resolvedPath = await realpath(absolutePath).catch((error: unknown) => {
       throw new Error(`file not found or unreadable: ${requestedPath} (${error instanceof Error ? error.message : String(error)})`);
     });
-    await assertInsideWorkspace(await this.rootRealPath, resolvedPath, requestedPath);
+    await this.assertSafeResolvedWorkspacePath(resolvedPath, requestedPath);
     return resolvedPath;
   }
 
@@ -965,16 +1261,51 @@ export class WorkspaceTools {
     const existingParent = await findNearestExistingParent(absolutePath);
     const parentRealPath = await realpath(existingParent);
     await assertInsideWorkspace(rootRealPath, parentRealPath, requestedPath);
+    assertNotSensitiveResolvedPath(rootRealPath, parentRealPath, requestedPath);
 
     const targetStat = await lstat(absolutePath).catch(() => null);
     if (targetStat) {
       const resolvedTargetPath = await realpath(absolutePath).catch((error: unknown) => {
         throw new Error(`file not writable: ${requestedPath} (${error instanceof Error ? error.message : String(error)})`);
       });
-      await assertInsideWorkspace(rootRealPath, resolvedTargetPath, requestedPath);
+      await this.assertSafeResolvedWorkspacePath(resolvedTargetPath, requestedPath);
     }
 
     return absolutePath;
+  }
+
+  private async assertSafeResolvedWorkspacePath(resolvedPath: string, requestedPath: string): Promise<void> {
+    const rootRealPath = await this.rootRealPath;
+    await assertInsideWorkspace(rootRealPath, resolvedPath, requestedPath);
+    assertNotSensitiveResolvedPath(rootRealPath, resolvedPath, requestedPath);
+  }
+
+  private async validatePatchTargets(patchContent: string): Promise<string | null> {
+    for (const targetPath of extractPatchTargetPaths(patchContent)) {
+      if (isPlaceholderPath(targetPath)) {
+        return `apply_patch denied placeholder path: ${targetPath}`;
+      }
+
+      if (isSensitivePath(targetPath) || targetPath === ".patchpilot" || targetPath.startsWith(".patchpilot/")) {
+        return `apply_patch denied sensitive path: ${targetPath}`;
+      }
+
+      try {
+        const absolutePath = this.resolveInsideWorkspace(targetPath);
+        const existingPath = await realpath(absolutePath).catch(() => null);
+        if (existingPath) {
+          await this.assertSafeResolvedWorkspacePath(existingPath, targetPath);
+        } else {
+          const parentRealPath = await realpath(await findNearestExistingParent(absolutePath));
+          await assertInsideWorkspace(await this.rootRealPath, parentRealPath, targetPath);
+          assertNotSensitiveResolvedPath(await this.rootRealPath, parentRealPath, targetPath);
+        }
+      } catch (error) {
+        return error instanceof Error ? error.message : String(error);
+      }
+    }
+
+    return null;
   }
 }
 
@@ -1151,6 +1482,17 @@ async function assertInsideWorkspace(workspaceRealRoot: string, candidatePath: s
   }
 }
 
+function assertNotSensitiveResolvedPath(workspaceRealRoot: string, candidatePath: string, requestedPath: string): void {
+  const relativePath = normalizeSlashPath(path.relative(workspaceRealRoot, candidatePath));
+  if (!relativePath || relativePath.startsWith("..") || path.isAbsolute(relativePath)) {
+    return;
+  }
+
+  if (isSensitivePath(relativePath) || relativePath === ".patchpilot" || relativePath.startsWith(".patchpilot/")) {
+    throw new Error(`Path resolves to sensitive workspace path: ${requestedPath}`);
+  }
+}
+
 async function findNearestExistingParent(absolutePath: string): Promise<string> {
   let currentPath = path.dirname(absolutePath);
   while (true) {
@@ -1253,6 +1595,84 @@ function readString(value: unknown, fallback: string): string {
   return typeof value === "string" ? value : fallback;
 }
 
+function readOptionalString(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
+function countOccurrences(value: string, needle: string): number {
+  if (!needle) {
+    return 0;
+  }
+
+  let count = 0;
+  let index = 0;
+  while (true) {
+    index = value.indexOf(needle, index);
+    if (index === -1) {
+      return count;
+    }
+    count += 1;
+    index += needle.length;
+  }
+}
+
+function normalizePossiblyEscapedFileContent(content: string, filePath: string): { content: string; normalized: boolean } {
+  if (!shouldDecodeEscapedFileContent(content, filePath)) {
+    return {
+      content,
+      normalized: false
+    };
+  }
+
+  const decoded = decodeCommonJsonStringEscapes(content);
+  return {
+    content: decoded,
+    normalized: decoded !== content
+  };
+}
+
+function shouldDecodeEscapedFileContent(content: string, filePath: string): boolean {
+  const escapedNewlines = countOccurrences(content, "\\n");
+  if (escapedNewlines === 0) {
+    return false;
+  }
+
+  const realNewlines = countOccurrences(content, "\n");
+  if (realNewlines > 0 && realNewlines >= escapedNewlines) {
+    return false;
+  }
+
+  const extension = path.extname(filePath).toLowerCase();
+  const likelySourceOrMarkup = textFileExtensions.has(extension);
+  if (!likelySourceOrMarkup) {
+    return false;
+  }
+
+  const hasEscapedQuotes = content.includes('\\"') || content.includes("\\'");
+  const hasSourceMarkers = /(?:<!doctype|<html|<\/\w+>|function\s|const\s|let\s|class\s|import\s|export\s|{\s*\\n|;\s*\\n|#\s|\/\*)/i.test(content);
+  return hasEscapedQuotes || escapedNewlines >= 2 || hasSourceMarkers;
+}
+
+function decodeCommonJsonStringEscapes(content: string): string {
+  return content
+    .replace(/\\r\\n/g, "\n")
+    .replace(/\\n/g, "\n")
+    .replace(/\\r/g, "\n")
+    .replace(/\\t/g, "\t")
+    .replace(/\\"/g, "\"")
+    .replace(/\\'/g, "'");
+}
+
+function textContentMetadata(content: string): Record<string, number> {
+  const realNewlines = countOccurrences(content, "\n");
+  return {
+    lineCount: content.length === 0 ? 0 : realNewlines + 1,
+    realNewlines,
+    literalBackslashN: countOccurrences(content, "\\n"),
+    literalEscapedQuotes: countOccurrences(content, '\\"')
+  };
+}
+
 function readNumber(value: unknown, fallback: number): number {
   if (typeof value === "number" && Number.isFinite(value)) {
     return Math.trunc(value);
@@ -1327,24 +1747,139 @@ function isLikelyTextFile(filePath: string): boolean {
 }
 
 function isImageFile(filePath: string): boolean {
-  return [".png", ".jpg", ".jpeg", ".webp", ".gif"].includes(path.extname(filePath).toLowerCase());
+  return [".png", ".jpg", ".jpeg", ".webp", ".gif", ".heic", ".heif"].includes(path.extname(filePath).toLowerCase());
 }
 
-async function inspectImageFile(filePath: string): Promise<ToolResult> {
+function normalizeDocumentInspectionMode(mode: string): "auto" | "local" | "ocr" {
+  const normalizedMode = mode.trim().toLowerCase();
+  return normalizedMode === "local" || normalizedMode === "ocr" ? normalizedMode : "auto";
+}
+
+function mergeFallbackDocumentResult(providerResult: ToolResult, fallbackResult: ToolResult): ToolResult {
+  if (fallbackResult.ok) {
+    return {
+      ...fallbackResult,
+      content: [
+        "provider_analysis_error:",
+        providerResult.content,
+        "",
+        "local_fallback:",
+        fallbackResult.content
+      ].join("\n")
+    };
+  }
+
+  return providerResult;
+}
+
+function hasUsefulExtractedText(result: ToolResult): boolean {
+  if (!result.ok) {
+    return false;
+  }
+
+  const normalizedContent = result.content.trim().toLowerCase();
+  return Boolean(normalizedContent) && !normalizedContent.startsWith("no extractable ");
+}
+
+async function inspectImageFile(
+  filePath: string,
+  documentAnalyzer?: DocumentAnalyzer,
+  signal?: AbortSignal,
+  mode: "auto" | "local" | "ocr" = "auto",
+  providerTimeoutMs = 90_000
+): Promise<ToolResult> {
   const buffer = await readFile(filePath);
   const dimensions = readImageDimensions(buffer, path.extname(filePath).toLowerCase());
+  const metadata = [
+    `image: ${path.basename(filePath)}`,
+    `type: ${path.extname(filePath).toLowerCase().replace(".", "") || "unknown"}`,
+    `size: ${buffer.length} bytes`,
+    dimensions ? `dimensions: ${dimensions.width}x${dimensions.height}` : "dimensions: unknown"
+  ];
+
+  if (documentAnalyzer) {
+    try {
+      const analysis = await runDocumentAnalyzer(documentAnalyzer, {
+        path: filePath,
+        prompt: "Analyze this image for PatchPilot. Extract all visible text exactly when possible, then describe the important visual elements, layout, UI state, and any errors or warnings.",
+        signal
+      }, providerTimeoutMs);
+      return {
+        ok: true,
+        summary: `analyzed image ${path.basename(filePath)} with provider file input`,
+        content: [...metadata, "", "provider_analysis:", clip(analysis, 20_000)].join("\n"),
+        tool: "inspect_document",
+        category: toolSpecs.inspect_document.category
+      };
+    } catch (error) {
+      metadata.push("", `provider_analysis_error: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  if (mode === "ocr" || mode === "local") {
+    const ocrText = await extractImageTextWithTesseract(filePath, signal);
+    if (ocrText) {
+      metadata.push("", "ocr_text:", clip(ocrText, 20_000));
+    }
+  }
+
+  if (documentAnalyzer && mode === "auto") {
+    metadata.push("", "analysis_status: metadata_only");
+    return {
+      ok: false,
+      summary: `image analysis failed for ${path.basename(filePath)}; only metadata was available`,
+      content: metadata.join("\n"),
+      tool: "inspect_document",
+      category: toolSpecs.inspect_document.category,
+      metadata: {
+        analysisStatus: "metadata_only"
+      }
+    };
+  }
+
   return {
     ok: true,
     summary: `inspected image ${path.basename(filePath)}`,
-    content: [
-      `image: ${path.basename(filePath)}`,
-      `type: ${path.extname(filePath).toLowerCase().replace(".", "") || "unknown"}`,
-      `size: ${buffer.length} bytes`,
-      dimensions ? `dimensions: ${dimensions.width}x${dimensions.height}` : "dimensions: unknown"
-    ].join("\n"),
+    content: metadata.join("\n"),
     tool: "inspect_document",
     category: toolSpecs.inspect_document.category
   };
+}
+
+async function runDocumentAnalyzer(
+  documentAnalyzer: DocumentAnalyzer,
+  request: { path: string; prompt: string; signal?: AbortSignal },
+  timeoutMs = 180_000
+): Promise<string> {
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  let timeout: NodeJS.Timeout | undefined;
+  const timeoutPromise = new Promise<string>((_, reject) => {
+    timeout = setTimeout(() => {
+      controller.abort();
+      reject(new Error(`provider file analysis timed out after ${Math.round(timeoutMs / 1000)}s`));
+    }, timeoutMs);
+  });
+  request.signal?.addEventListener("abort", abort, { once: true });
+  try {
+    return await Promise.race([
+      documentAnalyzer({
+        ...request,
+        signal: controller.signal
+      }),
+      timeoutPromise
+    ]);
+  } catch (error) {
+    if (controller.signal.aborted && !request.signal?.aborted) {
+      throw new Error(`provider file analysis timed out after ${Math.round(timeoutMs / 1000)}s`);
+    }
+    throw error;
+  } finally {
+    if (timeout) {
+      clearTimeout(timeout);
+    }
+    request.signal?.removeEventListener("abort", abort);
+  }
 }
 
 function readImageDimensions(buffer: Buffer, extension: string): { width: number; height: number } | null {
@@ -1404,6 +1939,38 @@ async function extractPdfText(filePath: string, timeoutMs: number, signal?: Abor
   }
 }
 
+async function extractImageTextWithTesseract(filePath: string, signal?: AbortSignal): Promise<string | null> {
+  let cleanupDir = "";
+  let inputPath = filePath;
+  try {
+    const extension = path.extname(filePath).toLowerCase();
+    if (extension === ".heic" || extension === ".heif") {
+      cleanupDir = await mkdtemp(path.join(tmpdir(), "patchpilot-ocr-"));
+      inputPath = path.join(cleanupDir, "image.png");
+      await execFileAsync("sips", ["-s", "format", "png", filePath, "--out", inputPath], {
+        timeout: 60_000,
+        signal,
+        windowsHide: true
+      });
+    }
+
+    const { stdout } = await execFileAsync("tesseract", [inputPath, "stdout", "-l", "eng+deu"], {
+      timeout: 90_000,
+      maxBuffer: 2_000_000,
+      signal,
+      windowsHide: true
+    });
+    const text = stdout.trim();
+    return text || null;
+  } catch {
+    return null;
+  } finally {
+    if (cleanupDir) {
+      await rm(cleanupDir, { recursive: true, force: true });
+    }
+  }
+}
+
 async function extractDocxText(filePath: string): Promise<ToolResult> {
   try {
     const archive = await readFile(filePath);
@@ -1417,6 +1984,141 @@ async function extractDocxText(filePath: string): Promise<ToolResult> {
   } catch (error) {
     return denied(`DOCX text extraction needs unzip on PATH and a valid .docx file. ${error instanceof Error ? error.message : String(error)}`);
   }
+}
+
+function createSimplePdf(content: string, title: string): Buffer {
+  const lines = wrapPdfText(`${title ? `${title}\n\n` : ""}${content}`, 92).slice(0, 44);
+  const escapedLines = lines.map((line) => `(${escapePdfString(line)}) Tj`).join("\n0 -14 Td\n");
+  const stream = `BT\n/F1 11 Tf\n50 780 Td\n14 TL\n${escapedLines}\nET`;
+  const objects = [
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    `<< /Length ${Buffer.byteLength(stream, "utf8")} >>\nstream\n${stream}\nendstream`
+  ];
+  const chunks: string[] = ["%PDF-1.4\n"];
+  const offsets = [0];
+  for (const [index, object] of objects.entries()) {
+    offsets.push(Buffer.byteLength(chunks.join(""), "utf8"));
+    chunks.push(`${index + 1} 0 obj\n${object}\nendobj\n`);
+  }
+  const xrefOffset = Buffer.byteLength(chunks.join(""), "utf8");
+  chunks.push(`xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`);
+  for (const offset of offsets.slice(1)) {
+    chunks.push(`${offset.toString().padStart(10, "0")} 00000 n \n`);
+  }
+  chunks.push(`trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF\n`);
+  return Buffer.from(chunks.join(""), "utf8");
+}
+
+function wrapPdfText(value: string, width: number): string[] {
+  const lines: string[] = [];
+  for (const rawLine of value.replace(/\r\n?/g, "\n").split("\n")) {
+    let line = rawLine.trimEnd();
+    while (line.length > width) {
+      const breakAt = Math.max(line.lastIndexOf(" ", width), 1);
+      lines.push(line.slice(0, breakAt).trimEnd());
+      line = line.slice(breakAt).trimStart();
+    }
+    lines.push(line);
+  }
+  return lines;
+}
+
+function escapePdfString(value: string): string {
+  return value.replaceAll("\\", "\\\\").replaceAll("(", "\\(").replaceAll(")", "\\)");
+}
+
+function createSimpleDocx(content: string, title: string): Buffer {
+  const paragraphs = `${title ? `${title}\n\n` : ""}${content}`
+    .replace(/\r\n?/g, "\n")
+    .split(/\n{2,}/)
+    .map((paragraph) => paragraph.trim())
+    .filter(Boolean);
+  const documentXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>${paragraphs
+    .map((paragraph) => `<w:p><w:r><w:t xml:space="preserve">${escapeXml(paragraph)}</w:t></w:r></w:p>`)
+    .join("")}<w:sectPr><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440"/></w:sectPr></w:body></w:document>`;
+
+  return createZip([
+    {
+      name: "[Content_Types].xml",
+      content: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>`
+    },
+    {
+      name: "_rels/.rels",
+      content: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>`
+    },
+    {
+      name: "word/document.xml",
+      content: documentXml
+    }
+  ]);
+}
+
+function createZip(entries: Array<{ name: string; content: string }>): Buffer {
+  const localRecords: Buffer[] = [];
+  const centralRecords: Buffer[] = [];
+  let offset = 0;
+  for (const entry of entries) {
+    const name = Buffer.from(entry.name);
+    const content = Buffer.from(entry.content, "utf8");
+    const compressed = deflateRawSync(content);
+    const crc = crc32(content);
+
+    const localHeader = Buffer.alloc(30);
+    localHeader.writeUInt32LE(0x04034b50, 0);
+    localHeader.writeUInt16LE(20, 4);
+    localHeader.writeUInt16LE(8, 8);
+    localHeader.writeUInt32LE(crc, 14);
+    localHeader.writeUInt32LE(compressed.length, 18);
+    localHeader.writeUInt32LE(content.length, 22);
+    localHeader.writeUInt16LE(name.length, 26);
+    const localRecord = Buffer.concat([localHeader, name, compressed]);
+    localRecords.push(localRecord);
+
+    const centralHeader = Buffer.alloc(46);
+    centralHeader.writeUInt32LE(0x02014b50, 0);
+    centralHeader.writeUInt16LE(20, 4);
+    centralHeader.writeUInt16LE(20, 6);
+    centralHeader.writeUInt16LE(8, 10);
+    centralHeader.writeUInt32LE(crc, 16);
+    centralHeader.writeUInt32LE(compressed.length, 20);
+    centralHeader.writeUInt32LE(content.length, 24);
+    centralHeader.writeUInt16LE(name.length, 28);
+    centralHeader.writeUInt32LE(offset, 42);
+    centralRecords.push(Buffer.concat([centralHeader, name]));
+    offset += localRecord.length;
+  }
+
+  const centralDirectory = Buffer.concat(centralRecords);
+  const endRecord = Buffer.alloc(22);
+  endRecord.writeUInt32LE(0x06054b50, 0);
+  endRecord.writeUInt16LE(entries.length, 8);
+  endRecord.writeUInt16LE(entries.length, 10);
+  endRecord.writeUInt32LE(centralDirectory.length, 12);
+  endRecord.writeUInt32LE(offset, 16);
+  return Buffer.concat([...localRecords, centralDirectory, endRecord]);
+}
+
+function crc32(buffer: Buffer): number {
+  let crc = 0xffffffff;
+  for (const byte of buffer) {
+    crc ^= byte;
+    for (let index = 0; index < 8; index += 1) {
+      crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1));
+    }
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function escapeXml(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;");
 }
 
 function readZipEntryText(archive: Buffer, entryName: string): string {
@@ -1508,16 +2210,29 @@ function clip(content: string, maxLength: number): string {
 }
 
 function previewPatch(patchContent: string): string {
-  const changedFiles = patchContent
-    .split(/\r?\n/)
-    .filter((line) => line.startsWith("+++ ") || line.startsWith("--- "))
-    .map((line) => line.slice(4).replace(/^a\//, "").replace(/^b\//, ""))
-    .filter((file) => file !== "/dev/null");
+  const changedFiles = extractPatchTargetPaths(patchContent);
   const uniqueFiles = [...new Set(changedFiles)].slice(0, 6);
   const fileSummary = uniqueFiles.length > 0 ? uniqueFiles.join(", ") : "unknown files";
   const added = patchContent.split(/\r?\n/).filter((line) => line.startsWith("+") && !line.startsWith("+++")).length;
   const removed = patchContent.split(/\r?\n/).filter((line) => line.startsWith("-") && !line.startsWith("---")).length;
   return `Apply patch to ${fileSummary} (+${added}/-${removed}).`;
+}
+
+function extractPatchTargetPaths(patchContent: string): string[] {
+  const paths: string[] = [];
+  for (const line of patchContent.split(/\r?\n/)) {
+    if (!line.startsWith("+++ ") && !line.startsWith("--- ")) {
+      continue;
+    }
+
+    const rawPath = line.slice(4).trim().split(/\s+/)[0] ?? "";
+    const normalizedPath = rawPath.replace(/^a\//, "").replace(/^b\//, "");
+    if (normalizedPath && normalizedPath !== "/dev/null") {
+      paths.push(normalizedPath);
+    }
+  }
+
+  return [...new Set(paths)];
 }
 
 function validateShellCommand(command: string, workspaceRoot: string): string | null {

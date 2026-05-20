@@ -117,6 +117,36 @@ describe("OllamaClient", () => {
     );
   });
 
+  it("rejects empty chat responses with a clear provider error", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          message: {
+            content: "   "
+          }
+        }),
+        {
+          status: 200,
+          headers: {
+            "Content-Type": "application/json"
+          }
+        }
+      )
+    );
+
+    await expect(
+      new OllamaClient().chat({
+        model: "qwen2.5-coder:7b",
+        messages: [
+          {
+            role: "user",
+            content: "hello"
+          }
+        ]
+      })
+    ).rejects.toThrow('Ollama returned an empty response for model "qwen2.5-coder:7b"');
+  });
+
   it("lists running models from the Ollama ps endpoint", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(

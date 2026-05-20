@@ -9,12 +9,15 @@ import { savePatchPilotEnvValues } from "../core/env.js";
 import { defaultGeminiModel, readGeminiApiKey } from "../core/gemini.js";
 import {
   defaultGeminiWrapperModel,
+  geminiWrapperCuratedModels,
+  geminiWrapperShortcutModels,
   geminiWrapperRequiresApiKey,
   readGeminiWrapperApiKey,
   readGeminiWrapperBaseUrl,
   readGeminiWrapperCookiesJson,
   readGeminiWrapperMode,
   readGeminiWrapperPythonCommand,
+  importGeminiWrapperBrowserCookies,
   saveGeminiWrapperCookieFile
 } from "../core/geminiWrapper.js";
 import { createModelClient } from "../core/modelClient.js";
@@ -25,8 +28,8 @@ import { ensurePatchPilotGitignore, patchPilotInitPrompt } from "../core/project
 import { formatReasoningSupport } from "../core/reasoning.js";
 import { buildSessionResumeContext, listWorkspaceSessions, loadSessionSummary, SessionStore } from "../core/session.js";
 import { addTelemetryToSession, emptySessionTelemetry, estimateTokens } from "../core/tokenAccounting.js";
-import type { AgentEvent, AgentWorkState, ApprovalRequest, ModelProvider, ModelTelemetry, PermissionDecision, SessionTelemetry } from "../core/types.js";
-import { WorkspaceTools } from "../core/workspace.js";
+import type { AgentEvent, AgentTodoItem, AgentToolName, AgentWorkState, ApprovalRequest, ModelDescriptor, ModelProvider, ModelTelemetry, PermissionDecision, SessionTelemetry } from "../core/types.js";
+import { getToolSpec, WorkspaceTools } from "../core/workspace.js";
 import { ApprovalPanel } from "./components/ApprovalPanel.js";
 import { CommandSuggestions, type CommandSuggestionItem } from "./components/CommandSuggestions.js";
 import { Composer, FooterHints } from "./components/Composer.js";
@@ -53,7 +56,8 @@ type PaletteSuggestion = CommandSuggestionItem & {
 };
 
 const modelCacheTtlMs = 5 * 60_000;
-const modelCache = new Map<string, { models: string[]; expiresAt: number }>();
+const modelCache = new Map<string, { models: string[]; descriptors: ModelDescriptor[]; expiresAt: number }>();
+const modelDescriptorIndex = new Map<string, ModelDescriptor>();
 
 export function App(props: PatchPilotAppProps): React.ReactElement {
   const { exit } = useApp();
@@ -78,6 +82,8 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   const usedOllamaModelsRef = useRef(new Set<string>());
   const [lines, setLines] = useState<LogLine[]>([]);
   const [advisorNotes, setAdvisorNotes] = useState<AdvisorNote[]>([]);
+  const [todos, setTodos] = useState<AgentTodoItem[]>([]);
+  const [todoFrame, setTodoFrame] = useState(0);
   const [isRunning, setIsRunning] = useState(false);
   const [status, setStatus] = useState("idle");
   const [workState, setWorkState] = useState<AgentWorkState>("idle");
@@ -146,20 +152,37 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   const paletteReservedHeight = !onboarding && paletteItems.length > 0 ? Math.min(8, paletteItems.length) + 4 : 0;
   const composerReservedHeight = onboarding || experimentalOpen ? 0 : 2;
   const footerReservedHeight = onboarding || experimentalOpen ? 0 : 1;
-  const approvalReservedHeight = !onboarding && !experimentalOpen && (pendingApproval || bypassConfirmation) ? 6 : 0;
+  const approvalReservedHeight = !onboarding && !experimentalOpen && (pendingApproval || bypassConfirmation) ? 7 : 0;
   const panelHeight = Math.max(8, rootHeight - headerReservedHeight - composerReservedHeight - paletteReservedHeight - footerReservedHeight - approvalReservedHeight);
   const transcriptWidth = Math.max(42, terminalColumns - 38);
   const scrollStep = Math.max(4, Math.floor(panelHeight * 0.8));
   const appendLine = useCallback((line: LogLineInput) => {
-    setLines((currentLines) => [
-      ...currentLines.slice(-maxTranscriptLines),
-      {
-        ...line,
-        kind: line.kind ?? defaultLogKind(line),
-        id: Date.now() + Math.random()
-      }
-    ]);
+    setLines((currentLines) =>
+      [
+        ...currentLines,
+        {
+          ...line,
+          kind: line.kind ?? defaultLogKind(line),
+          id: Date.now() + Math.random()
+        }
+      ].slice(-maxTranscriptLines)
+    );
   }, []);
+
+  useEffect(() => {
+    if (!isRunning || todos.every((todo) => todo.status !== "in_progress")) {
+      setTodoFrame(0);
+      return;
+    }
+
+    const timer = setInterval(() => {
+      setTodoFrame((currentFrame) => (currentFrame + 1) % 4);
+    }, 180);
+
+    return () => {
+      clearInterval(timer);
+    };
+  }, [isRunning, todos]);
 
   const resolveApproval = useCallback(
     (decision: PermissionDecision) => {
@@ -169,14 +192,17 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
 
       approvalResolverRef.current(decision);
       approvalResolverRef.current = null;
+      const nextWorkState = decision === "deny" ? "error" : workStateForApprovalTool(pendingApproval.tool);
       setInput("");
+      setStatus(decision === "deny" ? `${pendingApproval.tool} denied` : `${pendingApproval.tool} approved; running`);
+      setWorkState(nextWorkState);
       appendLine({
         kind: "approval",
         tone: decision === "deny" ? "warning" : "success",
         label: "approval",
         text: `${pendingApproval.tool} ${decision.replace("_", " ")}`,
         detail: pendingApproval.preview,
-        workState: "waiting_approval",
+        workState: nextWorkState,
         tool: pendingApproval.tool
       });
       setPendingApproval(null);
@@ -358,6 +384,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       setModelOptions(details.models);
       modelCache.set(`ollama:${verifiedHost.url}`, {
         models: details.models,
+        descriptors: details.models.map((model) => ({ id: model, displayName: model })),
         expiresAt: Date.now() + modelCacheTtlMs
       });
       setSettings((currentSettings) => ({
@@ -701,8 +728,8 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           return;
         }
 
-        if (choice === 0 && onboarding.hasExistingKey) {
-          if (onboarding.provider === "gemini-wrapper") {
+        if (onboarding.provider === "gemini-wrapper") {
+          if (choice === 0 && onboarding.hasExistingKey) {
             setOnboarding({
               step: "gemini-wrapper-model-mode"
             });
@@ -711,13 +738,57 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
             return;
           }
 
+          const importChoice = onboarding.hasExistingKey ? 1 : 0;
+          if (choice === importChoice) {
+            setOnboardingBusyMessage("Importing Gemini browser cookies...");
+            try {
+              const result = await importGeminiWrapperBrowserCookies();
+              process.env.PATCHPILOT_GEMINI_WRAPPER_MODE = "python";
+              process.env.PATCHPILOT_GEMINI_WRAPPER_COOKIES_JSON = result.cookiesPath;
+              savePatchPilotEnvValues({
+                PATCHPILOT_PROVIDER: "gemini-wrapper",
+                PATCHPILOT_MODEL: defaultGeminiWrapperModel,
+                PATCHPILOT_GEMINI_WRAPPER_MODE: "python",
+                PATCHPILOT_GEMINI_WRAPPER_COOKIES_JSON: result.cookiesPath
+              });
+              setOnboardingNotice({
+                tone: "success",
+                text: `Imported ${result.cookieCount} Gemini browser cookies from ${result.source}.`,
+                detail: `${result.cookiesPath} was written with owner-only permissions. Secret values were not printed.`
+              });
+              setOnboarding({
+                step: "gemini-wrapper-model-mode"
+              });
+              setOnboardingInput("");
+              setOnboardingIndex(0);
+            } catch (error) {
+              setOnboardingNotice({
+                tone: "warning",
+                text: "Gemini browser cookie import failed.",
+                detail: error instanceof Error ? error.message : String(error)
+              });
+            } finally {
+              setOnboardingBusyMessage(null);
+            }
+            return;
+          }
+
+          setOnboarding({
+            step: "gemini-wrapper-psid"
+          });
+          setOnboardingInput("");
+          setOnboardingIndex(0);
+          return;
+        }
+
+        if (choice === 0 && onboarding.hasExistingKey) {
           await openModelSelection(onboarding.provider, {
             currentModel: defaultModelForProvider(onboarding.provider, settings.model)
           });
           return;
         }
 
-        setOnboarding(onboarding.provider === "gemini-wrapper" ? { step: "gemini-wrapper-psid" } : {
+        setOnboarding({
           step: `${onboarding.provider}-key` as "gemini-key" | "openrouter-key" | "nvidia-key"
         });
         setOnboardingInput("");
@@ -805,23 +876,27 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           return;
         }
 
-        if (choice === 0) {
+        const curatedModel = geminiWrapperShortcutModels[choice];
+        if (curatedModel) {
           setTelemetry(null);
-          setModelOptions([defaultGeminiWrapperModel]);
+          const shortcutDescriptors = geminiWrapperShortcutModels.map((model) => ({ id: model, displayName: model }));
+          rememberModelDescriptors(shortcutDescriptors);
+          setModelOptions([...geminiWrapperShortcutModels]);
           setSettings((currentSettings) => ({
             ...currentSettings,
             provider: "gemini-wrapper",
-            model: defaultGeminiWrapperModel
+            model: curatedModel
           }));
           savePatchPilotEnvValues({
             PATCHPILOT_PROVIDER: "gemini-wrapper",
-            PATCHPILOT_MODEL: defaultGeminiWrapperModel,
+            PATCHPILOT_MODEL: curatedModel,
             PATCHPILOT_ONBOARDING_COMPLETE: "1"
           });
+          process.env.PATCHPILOT_ONBOARDING_COMPLETE = "1";
           appendLine({
             tone: "success",
             label: "onboarding",
-            text: `ready: gemini-wrapper using ${defaultGeminiWrapperModel}`
+            text: `ready: gemini-wrapper using ${curatedModel}`
           });
           closeOnboarding();
           return;
@@ -976,7 +1051,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         return;
       }
 
-      const visibleModels = selectableModels(onboardingInput, onboarding.models);
+      const visibleModels = selectableModels(onboardingInput, onboarding.models, formatModelLabel);
       const selectedModel = visibleModels[onboardingIndex] ?? selectModelFromInput(value, visibleModels, onboardingIndex, {
         allowManual: onboarding.provider !== "ollama" && onboarding.provider !== "gemini-wrapper"
       });
@@ -1000,6 +1075,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         PATCHPILOT_ONBOARDING_COMPLETE: "1",
         ...(onboarding.provider === "ollama" ? { PATCHPILOT_OLLAMA_URL: activeHost?.host.url ?? settings.ollamaUrl } : {})
       });
+      process.env.PATCHPILOT_ONBOARDING_COMPLETE = "1";
       appendLine({
         tone: "success",
         label: "onboarding",
@@ -1026,6 +1102,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
 
       setInput("");
       setTranscriptScrollOffset(0);
+      setTodos([]);
       setIsRunning(true);
       appendLine({
         kind: "user",
@@ -1112,10 +1189,27 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
             );
           }
 
+          if (event.type === "todo") {
+            setTodos(event.items);
+            setStatus(event.summary);
+            continue;
+          }
+
           setStatus(eventToStatus(event));
           appendLine(eventToLine(event));
         }
       } catch (error) {
+        if (abortControllerRef.current?.signal.aborted) {
+          appendLine({
+            kind: "status",
+            tone: "warning",
+            label: "stop",
+            text: "Stopped by user.",
+            workState: "done"
+          });
+          return;
+        }
+
         appendLine({
           kind: "error",
           tone: "danger",
@@ -1125,8 +1219,6 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         });
       } finally {
         abortControllerRef.current = null;
-        setStatus("idle");
-        setWorkState("idle");
         setIsRunning(false);
       }
     },
@@ -1341,14 +1433,14 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
               return;
             }
             const nextModel = selectModelFromInput(requestedModel, models, undefined, {
-              allowManual: settings.provider !== "ollama" && settings.provider !== "gemini-wrapper"
+              allowManual: settings.provider !== "ollama"
             });
             if (!nextModel) {
               appendLine({
                 tone: "warning",
                 label: "model",
                 text: `No unique model match for "${requestedModel}".`,
-                detail: formatModelOptions(selectableModels(requestedModel, models).slice(0, 12), settings.model)
+                detail: formatModelOptions(selectableModels(requestedModel, models, formatModelLabel).slice(0, 12), settings.model)
               });
               return;
             }
@@ -1367,7 +1459,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
             }
 
             const nextModel = selectModelFromInput(requestedModel, installedModels, undefined, {
-              allowManual: settings.provider !== "ollama" && settings.provider !== "gemini-wrapper"
+              allowManual: settings.provider !== "ollama"
             });
             if (!nextModel) {
               appendLine({
@@ -1400,7 +1492,13 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
                     ? "Pull a model on the selected host first."
                     : settings.provider === "gemini"
                       ? "Check GEMINI_API_KEY in PatchPilot config."
-                      : "Run codex login first."
+                      : settings.provider === "gemini-wrapper"
+                        ? "Check gemini_webapi install and PATCHPILOT_GEMINI_WRAPPER_COOKIES_JSON in PatchPilot config."
+                        : settings.provider === "openrouter"
+                          ? "Check OPENROUTER_API_KEY in PatchPilot config."
+                          : settings.provider === "nvidia"
+                            ? "Check NVIDIA_API_KEY in PatchPilot config."
+                            : "Run codex login first."
               });
               return;
             }
@@ -1700,6 +1798,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         case "clear":
           setLines([]);
           setAdvisorNotes([]);
+          setTodos([]);
           setTelemetry(null);
           setResumeContext("");
           setSessionTelemetry(emptySessionTelemetry());
@@ -1722,6 +1821,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           await sessionStoreRef.current.create();
           setLines([]);
           setAdvisorNotes([]);
+          setTodos([]);
           setTelemetry(null);
           setSessionTelemetry(emptySessionTelemetry());
           setPendingApproval(null);
@@ -2031,7 +2131,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         return;
       }
 
-      const optionCount = onboarding.step === "model" ? selectableModels(onboardingInput, onboarding.models).length : getOnboardingOptionCount(onboarding);
+      const optionCount = onboarding.step === "model" ? selectableModels(onboardingInput, onboarding.models, formatModelLabel).length : getOnboardingOptionCount(onboarding);
       if (optionCount > 0 && key.upArrow) {
         setOnboardingIndex((currentIndex) => (currentIndex - 1 + optionCount) % optionCount);
         return;
@@ -2233,6 +2333,8 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           input={onboardingInput}
           busyMessage={onboardingBusyMessage}
           notice={onboardingNotice}
+          formatModelLabel={formatModelLabel}
+          formatModelDescription={formatModelDescription}
           onInputChange={setOnboardingInput}
           onInputSubmit={(value) => void handleOnboardingSubmit(value)}
         />
@@ -2268,6 +2370,8 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
               height={panelHeight}
               width={transcriptWidth}
               scrollOffset={transcriptScrollOffset}
+              todos={todos}
+              todoFrame={todoFrame}
             />
             <ApprovalPanel request={pendingApproval} bypassConfirmation={bypassConfirmation} />
             <Composer
@@ -2297,16 +2401,23 @@ async function loadAvailableModels(
   const cacheKey = modelCacheKey(provider, ollamaUrl);
   const cachedModels = modelCache.get(cacheKey);
   if (!refresh && cachedModels && cachedModels.expiresAt > Date.now()) {
+    rememberModelDescriptors(cachedModels.descriptors);
     setModelOptions(cachedModels.models);
     return cachedModels.models;
   }
 
-  const models = await createModelClient({
+  const client = createModelClient({
     provider,
     ollamaUrl
-  }).listModels();
+  });
+  const descriptors = client.listModelDescriptors
+    ? await client.listModelDescriptors()
+    : (await client.listModels()).map((model) => ({ id: model, displayName: model }));
+  const models = descriptors.map((model) => model.id);
+  rememberModelDescriptors(descriptors);
   modelCache.set(cacheKey, {
     models,
+    descriptors,
     expiresAt: Date.now() + modelCacheTtlMs
   });
   setModelOptions(models);
@@ -2329,6 +2440,18 @@ function modelCacheKey(provider: ModelProvider, ollamaUrl: string): string {
   }
 
   return `${provider}:default`;
+}
+
+function rememberModelDescriptors(descriptors: ModelDescriptor[]): void {
+  for (const descriptor of descriptors) {
+    modelDescriptorIndex.set(descriptor.id, descriptor);
+    if (descriptor.modelName) {
+      modelDescriptorIndex.set(descriptor.modelName, descriptor);
+    }
+    if (descriptor.displayName) {
+      modelDescriptorIndex.set(descriptor.displayName, descriptor);
+    }
+  }
 }
 
 async function loadKnownOrAvailableModels(
@@ -2412,7 +2535,7 @@ async function switchModel(
   appendLine({
     tone: installedModels.includes(nextModel) ? "success" : "warning",
     label: "model",
-    text: installedModels.includes(nextModel) ? `switched to ${nextModel}` : `switched to unverified ${provider} model ${nextModel}`,
+    text: installedModels.includes(nextModel) ? `switched to ${formatModelLabel(nextModel)}` : `switched to unverified ${provider} model ${nextModel}`,
     detail: installedModels.includes(nextModel) ? undefined : "The provider did not list this model in discovery. PatchPilot will try it and surface the provider error if it is unavailable."
   });
   if (provider === "openrouter" && isOpenRouterFreeModel(nextModel)) {
@@ -2542,11 +2665,11 @@ function buildCommandSuggestionItems(options: {
       });
     } else {
       items.unshift(
-        ...selectableModels(modelQuery, options.modelOptions).slice(0, 8).map((model) => ({
+        ...selectableModels(modelQuery, options.modelOptions, formatModelLabel).slice(0, 8).map((model) => ({
           key: `model-${model}`,
           category: "model",
-          label: model,
-          detail: `${model === options.currentModel ? "current" : "available"}  ${options.provider}`,
+          label: formatModelLabel(model),
+          detail: `${model === options.currentModel ? "current" : "available"}  ${options.provider}${formatModelDescription(model)}`,
           command: `/model ${model}`,
           execute: true
         }))
@@ -2564,9 +2687,12 @@ function getOnboardingOptionCount(onboarding: OnboardingState): number {
     case "host":
       return onboarding.hosts.length + 1;
     case "api-key-choice":
+      if (onboarding.provider === "gemini-wrapper") {
+        return onboarding.hasExistingKey ? 3 : 2;
+      }
       return onboarding.hasExistingKey ? 2 : 1;
     case "gemini-wrapper-model-mode":
-      return 2;
+      return geminiWrapperShortcutModels.length + 1;
     case "model":
       return onboarding.models.length;
     default:
@@ -2657,7 +2783,12 @@ function selectModelFromInput(value: string, models: string[], selectedIndex?: n
     return normalizedValue;
   }
 
-  const matches = selectableModels(normalizedValue, models);
+  const labelMatch = models.find((model) => formatModelLabel(model).toLowerCase() === normalizedValue.toLowerCase());
+  if (labelMatch) {
+    return labelMatch;
+  }
+
+  const matches = selectableModels(normalizedValue, models, formatModelLabel);
   if (matches.length === 1) {
     return matches[0] ?? null;
   }
@@ -2670,7 +2801,7 @@ function isPlausibleCloudModelId(value: string): boolean {
 }
 
 function canUseUnverifiedCloudModel(provider: ModelProvider, model: string): boolean {
-  return provider !== "ollama" && provider !== "gemini-wrapper" && isPlausibleCloudModelId(model);
+  return provider !== "ollama" && isPlausibleCloudModelId(model);
 }
 
 function defaultModelForProvider(provider: ModelProvider, currentModel: string): string {
@@ -2683,7 +2814,7 @@ function defaultModelForProvider(provider: ModelProvider, currentModel: string):
   }
 
   if (provider === "gemini-wrapper") {
-    return currentModel === defaultGeminiWrapperModel || currentModel.startsWith("gemini-3-") ? currentModel : defaultGeminiWrapperModel;
+    return geminiWrapperCuratedModels.includes(currentModel as typeof geminiWrapperCuratedModels[number]) || currentModel.startsWith("gemini-") || modelDescriptorIndex.has(currentModel) ? currentModel : defaultGeminiWrapperModel;
   }
 
   if (provider === "gemini") {
@@ -2823,11 +2954,20 @@ function eventToLine(event: AgentEvent): LogLineInput {
         tone: event.ok ? "success" : "warning",
         label: event.name,
         text: event.summary,
+        detail: event.ok ? previewToolContent(event.content) : event.content,
         workState: event.workState,
         tool: event.name,
         toolCallId: event.toolCallId,
         category: event.category,
         preview: event.preview
+      };
+    case "todo":
+      return {
+        kind: "status",
+        tone: "muted",
+        label: "todo",
+        text: event.summary,
+        workState: event.workState
       };
     case "approval":
       return {
@@ -2867,6 +3007,18 @@ function eventToLine(event: AgentEvent): LogLineInput {
   }
 }
 
+function previewToolContent(content: string | undefined): string | undefined {
+  const value = content?.trim();
+  if (!value) {
+    return undefined;
+  }
+
+  const lines = value.split(/\r?\n/);
+  const preview = lines.slice(0, 6).join("\n");
+  const suffix = lines.length > 6 ? `\n...[${lines.length - 6} more lines]` : "";
+  return `${preview}${suffix}`;
+}
+
 function eventToStatus(event: AgentEvent): string {
   if (event.type === "status") {
     return event.message;
@@ -2874,6 +3026,10 @@ function eventToStatus(event: AgentEvent): string {
 
   if (event.type === "tool") {
     return `${event.name}: ${event.summary}`;
+  }
+
+  if (event.type === "todo") {
+    return event.summary;
   }
 
   if (event.type === "subagent") {
@@ -2885,6 +3041,20 @@ function eventToStatus(event: AgentEvent): string {
   }
 
   return event.type;
+}
+
+function workStateForApprovalTool(tool: AgentToolName): AgentWorkState {
+  const category = getToolSpec(tool).category;
+  if (category === "write") {
+    return "editing";
+  }
+  if (category === "shell" || category === "test") {
+    return "verifying";
+  }
+  if (category === "read" || category === "search" || category === "document" || category === "git") {
+    return "reading";
+  }
+  return "inspecting";
 }
 
 function defaultLogKind(line: LogLineInput): LogLine["kind"] {
@@ -2921,7 +3091,23 @@ function formatModelOptions(models: string[], currentModel: string): string {
   return models
     .map((model, index) => {
       const currentMarker = model === currentModel ? "  current" : "";
-      return `${index + 1}. ${model}${currentMarker}`;
+      return `${index + 1}. ${formatModelLabel(model)}${formatModelDescription(model)}${currentMarker}`;
     })
     .join("\n");
+}
+
+function formatModelLabel(model: string): string {
+  const descriptor = modelDescriptorIndex.get(model);
+  const label = descriptor?.displayName || descriptor?.modelName || model;
+  return label === model ? model : `${label} (${model})`;
+}
+
+function formatModelDescription(model: string): string {
+  const descriptor = modelDescriptorIndex.get(model);
+  if (!descriptor?.description) {
+    return "";
+  }
+
+  const legacySuffix = descriptor.legacy ? " legacy" : "";
+  return `  ${descriptor.description}${legacySuffix}`;
 }
