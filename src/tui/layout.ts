@@ -17,7 +17,7 @@ export function computeComposerLayout(options: {
   minHeight?: number;
   maxHeight?: number;
 }): ComposerLayout {
-  const promptWidth = options.promptWidth ?? 9;
+  const promptWidth = options.promptWidth ?? 8;
   const minHeight = options.minHeight ?? 2;
   const maxHeight = options.maxHeight ?? 6;
   const inputWidth = Math.max(12, options.width - promptWidth - 4);
@@ -58,8 +58,15 @@ export function wrapDraftRows(value: string, width: number): string[] {
   return rows.length > 0 ? rows : [""];
 }
 
-export function formatWorkingStatus(workState: AgentWorkState, frame: number, status: string): string {
-  const verb = workingVerbs[Math.abs(frame) % workingVerbs.length] ?? "Working";
+/**
+ * Build the run-status line.
+ *
+ * `verbIndex` MUST be a slow counter (advanced roughly every 10s), never the
+ * fast spinner frame — otherwise the verb flickers several times per second.
+ * The fast spinner glyph is rendered separately by the caller.
+ */
+export function formatWorkingStatus(workState: AgentWorkState, verbIndex: number, status: string): string {
+  const verb = workingVerbs[Math.abs(Math.trunc(verbIndex)) % workingVerbs.length] ?? "Working";
   const state = workState.replace(/_/g, " ");
   const detail = status && status !== state ? `: ${status}` : "";
   return `${verb} ${state}${detail}`;

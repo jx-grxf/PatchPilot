@@ -78,6 +78,7 @@ export function Composer(props: {
   );
 
   const elapsedSeconds = runningSince ? Math.max(0, Math.floor((Date.now() - runningSince) / 1000)) : 0;
+  const verbIndex = Math.floor(elapsedSeconds / 10);
   const renderedRows = props.mask ? layout.visibleRows.map((row) => props.mask?.repeat(row.length) ?? row) : layout.visibleRows;
   const placeholder = props.input.length === 0 ? "Ask PatchPilot or type /help..." : "";
 
@@ -91,7 +92,7 @@ export function Composer(props: {
               <Text color="yellow">approval waiting</Text>
             ) : (
               <Text color="yellow">
-                {spinnerFrames[frameIndex]} {formatWorkingStatus(props.workState, frameIndex, props.status)}
+                {spinnerFrames[frameIndex]} {formatWorkingStatus(props.workState, verbIndex, props.status)}
                 <Text color="gray">{elapsedSeconds > 0 ? `  ${elapsedSeconds}s` : "  starting"}</Text>
               </Text>
             )}
@@ -100,7 +101,7 @@ export function Composer(props: {
           const isLastRow = index === renderedRows.length - 1;
           const text = row || (isLastRow ? placeholder : "");
           return (
-            <Box key={`${index}-${row}`} height={1}>
+            <Box key={`composer-row-${index}`} height={1}>
               <Text color="cyan">{index === 0 ? prompt : " ".repeat(prompt.length)}</Text>
               <Text color={placeholder && isLastRow ? "gray" : "white"}>
                 {text}
@@ -127,4 +128,4 @@ export function FooterHints(props: { activePane: "transcript" | "session" }): Re
   );
 }
 
-const spinnerFrames = ["-", "\\", "|", "/"];
+const spinnerFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];

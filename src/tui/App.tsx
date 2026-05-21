@@ -85,6 +85,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   const [advisorNotes, setAdvisorNotes] = useState<AdvisorNote[]>([]);
   const [todos, setTodos] = useState<AgentTodoItem[]>([]);
   const [todoFrame, setTodoFrame] = useState(0);
+  const [verbTick, setVerbTick] = useState(0);
   const [isRunning, setIsRunning] = useState(false);
   const [status, setStatus] = useState("idle");
   const [workState, setWorkState] = useState<AgentWorkState>("idle");
@@ -152,7 +153,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   const headerReservedHeight = 5;
   const transcriptWidth = Math.max(42, terminalColumns - 38);
   const paletteReservedHeight = !onboarding && paletteItems.length > 0 ? Math.min(8, paletteItems.length) + 7 : 0;
-  const composerReservedHeight = onboarding || experimentalOpen ? 0 : computeComposerLayout({ input, width: transcriptWidth }).height;
+  const composerReservedHeight = onboarding || experimentalOpen ? 0 : computeComposerLayout({ input, width: transcriptWidth, promptWidth: 8 }).height;
   const footerReservedHeight = onboarding || experimentalOpen ? 0 : 1;
   const approvalReservedHeight = !onboarding && !experimentalOpen && (pendingApproval || bypassConfirmation) ? 7 : 0;
   const bodyHeight = Math.max(8, rootHeight - headerReservedHeight);
@@ -186,6 +187,23 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       clearInterval(timer);
     };
   }, [isRunning, todos]);
+
+  // Slow run-status verb tick: the verb only advances every 10s while the fast
+  // spinner glyph keeps animating, so the status line never flickers.
+  useEffect(() => {
+    if (!isRunning) {
+      setVerbTick(0);
+      return;
+    }
+
+    const timer = setInterval(() => {
+      setVerbTick((currentTick) => currentTick + 1);
+    }, 10_000);
+
+    return () => {
+      clearInterval(timer);
+    };
+  }, [isRunning]);
 
   const resolveApproval = useCallback(
     (decision: PermissionDecision) => {
@@ -2390,6 +2408,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
               scrollOffset={transcriptScrollOffset}
               todos={todos}
               todoFrame={todoFrame}
+              verbIndex={verbTick}
               status={status}
               workState={workState}
               isApprovalWaiting={Boolean(pendingApproval || bypassConfirmation)}

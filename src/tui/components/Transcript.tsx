@@ -24,6 +24,7 @@ export function Transcript(props: {
   scrollOffset: number;
   todos?: AgentTodoItem[];
   todoFrame?: number;
+  verbIndex?: number;
   status: string;
   workState: AgentWorkState;
   isApprovalWaiting?: boolean;
@@ -38,15 +39,19 @@ export function Transcript(props: {
     workState: props.workState,
     todos: props.todos ?? [],
     width: props.width,
-    frame: props.todoFrame ?? 0
+    verbIndex: props.verbIndex ?? 0
   });
-  const reservedDockRows = Math.min(dockRows.length, Math.max(0, Math.floor(visibleRowCount / 3)));
-  const reservedTodoRows = todoRows.length > 0 ? Math.min(todoRows.length, Math.max(1, Math.floor(visibleRowCount / 3))) : 0;
-  const reservedAuxRows = Math.min(visibleRowCount - 1, reservedTodoRows + reservedDockRows);
-  const hasOverflow = rows.length > visibleRowCount;
-  const contentRowCount = hasOverflow ? Math.max(1, visibleRowCount - reservedAuxRows - 1) : Math.max(1, visibleRowCount - reservedAuxRows);
-  const clampedOffset = clampScrollOffset(props.scrollOffset, rows.length, contentRowCount);
-  const visibleRows = rows.slice(Math.max(0, rows.length - contentRowCount - clampedOffset), rows.length - clampedOffset);
+  // The todo block and the run/approval dock stay pinned at the bottom; the
+  // content region above them flexes to fill whatever is left. The dock is
+  // capped so it can never crowd out the transcript on a tiny terminal.
+  const auxRows = [...todoRows, ...dockRows];
+  const reservedAuxRows = Math.min(auxRows.length, Math.max(0, visibleRowCount - 1));
+  const visibleAuxRows = auxRows.slice(0, reservedAuxRows);
+  const contentRowCount = Math.max(1, visibleRowCount - reservedAuxRows);
+  const hasOverflow = rows.length > contentRowCount;
+  const clampedOffset = clampScrollOffset(props.scrollOffset, rows.length, hasOverflow ? contentRowCount - 1 : contentRowCount);
+  const contentCapacity = hasOverflow ? Math.max(1, contentRowCount - 1) : contentRowCount;
+  const visibleRows = rows.slice(Math.max(0, rows.length - contentCapacity - clampedOffset), rows.length - clampedOffset);
   const showBanner = props.lines.length === 0 && visibleRows.length === 0;
 
   return (
@@ -57,18 +62,24 @@ export function Transcript(props: {
       paddingX={1}
       height={props.height}
       overflowY="hidden"
-      flexGrow={1}
     >
-      {showBanner ? <StartupBanner compact={props.height < 22 || props.width < 92} /> : visibleRows.map((row, index) => (
-        <TranscriptRowView key={`${index}-${row.marker}-${row.label}-${row.text}`} row={row} />
-      ))}
-      {todoRows.slice(0, reservedTodoRows).map((row, index) => (
-        <TranscriptRowView key={`todo-${index}-${row.text}`} row={row} />
-      ))}
-      {dockRows.slice(0, reservedDockRows).map((row, index) => (
-        <TranscriptRowView key={`dock-${index}-${row.text}`} row={row} />
-      ))}
-      {hasOverflow ? <ScrollHint offset={clampedOffset} total={rows.length} visible={contentRowCount} /> : null}
+      {/* Content region: short output stays anchored at the top, the flex gap
+          below pushes the dock down — no artificial blank lines. */}
+      <Box flexDirection="column" flexGrow={1} overflowY="hidden">
+        {showBanner ? (
+          <StartupBanner compact={props.height < 22 || props.width < 92} />
+        ) : (
+          visibleRows.map((row, index) => <TranscriptRowView key={`row-${index}`} row={row} />)
+        )}
+        {hasOverflow ? <ScrollHint offset={clampedOffset} total={rows.length} visible={contentCapacity} /> : null}
+      </Box>
+      {visibleAuxRows.length > 0 ? (
+        <Box flexDirection="column">
+          {visibleAuxRows.map((row, index) => (
+            <TranscriptRowView key={`aux-${index}`} row={row} />
+          ))}
+        </Box>
+      ) : null}
     </Box>
   );
 }
@@ -187,7 +198,7 @@ function buildDockRows(options: {
   workState: AgentWorkState;
   todos: AgentTodoItem[];
   width: number;
-  frame: number;
+  verbIndex: number;
 }): TranscriptRow[] {
   const textWidth = Math.max(18, options.width - 19);
   const rows: TranscriptRow[] = [];
@@ -206,7 +217,7 @@ function buildDockRows(options: {
     rows.push({
       marker: "#",
       label: "run",
-      text: truncate(formatWorkingStatus(options.workState, options.frame, options.status), textWidth),
+      text: truncate(formatWorkingStatus(options.workState, options.verbIndex, options.status), textWidth),
       color: "cyan",
       bold: true
     });
