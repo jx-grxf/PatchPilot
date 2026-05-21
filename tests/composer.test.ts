@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { composerView } from "../src/tui/experimental/composer.js";
+import { composerView, deleteComposerText, insertComposerText } from "../src/tui/experimental/composer.js";
 
 describe("composerView", () => {
   it("places the cursor for a short single-line draft", () => {
@@ -50,5 +50,37 @@ describe("composerView", () => {
     expect(view.rows).toEqual([""]);
     expect(view.cursorRow).toBe(0);
     expect(view.cursorCol).toBe(0);
+  });
+
+  it("inserts text at the active cursor", () => {
+    expect(insertComposerText("helo", 2, "l")).toEqual({
+      input: "hello",
+      cursor: 3,
+    });
+  });
+
+  it("deletes backward from the cursor", () => {
+    expect(deleteComposerText("hello", 3, "backward")).toEqual({
+      input: "helo",
+      cursor: 2,
+    });
+  });
+
+  it("deletes forward at the cursor", () => {
+    expect(deleteComposerText("hello", 1, "forward")).toEqual({
+      input: "hllo",
+      cursor: 1,
+    });
+  });
+
+  it("keeps delete operations bounded at draft edges", () => {
+    expect(deleteComposerText("hello", 0, "backward")).toEqual({
+      input: "hello",
+      cursor: 0,
+    });
+    expect(deleteComposerText("hello", 5, "forward")).toEqual({
+      input: "hello",
+      cursor: 5,
+    });
   });
 });

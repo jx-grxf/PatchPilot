@@ -11,6 +11,46 @@ export type ComposerView = {
   totalRows: number;
 };
 
+export type ComposerEditResult = {
+  input: string;
+  cursor: number;
+};
+
+export function insertComposerText(input: string, cursor: number, text: string): ComposerEditResult {
+  const safeCursor = clampCursor(input, cursor);
+  return {
+    input: `${input.slice(0, safeCursor)}${text}${input.slice(safeCursor)}`,
+    cursor: safeCursor + text.length,
+  };
+}
+
+export function deleteComposerText(
+  input: string,
+  cursor: number,
+  direction: "backward" | "forward",
+): ComposerEditResult {
+  const safeCursor = clampCursor(input, cursor);
+  if (direction === "backward") {
+    if (safeCursor === 0) {
+      return { input, cursor: safeCursor };
+    }
+
+    return {
+      input: `${input.slice(0, safeCursor - 1)}${input.slice(safeCursor)}`,
+      cursor: safeCursor - 1,
+    };
+  }
+
+  if (safeCursor >= input.length) {
+    return { input, cursor: safeCursor };
+  }
+
+  return {
+    input: `${input.slice(0, safeCursor)}${input.slice(safeCursor + 1)}`,
+    cursor: safeCursor,
+  };
+}
+
 /** Wrap a draft into rows, preserving explicit newlines, hard-chunking long lines. */
 function wrapRows(input: string, width: number): string[] {
   const safeWidth = Math.max(1, width);
@@ -38,7 +78,7 @@ function wrapRows(input: string, width: number): string[] {
 export function composerView(input: string, cursor: number, width: number, editorRows: number): ComposerView {
   const safeWidth = Math.max(1, width);
   const visibleRows = Math.max(1, editorRows);
-  const clampedCursor = Math.max(0, Math.min(cursor, input.length));
+  const clampedCursor = clampCursor(input, cursor);
   const allRows = wrapRows(input, safeWidth);
 
   // Locate the cursor by walking the paragraphs the same way wrapRows does.
@@ -70,4 +110,8 @@ export function composerView(input: string, cursor: number, width: number, edito
     hiddenAbove: start,
     totalRows: allRows.length,
   };
+}
+
+function clampCursor(input: string, cursor: number): number {
+  return Math.max(0, Math.min(Math.trunc(cursor), input.length));
 }

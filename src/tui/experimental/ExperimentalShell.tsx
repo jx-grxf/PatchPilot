@@ -10,7 +10,7 @@ import type { AgentMode, LogLine } from "../types.js";
 import { RainbowText, WaveText } from "./AnimatedText.js";
 import { type Artifact, attachmentSymbol, extractAttachmentPaths, sanitizePastedText } from "./attachments.js";
 import { ExperimentalBanner } from "./Banner.js";
-import { composerView } from "./composer.js";
+import { composerView, deleteComposerText, insertComposerText } from "./composer.js";
 import { CommandPalette } from "./CommandPalette.js";
 import { estimateGeminiCost, formatSavedCost } from "./geminiPricing.js";
 import { computeExperimentalLayout, windowRows } from "./layout.js";
@@ -581,8 +581,9 @@ function ShellComposer(props: {
 
       if (key.return) {
         if (key.shift || key.meta || key.super) {
-          props.onChange(`${props.input.slice(0, safeCursor)}\n${props.input.slice(safeCursor)}`);
-          setCursor(safeCursor + 1);
+          const next = insertComposerText(props.input, safeCursor, "\n");
+          props.onChange(next.input);
+          setCursor(next.cursor);
           return;
         }
 
@@ -610,11 +611,17 @@ function ShellComposer(props: {
         return;
       }
 
-      if (key.backspace || key.delete) {
-        if (safeCursor > 0) {
-          props.onChange(`${props.input.slice(0, safeCursor - 1)}${props.input.slice(safeCursor)}`);
-          setCursor(safeCursor - 1);
-        }
+      if (key.backspace) {
+        const next = deleteComposerText(props.input, safeCursor, "backward");
+        props.onChange(next.input);
+        setCursor(next.cursor);
+        return;
+      }
+
+      if (key.delete) {
+        const next = deleteComposerText(props.input, safeCursor, "forward");
+        props.onChange(next.input);
+        setCursor(next.cursor);
         return;
       }
 
@@ -628,13 +635,15 @@ function ShellComposer(props: {
       const attachmentPaths = extractAttachmentPaths(pasted);
       if (attachmentPaths) {
         const chip = `${attachmentPaths.map((path) => props.onAttach(path)).join(" ")} `;
-        props.onChange(`${props.input.slice(0, safeCursor)}${chip}${props.input.slice(safeCursor)}`);
-        setCursor(safeCursor + chip.length);
+        const next = insertComposerText(props.input, safeCursor, chip);
+        props.onChange(next.input);
+        setCursor(next.cursor);
         return;
       }
 
-      props.onChange(`${props.input.slice(0, safeCursor)}${pasted}${props.input.slice(safeCursor)}`);
-      setCursor(safeCursor + pasted.length);
+      const next = insertComposerText(props.input, safeCursor, pasted);
+      props.onChange(next.input);
+      setCursor(next.cursor);
     },
     { isActive: typingActive },
   );

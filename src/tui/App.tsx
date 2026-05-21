@@ -192,8 +192,12 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   const draftTokens = estimateTokens(input);
   const terminalRows = stdout.rows ?? 40;
   const terminalColumns = stdout.columns ?? 120;
+  const reauthPromptActive = Boolean(reauthPrompt || reauthBusy);
+  const updatePromptActive = !reauthPromptActive && Boolean(updatePrompt || updateBusy);
+  const approvalPromptActive = !reauthPromptActive && !updatePromptActive && Boolean(pendingApproval || bypassConfirmation);
+  const blockingPromptActive = reauthPromptActive || updatePromptActive || approvalPromptActive;
   const paletteItems =
-    !isRunning && !onboarding && !experimentalOpen
+    !isRunning && !onboarding && !experimentalOpen && !blockingPromptActive
       ? buildCommandSuggestionItems({
           input,
           provider: settings.provider,
@@ -210,7 +214,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   const paletteReservedHeight = !onboarding && paletteItems.length > 0 ? Math.min(8, paletteItems.length) + 7 : 0;
   const composerReservedHeight = onboarding || experimentalOpen ? 0 : computeComposerLayout({ input, width: transcriptWidth, promptWidth: 8 }).height;
   const footerReservedHeight = onboarding || experimentalOpen ? 0 : 1;
-  const approvalReservedHeight = !onboarding && !experimentalOpen && (pendingApproval || bypassConfirmation || updatePrompt || updateBusy) ? 7 : 0;
+  const approvalReservedHeight = !onboarding && !experimentalOpen && blockingPromptActive ? 7 : 0;
   const bodyHeight = Math.max(8, rootHeight - headerReservedHeight);
   const transcriptHeight = Math.max(4, bodyHeight - composerReservedHeight - paletteReservedHeight - footerReservedHeight - approvalReservedHeight);
   const panelHeight = onboarding || experimentalOpen ? bodyHeight : transcriptHeight;
@@ -3000,10 +3004,11 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
               verbIndex={verbTick}
               status={status}
               workState={workState}
-              isApprovalWaiting={Boolean(pendingApproval || bypassConfirmation)}
+              isApprovalWaiting={blockingPromptActive}
             />
-            <UpdatePromptPanel prompt={updatePrompt} busy={updateBusy} />
-            <ApprovalPanel request={pendingApproval} bypassConfirmation={bypassConfirmation} />
+            <ReauthPromptPanel active={reauthPromptActive} busy={reauthBusy} />
+            <UpdatePromptPanel prompt={updatePromptActive ? updatePrompt : null} busy={updatePromptActive && updateBusy} />
+            <ApprovalPanel request={approvalPromptActive ? pendingApproval : null} bypassConfirmation={approvalPromptActive && bypassConfirmation} />
             <Composer
               input={input}
               isRunning={isRunning}
@@ -3011,7 +3016,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
               workState={workState}
               draftTokens={draftTokens}
               width={transcriptWidth}
-              isApprovalWaiting={Boolean(pendingApproval || bypassConfirmation)}
+              isApprovalWaiting={blockingPromptActive}
               onChange={setInput}
               onSubmit={(value) => void handleSubmit(value)}
             />
@@ -3597,6 +3602,44 @@ function UpdatePromptPanel(props: {
               [n / esc]
             </Text>
             <Text color="gray"> skip</Text>
+          </Text>
+        </>
+      )}
+    </Box>
+  );
+}
+
+function ReauthPromptPanel(props: {
+  active: boolean;
+  busy: boolean;
+}): React.ReactElement | null {
+  if (!props.active) {
+    return null;
+  }
+
+  return (
+    <Box borderStyle="double" borderColor="yellow" flexDirection="column" paddingX={1}>
+      <Text color="yellow" bold>
+        GEMINI COOKIES EXPIRED
+      </Text>
+      {props.busy ? (
+        <>
+          <Text color="cyan">Refreshing Gemini browser cookies...</Text>
+          <Text color="gray">PatchPilot will retry the prompt automatically on success.</Text>
+        </>
+      ) : (
+        <>
+          <Text color="white">Refresh Gemini browser cookies and retry the last prompt?</Text>
+          <Text color="gray">Secret cookie values are imported from your signed-in browser and are not printed.</Text>
+          <Text>
+            <Text color="green" bold>
+              [y]
+            </Text>
+            <Text color="gray"> refresh & retry   </Text>
+            <Text color="red" bold>
+              [n / esc]
+            </Text>
+            <Text color="gray"> dismiss</Text>
           </Text>
         </>
       )}
