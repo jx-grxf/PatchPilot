@@ -26,7 +26,7 @@ import { defaultNvidiaModel, readNvidiaApiKey } from "../core/nvidia.js";
 import { defaultOllamaModel, OllamaClient } from "../core/ollama.js";
 import { defaultOpenRouterModel, isOpenRouterFreeModel, readOpenRouterApiKey } from "../core/openrouter.js";
 import { ensurePatchPilotGitignore, patchPilotInitPrompt } from "../core/projectInit.js";
-import { formatReasoningSupport } from "../core/reasoning.js";
+import { formatReasoningSupport, type ReasoningSetting } from "../core/reasoning.js";
 import { buildSessionResumeContext, listWorkspaceSessions, loadSessionSummary, SessionStore } from "../core/session.js";
 import { addTelemetryToSession, emptySessionTelemetry, estimateComparableApiCost, estimateTokens } from "../core/tokenAccounting.js";
 import type { AgentEvent, AgentTodoItem, AgentToolName, AgentWorkState, ApprovalRequest, ModelDescriptor, ModelProvider, ModelTelemetry, PermissionDecision, SessionTelemetry } from "../core/types.js";
@@ -1894,12 +1894,27 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         }
         case "status":
           appendLine({
+            kind: "status",
             tone: "accent",
             label: "status",
-            text:
-              settings.provider === "ollama"
-                ? `provider ollama | model ${settings.model} | host ${activeHost?.host.deviceName ?? settings.ollamaUrl} | route ${activeHost?.host.url ?? settings.ollamaUrl} | compute ${describeComputeTarget(settings.ollamaUrl).kind} | tools local | agents ${settings.subagents ? "on" : "off"} | mode ${agentMode} | write ${modePermissionLabel(agentMode, "write")} | shell ${modePermissionLabel(agentMode, "shell")} | draft ${draftTokens} tok | last ${formatTokens(telemetry)} | session ${formatSessionTokens(sessionTelemetry)} | cost ${formatCost(sessionTelemetry.estimatedCostUsd)}`
-              : `provider ${settings.provider} | model ${settings.model} | host ${settings.provider} api | compute cloud | agents ${settings.subagents ? "on" : "off"} | think ${settings.thinkingMode} | reasoning ${formatReasoningSupport(settings.provider, settings.model, settings.reasoningEffort === "adaptive" ? undefined : settings.reasoningEffort)} | mode ${agentMode} | write ${modePermissionLabel(agentMode, "write")} | shell ${modePermissionLabel(agentMode, "shell")} | draft ${draftTokens} tok | last ${formatTokens(telemetry)} | session ${formatSessionTokens(sessionTelemetry)} | cost ${formatCost(sessionTelemetry.estimatedCostUsd)}`
+            text: `mode ${agentMode} · write ${modePermissionLabel(agentMode, "write")} · shell ${modePermissionLabel(agentMode, "shell")} · ${settings.provider}/${settings.model} · subagents ${settings.subagents ? "on" : "off"}`,
+            detail: formatStatusDock({
+              provider: settings.provider,
+              model: settings.model,
+              agentMode,
+              subagents: settings.subagents,
+              thinkingMode: settings.thinkingMode,
+              reasoningEffort: settings.reasoningEffort,
+              workspace: settings.workspace,
+              ollamaUrl: settings.ollamaUrl,
+              sessionId: sessionStoreRef.current.sessionId,
+              activeHost,
+              advisorNotes,
+              toolTelemetry,
+              sessionTelemetry,
+              telemetry,
+              draftTokens
+            })
           });
           return;
         case "usage":
@@ -3619,6 +3634,66 @@ function addApprovalTelemetry(current: ToolTelemetry, decision: PermissionDecisi
     approvals: current.approvals + (decision === "deny" ? 0 : 1),
     denied: current.denied + (decision === "deny" ? 1 : 0)
   };
+}
+
+/**
+ * Dense operational status dock for `/status` — restores the always-available
+ * "what mode am I in and what can happen" view the legacy sidebar provided,
+ * without spending fixed screen rows in the new shell's header.
+ */
+function formatStatusDock(options: {
+  provider: ModelProvider;
+  model: string;
+  agentMode: AgentMode;
+  subagents: boolean;
+  thinkingMode: string;
+  reasoningEffort: ReasoningSetting | "adaptive";
+  workspace: string;
+  ollamaUrl: string;
+  sessionId: string;
+  activeHost: OllamaHostDetails | null;
+  advisorNotes: AdvisorNote[];
+  toolTelemetry: ToolTelemetry;
+  sessionTelemetry: SessionTelemetry;
+  telemetry: ModelTelemetry | null;
+  draftTokens: number;
+}): string {
+  const isOllama = options.provider === "ollama";
+  const hostLine = isOllama
+    ? `${options.activeHost?.host.deviceName ?? "ollama"}  ${options.activeHost?.host.url ?? options.ollamaUrl}`
+    : `${options.provider} api`;
+  const computeKind = isOllama ? describeComputeTarget(options.ollamaUrl).kind : "cloud";
+  const reasoning = isOllama
+    ? `think ${options.thinkingMode}`
+    : `think ${options.thinkingMode} · reasoning ${formatReasoningSupport(
+        options.provider,
+        options.model,
+        options.reasoningEffort === "adaptive" ? undefined : options.reasoningEffort,
+      )}`;
+  const toolCounters = Object.entries(options.toolTelemetry.byTool)
+    .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+    .slice(0, 6)
+    .map(([tool, count]) => `${tool} ${count}`)
+    .join(" · ");
+  const advisors = options.advisorNotes.length > 0
+    ? options.advisorNotes.map((note) => `  ${note.role}: ${note.message.replace(/\s+/g, " ").slice(0, 88)}`).join("\n")
+    : "  none yet";
+  return [
+    `provider   ${options.provider}/${options.model}`,
+    `host       ${hostLine}  ·  compute ${computeKind}  ·  tools local`,
+    `mode       ${options.agentMode}  ·  write ${modePermissionLabel(options.agentMode, "write")}  ·  shell ${modePermissionLabel(options.agentMode, "shell")}`,
+    `model cfg  ${reasoning}  ·  subagents ${options.subagents ? "on" : "off"}`,
+    `workspace  ${options.workspace}`,
+    `session    ${options.sessionId}`,
+    `tokens     draft ${options.draftTokens} · last ${formatTokens(options.telemetry)} · session ${formatSessionTokens(options.sessionTelemetry)} · cost ${formatCost(options.sessionTelemetry.estimatedCostUsd)}`,
+    options.toolTelemetry.total > 0
+      ? `tools      ${options.toolTelemetry.total} calls · ${options.toolTelemetry.succeeded} ok · ${options.toolTelemetry.failed} failed · ${options.toolTelemetry.approvals} approved · ${options.toolTelemetry.denied} denied`
+      : "tools      none yet",
+    toolCounters ? `counters   ${toolCounters}` : "",
+    `advisors\n${advisors}`,
+  ]
+    .filter(Boolean)
+    .join("\n");
 }
 
 function formatUsageSummary(options: {

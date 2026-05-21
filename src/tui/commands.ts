@@ -141,7 +141,7 @@ export const slashCommands: SlashCommand[] = [
   {
     name: "status",
     usage: "/status",
-    description: "Show active model, host, permissions, and token telemetry.",
+    description: "Operational dock: provider/model, permissions, compute target, session, advisors, tool counters.",
     category: "session"
   },
   {
