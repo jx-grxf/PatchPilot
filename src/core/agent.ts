@@ -293,6 +293,19 @@ export class AgentRunner {
           continue;
         }
 
+        if (expectsTodos && isTodoOnlyFinalResponse(parsedResponse.message)) {
+          messages.push({
+            role: "assistant",
+            content: JSON.stringify(parsedResponse)
+          });
+          messages.push({
+            role: "user",
+            content: "Your final answer was invalid because it only reported todo/status progress or deferred to an earlier step. Return a real final answer now with the actual findings, changes made, verification run, and any remaining risks. Do not mention update_todo as the outcome."
+          });
+          stepIndex += 1;
+          continue;
+        }
+
         yield {
           type: "final",
           message: parsedResponse.message,
@@ -675,6 +688,38 @@ export function shouldExpectTodos(task: string, ultramaxx = false): boolean {
   );
 }
 
+export function isTodoOnlyFinalResponse(message: string): boolean {
+  const normalized = message.trim().toLowerCase().replace(/\s+/g, " ");
+  if (!normalized) {
+    return true;
+  }
+
+  const mentionsTodoState = /\b(update_todo|todo(?:s|-list| list|-liste| liste)?|checklist|aufgabenliste)\b/i.test(normalized);
+  const mentionsProgressOnly = /\b(updated|aktualisiert|completed|complete|done|erledigt|abgeschlossen|marked|gepflegt)\b/i.test(normalized);
+  const defersToEarlierStep =
+    /\b(previous|prior|earlier|above|already|before)\b/i.test(normalized) ||
+    /\b(vorherig|vorherigen|vorher|oben|zuvor|bereits|letzten schritt)\b/i.test(normalized);
+  const mentionsDeferredAnswer = /\b(summary|overview|answer|result|findings|zusammenfassung|überblick|ueberblick|antwort|ergebnis)\b/i.test(normalized);
+  const hasConcreteOutcome = /\b(fixed|implemented|changed|added|removed|verified|tested|ran|created|gefixt|implementiert|geändert|geaendert|ergänzt|ergaenzt|verifiziert|getestet)\b|(?:^|\s)(?:src|tests|docs)\//i.test(
+    normalized
+  );
+  const wordCount = normalized.split(/\s+/).filter(Boolean).length;
+
+  if (mentionsTodoState && defersToEarlierStep) {
+    return true;
+  }
+
+  if (mentionsTodoState && mentionsProgressOnly && !hasConcreteOutcome && wordCount <= 18) {
+    return true;
+  }
+
+  if (mentionsDeferredAnswer && defersToEarlierStep && !hasConcreteOutcome && wordCount <= 24) {
+    return true;
+  }
+
+  return /^(done|complete|completed|erledigt|fertig|ok)[.! ]*$/i.test(normalized);
+}
+
 function buildSystemPrompt(
   workspaceRoot: string,
   subagentContext: string,
@@ -736,6 +781,9 @@ function buildSystemPrompt(
     "Todo example not required: user asks what package manager this repo uses -> inspect package files or answer directly.",
     experimental.ultramaxx
       ? "ULTRAMAXX mode is active: use xhigh care, keep todos mandatory, verify after writes before final, and do not skip self-checks."
+      : "",
+    experimental.expectsTodos
+      ? "Final answers must contain the actual outcome: findings, changes made, verification run, and remaining risks when relevant. Never use final just to say the todo list was updated or that the answer is in a previous step."
       : "",
     "When diagnosing a failure, form a concrete hypothesis, gather targeted evidence with tools, then fix the smallest cause.",
     experimental.allowExternalFileAnalysis

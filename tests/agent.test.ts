@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { compactTranscript, executeToolCallsWithReadParallelism, findRepeatedToolCall, normalizeTodoItems, recoverMalformedToolResponse, shouldExpectTodos, shouldStopAfterEmptyToolBatches } from "../src/core/agent.js";
+import { compactTranscript, executeToolCallsWithReadParallelism, findRepeatedToolCall, isTodoOnlyFinalResponse, normalizeTodoItems, recoverMalformedToolResponse, shouldExpectTodos, shouldStopAfterEmptyToolBatches } from "../src/core/agent.js";
 import type { AgentToolCall, ToolResult } from "../src/core/types.js";
 import type { WorkspaceTools } from "../src/core/workspace.js";
 
@@ -139,6 +139,18 @@ describe("agent loop guards", () => {
   it("stops after repeated empty tool batches", () => {
     expect(shouldStopAfterEmptyToolBatches(1)).toBe(false);
     expect(shouldStopAfterEmptyToolBatches(2)).toBe(true);
+  });
+
+  it("rejects todo-only or deferred final answers", () => {
+    expect(isTodoOnlyFinalResponse("Die Todo-Liste wurde aktualisiert, der Überblick steht im vorherigen Schritt.")).toBe(true);
+    expect(isTodoOnlyFinalResponse("Todo list updated.")).toBe(true);
+    expect(isTodoOnlyFinalResponse("Done.")).toBe(true);
+    expect(
+      isTodoOnlyFinalResponse(
+        "Fixed the final-answer guard in src/core/agent.ts, tightened ultramaxx activation, and verified the focused Vitest files."
+      )
+    ).toBe(false);
+    expect(isTodoOnlyFinalResponse("Updated the todo list, fixed src/core/agent.ts, and verified tests/agent.test.ts.")).toBe(false);
   });
 
   it("compacts older tool-result transcript blocks and keeps recent ones verbatim", () => {

@@ -1,21 +1,22 @@
 /**
- * `ultramaxx` is a power-mode keyword: typing it anywhere in the prompt makes
- * the backend think and work extra hard for that run (escalated reasoning
- * effort, a larger step budget, advisor subagents, mandatory planning).
+ * `ultramaxx` is a power-mode prefix: starting a prompt with it makes the
+ * backend think and work extra hard for that run (escalated reasoning effort,
+ * a larger step budget, advisor subagents, mandatory planning).
  */
 export const ultramaxxKeyword = "ultramaxx";
 
-const ultramaxxPattern = /\bultramaxx\b/i;
-const ultramaxxGlobalPattern = /\bultramaxx\b/gi;
+const ultramaxxActivationPattern = /^\s*(?:[/!#]ultramaxx|ultramaxx)(?=$|[\s:.-])/i;
+const ultramaxxStripPattern = /^\s*(?:[/!#]ultramaxx|ultramaxx)(?=$|[\s:.-])(?:\s*[:.-]\s*|\s+)?/i;
+const ultramaxxTokenAtStartPattern = /^(\s*(?:[/!#])?)(ultramaxx)(?=$|[\s:.-])/i;
 
-/** True when the text contains the ultramaxx keyword as a standalone word. */
+/** True when the text starts with an explicit ultramaxx activator. */
 export function hasUltramaxx(text: string): boolean {
-  return ultramaxxPattern.test(text);
+  return ultramaxxActivationPattern.test(text);
 }
 
-/** Remove the ultramaxx keyword from the task text before it reaches the model. */
+/** Remove the ultramaxx activator from the task text before it reaches the model. */
 export function stripUltramaxx(text: string): string {
-  return text.replace(ultramaxxGlobalPattern, "").replace(/\s{2,}/g, " ").trim();
+  return text.replace(ultramaxxStripPattern, "").replace(/\s{2,}/g, " ").trim();
 }
 
 export type TextSegment = {
@@ -32,20 +33,21 @@ export function splitUltramaxxSegments(line: string): TextSegment[] {
     return [{ text: "", ultramaxx: false }];
   }
 
+  const match = line.match(ultramaxxTokenAtStartPattern);
+  if (!match || match.index !== 0) {
+    return [{ text: line, ultramaxx: false }];
+  }
+
+  const prefix = match[1] ?? "";
+  const token = match[2] ?? ultramaxxKeyword;
   const segments: TextSegment[] = [];
-  let lastIndex = 0;
-  for (const match of line.matchAll(ultramaxxGlobalPattern)) {
-    const start = match.index ?? 0;
-    if (start > lastIndex) {
-      segments.push({ text: line.slice(lastIndex, start), ultramaxx: false });
-    }
-    segments.push({ text: match[0], ultramaxx: true });
-    lastIndex = start + match[0].length;
+  if (prefix) {
+    segments.push({ text: prefix, ultramaxx: false });
   }
-
-  if (lastIndex < line.length) {
-    segments.push({ text: line.slice(lastIndex), ultramaxx: false });
+  segments.push({ text: token, ultramaxx: true });
+  const rest = line.slice(prefix.length + token.length);
+  if (rest) {
+    segments.push({ text: rest, ultramaxx: false });
   }
-
-  return segments.length > 0 ? segments : [{ text: line, ultramaxx: false }];
+  return segments;
 }
