@@ -33,6 +33,7 @@ import type { AgentEvent, AgentTodoItem, AgentToolName, AgentWorkState, Approval
 import { checkForPatchPilotUpdate, installPatchPilotUpdate, type UpdateCheckResult } from "../core/updateCheck.js";
 import { getToolSpec, WorkspaceTools } from "../core/workspace.js";
 import { ApprovalPanel } from "./components/ApprovalPanel.js";
+import { clipboardHasImage, clipboardImageHint, readClipboardImage } from "../core/clipboard.js";
 import { CommandSuggestions, type CommandSuggestionItem } from "./components/CommandSuggestions.js";
 import { Composer, FooterHints } from "./components/Composer.js";
 import { ExperimentalPanel, experimentalFlagAt, experimentalFlagCount, type ExperimentalFlags } from "./components/ExperimentalPanel.js";
@@ -165,6 +166,9 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
   const artifactsRef = useRef<Artifact[]>([]);
   const pendingAttachmentsRef = useRef<string[]>([]);
+  // Tracks whether the "image in clipboard" hint was already shown for the
+  // current clipboard contents, so the poll does not repeat it every tick.
+  const clipboardHintShownRef = useRef(false);
   const [onboardingIndex, setOnboardingIndex] = useState(0);
   const [onboardingInput, setOnboardingInput] = useState("");
   const [onboardingBusyMessage, setOnboardingBusyMessage] = useState<string | null>(null);
@@ -268,6 +272,62 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
     },
     [appendLine, pushArtifact, settings.provider]
   );
+
+  // Ctrl+V: pull an image straight out of the OS clipboard, save it to a temp
+  // file, and attach it — no need to save the screenshot to disk first.
+  const handleClipboardImagePaste = useCallback(async (): Promise<void> => {
+    appendLine({ kind: "status", tone: "muted", label: "clipboard", text: "Zwischenablage wird gelesen…" });
+    const imagePath = await readClipboardImage();
+    if (!imagePath) {
+      appendLine({
+        kind: "status",
+        tone: "warning",
+        label: "clipboard",
+        text: "Kein Bild in der Zwischenablage gefunden.",
+        detail: "Kopiere ein Bild (z. B. einen Screenshot) und drücke erneut Ctrl+V."
+      });
+      return;
+    }
+
+    const label = attachFile(imagePath);
+    setInput((current) => {
+      if (current.length === 0) {
+        return `${label} `;
+      }
+      return `${current}${current.endsWith(" ") ? "" : " "}${label} `;
+    });
+    clipboardHintShownRef.current = true;
+  }, [appendLine, attachFile]);
+
+  // Watch the OS clipboard while idle: when an image appears, tell the user
+  // once that they can attach it with Ctrl+V (reset when the image is gone).
+  useEffect(() => {
+    if (isRunning) {
+      return;
+    }
+
+    let cancelled = false;
+    const poll = async (): Promise<void> => {
+      const present = await clipboardHasImage();
+      if (cancelled) {
+        return;
+      }
+
+      if (present && !clipboardHintShownRef.current) {
+        clipboardHintShownRef.current = true;
+        appendLine({ kind: "status", tone: "accent", label: "clipboard", text: clipboardImageHint() });
+      } else if (!present) {
+        clipboardHintShownRef.current = false;
+      }
+    };
+
+    void poll();
+    const timer = setInterval(() => void poll(), 7000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [isRunning, appendLine]);
 
   // Best-effort: record a document PatchPilot wrote during a run.
   const registerCreatedArtifact = useCallback(
@@ -2676,6 +2736,14 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         text: "Will stop after the current step. Press esc again quickly to force stop now."
       });
       setStatus("stopping after current step");
+      return;
+    }
+
+    // Ctrl+V — paste an image from the OS clipboard as an attachment. Bound to
+    // Ctrl+V on every platform because terminals capture ⌘V / the native paste
+    // shortcut for their own text paste.
+    if (key.ctrl && (inputValue === "v" || inputValue === "V") && !onboarding && !isRunning) {
+      void handleClipboardImagePaste();
       return;
     }
 
