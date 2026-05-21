@@ -288,27 +288,40 @@ function ShellTranscript(props: {
 
   const preferredBannerHeight = props.width >= 88 && props.height >= 20 ? 12 : 3;
   const bannerHeight = Math.max(0, Math.min(props.height - 2, preferredBannerHeight));
-  const viewport = Math.max(1, props.height - 2 - bannerHeight);
-  const overflow = rows.length > viewport;
+  const viewport = Math.max(1, props.height - 2);
+  // The banner is part of the scrollable content — it sits above the first
+  // transcript row and scrolls away like any other chat message.
+  const total = bannerHeight + rows.length;
+  const overflow = total > viewport;
   // Reserve one row for the scroll indicator when content overflows.
   const contentViewport = Math.max(1, overflow ? viewport - 1 : viewport);
-  const window = windowRows(rows.length, contentViewport, props.scrollOffset);
-  const visibleRows = rows.slice(window.start, window.end);
+  const window = windowRows(total, contentViewport, props.scrollOffset);
+  // Slice the banner and the text rows out of the shared window.
+  const bannerVisibleStart = Math.min(window.start, bannerHeight);
+  const bannerVisibleEnd = Math.min(window.end, bannerHeight);
+  const bannerVisible = Math.max(0, bannerVisibleEnd - bannerVisibleStart);
+  const rowStart = Math.max(0, window.start - bannerHeight);
+  const rowEnd = Math.max(0, window.end - bannerHeight);
+  const visibleRows = rows.slice(rowStart, rowEnd);
   const borderColor = props.ultramaxxRun ? "magenta" : props.isRunning ? "yellow" : "cyan";
 
   return (
     <Box borderStyle="round" borderColor={borderColor} flexDirection="column" paddingX={1} height={props.height} overflowY="hidden">
-      <Box height={bannerHeight} overflowY="hidden">
-        <ExperimentalBanner width={props.width} height={bannerHeight} />
-      </Box>
       {/* Content fills the scroll region: overflowing content fills it
           completely, short output anchors to the top. */}
       <Box flexDirection="column" flexGrow={1} overflowY="hidden">
+        {bannerVisible > 0 ? (
+          <Box height={bannerVisible} flexShrink={0} overflowY="hidden">
+            <Box flexDirection="column" marginTop={-bannerVisibleStart}>
+              <ExperimentalBanner width={props.width} height={bannerHeight} />
+            </Box>
+          </Box>
+        ) : null}
         {visibleRows.map((row, index) => <ShellRowView key={`row-${index}`} row={row} frame={frame} />)}
       </Box>
       {window.hasOverflow ? (
         <Text color="gray">
-          {symbols.todoActive} {window.start + 1}–{window.end}/{rows.length} · ↑↓ pgup/pgdn scroll
+          {symbols.todoActive} {rowStart + 1}–{rowEnd}/{rows.length} · ↑↓ pgup/pgdn scroll
         </Text>
       ) : null}
     </Box>
