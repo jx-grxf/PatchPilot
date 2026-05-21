@@ -2,7 +2,7 @@ import React, { useEffect, useState } from "react";
 import { Box, Text, useInput } from "ink";
 import type { AgentTodoItem, AgentWorkState, ApprovalRequest, ModelProvider, ModelTelemetry, SessionTelemetry } from "../../core/types.js";
 import type { CommandSuggestionItem } from "../components/CommandSuggestions.js";
-import { formatCost, formatSessionTokens, shortenMiddle } from "../format.js";
+import { formatCompactTokens, formatCost, formatSessionTokens, shortenMiddle } from "../format.js";
 import type { OllamaHostDetails } from "../hosts.js";
 import { computeComposerLayout } from "../layout.js";
 import { formatElapsed, pulseGlyph, runStatusParts, spinnerFrameMs, spinnerGlyph, waveFrameMs } from "../runStatus.js";
@@ -115,6 +115,7 @@ export function ExperimentalShell(props: ExperimentalShellProps): React.ReactEle
         workState={props.workState}
         status={props.status}
         draftTokens={props.draftTokens}
+        sessionTelemetry={props.sessionTelemetry}
         width={layout.transcriptWidth}
         onAttach={props.onAttach}
         onChange={props.onChange}
@@ -149,9 +150,9 @@ function ShellUpdate(props: {
   const latestVersion = props.prompt?.latestVersion ?? "";
   const command = props.prompt?.command ?? "npm update -g @jx-grxf/patchpilot";
   return (
-    <Box borderStyle="double" borderColor="yellow" flexDirection="column" paddingX={1}>
+    <Box borderStyle="round" borderColor="yellow" flexDirection="column" paddingX={1}>
       <Text color="yellow" bold>
-        {symbols.approval} PATCHPILOT UPDATE AVAILABLE
+        {symbols.update} PATCHPILOT UPDATE AVAILABLE
       </Text>
       {props.busy ? (
         <>
@@ -372,8 +373,8 @@ function ShellTodoDock(props: {
   const completed = props.todos.filter((todo) => todo.status === "completed").length;
   const total = Math.max(1, props.todos.length);
   const barWidth = 14;
-  const filled = Math.round((completed / total) * barWidth);
-  const bar = `${"▓".repeat(filled)}${"░".repeat(Math.max(0, barWidth - filled))}`;
+  const filled = Math.min(barWidth, Math.round((completed / total) * barWidth));
+  const allDone = completed === props.todos.length;
 
   return (
     <Box borderStyle="round" borderColor="cyan" flexDirection="column" paddingX={1} height={props.height} overflowY="hidden">
@@ -381,7 +382,12 @@ function ShellTodoDock(props: {
         <Text color="cyan" bold>
           {symbols.bullet} todos{" "}
         </Text>
-        <Text color={completed === props.todos.length ? "green" : "yellow"}>{bar}</Text>
+        {/* Solid filled run + an explicitly dim track so the bar keeps
+            contrast on both dark and light terminal themes. */}
+        <Text color={allDone ? "green" : "yellow"}>{symbols.barFilled.repeat(filled)}</Text>
+        <Text color="gray" dimColor>
+          {symbols.barEmpty.repeat(Math.max(0, barWidth - filled))}
+        </Text>
         <Text color="gray">
           {" "}
           {completed}/{props.todos.length}
@@ -485,9 +491,9 @@ function ShellReauth(props: { busy: boolean }): React.ReactElement {
   }, [props.busy]);
 
   return (
-    <Box borderStyle="double" borderColor="yellow" flexDirection="column" paddingX={1}>
+    <Box borderStyle="round" borderColor="yellow" flexDirection="column" paddingX={1}>
       <Text color="yellow" bold>
-        {symbols.approval} GEMINI COOKIES EXPIRED
+        {symbols.reauth} GEMINI COOKIES EXPIRED
       </Text>
       {props.busy ? (
         <>
@@ -524,6 +530,7 @@ function ShellComposer(props: {
   workState: AgentWorkState;
   status: string;
   draftTokens: number;
+  sessionTelemetry: SessionTelemetry;
   width: number;
   onChange: (value: string) => void;
   onSubmit: (value: string) => void;
@@ -531,6 +538,9 @@ function ShellComposer(props: {
 }): React.ReactElement {
   const [frame, setFrame] = useState(0);
   const [runningSince, setRunningSince] = useState<number | null>(null);
+  // Token totals captured at run start so the live counter shows tokens spent
+  // *this run*, not the whole session — Claude-Code-style "(2m 0s · ↑ 6.1k)".
+  const [runStartTokens, setRunStartTokens] = useState<{ input: number; output: number } | null>(null);
   const [cursor, setCursor] = useState(props.input.length);
   const layout = computeComposerLayout({
     input: props.input,
@@ -546,8 +556,12 @@ function ShellComposer(props: {
   useEffect(() => {
     if (!props.isRunning) {
       setRunningSince(null);
+      setRunStartTokens(null);
     } else {
       setRunningSince((current) => current ?? Date.now());
+      setRunStartTokens((current) =>
+        current ?? { input: props.sessionTelemetry.promptTokens, output: props.sessionTelemetry.responseTokens },
+      );
     }
 
     if (!animating) {
@@ -649,6 +663,11 @@ function ShellComposer(props: {
   );
 
   const elapsedMs = runningSince ? Date.now() - runningSince : 0;
+  // Real token counter for the active run: cumulative provider-reported tokens
+  // minus the totals captured when the run started. Works for every provider
+  // because it reads the shared session telemetry, not provider internals.
+  const runInputTokens = runStartTokens ? Math.max(0, props.sessionTelemetry.promptTokens - runStartTokens.input) : 0;
+  const runOutputTokens = runStartTokens ? Math.max(0, props.sessionTelemetry.responseTokens - runStartTokens.output) : 0;
   const accent = props.isRunning ? (props.ultramaxxRun ? "magenta" : "yellow") : props.approvalActive ? "yellow" : "cyan";
   const parts = runStatusParts({ workState: props.workState, status: props.status, elapsedMs });
   const safeCursor = Math.max(0, Math.min(cursor, props.input.length));
@@ -678,7 +697,14 @@ function ShellComposer(props: {
             {parts.state}
             {parts.detail ? ` · ${parts.detail}` : ""}
           </Text>
-          <Text color="gray">  {formatElapsed(elapsedMs)}</Text>
+          <Text color="gray">
+            {"  ("}
+            {formatElapsed(elapsedMs)}
+            {" · "}
+            <Text color="cyan">↑ {formatCompactTokens(runInputTokens)}</Text>
+            <Text color="gray"> ↓ {formatCompactTokens(runOutputTokens)} tokens</Text>
+            {")"}
+          </Text>
         </Box>,
       );
     } else if (!props.isRunning && props.approvalActive && index === 0) {

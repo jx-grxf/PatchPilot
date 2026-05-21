@@ -72,6 +72,24 @@ export function formatSessionTokens(session: SessionTelemetry): string {
   return `session ${session.requests} req, ${session.promptTokens} in${cacheSuffix}, ${session.responseTokens} out`;
 }
 
+/** Compact token count for the live run counter — "6.1k", "175k", "42". */
+export function formatCompactTokens(value: number): string {
+  const tokens = Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
+  if (tokens < 1000) {
+    return String(tokens);
+  }
+
+  if (tokens < 10_000) {
+    return `${(tokens / 1000).toFixed(1)}k`;
+  }
+
+  if (tokens < 1_000_000) {
+    return `${Math.round(tokens / 1000)}k`;
+  }
+
+  return `${(tokens / 1_000_000).toFixed(1)}M`;
+}
+
 function formatCacheHitRate(cachedTokens: number, promptTokens: number): string {
   return `${Math.round((cachedTokens / promptTokens) * 100)}%`;
 }

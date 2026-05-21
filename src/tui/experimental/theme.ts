@@ -11,15 +11,25 @@ export const symbols = {
   tool: "⚡",
   diff: "±",
   approval: "⚠",
+  // Non-destructive prompts get their own quiet glyphs so a benign "update
+  // available" never reads like a destructive-action gate.
+  update: "⬆",
+  reauth: "↻",
+  info: "ℹ",
   error: "✗",
   final: "✓",
   status: "•",
   arrow: "→",
   bullet: "·",
+  pin: "📌",
   todoDone: "✓",
   todoActive: "▸",
   todoPending: "○",
   caret: "▏",
+  // Todo / progress bar track. Filled is solid, empty is a light rule so the
+  // bar keeps contrast on both dark and light terminal themes.
+  barFilled: "█",
+  barEmpty: "░",
 } as const;
 
 export type ToneColor = InkColor;
