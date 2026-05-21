@@ -6,6 +6,7 @@ import {
   formatRunDuration,
   pulseGlyph,
   pulseGlyphs,
+  randomRunStatusSeed,
   runStatusParts,
   runStatusVerb,
   runStatusVerbs,
@@ -46,10 +47,23 @@ describe("run-status verb stability", () => {
     expect(sequentialSteps).toBeLessThan(5);
   });
 
+  it("does not repeat the same verb at a cycle boundary for one run seed", () => {
+    const seed = randomRunStatusSeed(() => 0.42);
+    for (let tick = 1; tick < 20; tick += 1) {
+      expect(runStatusVerb(tick * verbCycleMs, seed)).not.toBe(runStatusVerb((tick - 1) * verbCycleMs, seed));
+    }
+  });
+
   it("is deterministic and always returns a known verb", () => {
     expect(runStatusVerb(12_345)).toBe(runStatusVerb(12_345));
     expect(runStatusVerbs).toContain(runStatusVerb(-100));
     expect(runStatusVerbs).toContain(runStatusVerb(999_999));
+  });
+
+  it("can create deterministic random seeds from an injected random source", () => {
+    expect(randomRunStatusSeed(() => 0)).toBe(0);
+    expect(randomRunStatusSeed(() => 0.5)).toBeGreaterThan(0);
+    expect(randomRunStatusSeed(() => 1)).toBeLessThanOrEqual(0x7fffffff);
   });
 });
 

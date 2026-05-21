@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from "react";
 import { Box, Text, useInput } from "ink";
 import type { AgentWorkState } from "../../core/types.js";
-import { computeComposerLayout, formatWorkingStatus } from "../layout.js";
+import { computeComposerLayout } from "../layout.js";
+import { randomRunStatusSeed, runStatusParts } from "../runStatus.js";
 
 export function Composer(props: {
   input: string;
@@ -17,6 +18,7 @@ export function Composer(props: {
 }): React.ReactElement {
   const [frameIndex, setFrameIndex] = useState(0);
   const [runningSince, setRunningSince] = useState<number | null>(null);
+  const [verbSeed, setVerbSeed] = useState(() => randomRunStatusSeed());
   const prompt = props.isApprovalWaiting ? "input > " : props.isRunning ? "run   > " : "patch > ";
   const layout = computeComposerLayout({
     input: props.input,
@@ -31,7 +33,14 @@ export function Composer(props: {
       return;
     }
 
-    setRunningSince((currentValue) => currentValue ?? Date.now());
+    setRunningSince((currentValue) => {
+      if (currentValue === null) {
+        setVerbSeed(randomRunStatusSeed());
+        return Date.now();
+      }
+
+      return currentValue;
+    });
     const timer = setInterval(() => {
       setFrameIndex((currentValue) => (currentValue + 1) % spinnerFrames.length);
     }, 120);
@@ -78,7 +87,12 @@ export function Composer(props: {
   );
 
   const elapsedSeconds = runningSince ? Math.max(0, Math.floor((Date.now() - runningSince) / 1000)) : 0;
-  const verbIndex = Math.floor(elapsedSeconds / 10);
+  const runStatus = runStatusParts({
+    workState: props.workState,
+    status: props.status,
+    elapsedMs: elapsedSeconds * 1000,
+    seed: verbSeed
+  });
   const renderedRows = props.mask ? layout.visibleRows.map((row) => props.mask?.repeat(row.length) ?? row) : layout.visibleRows;
   const placeholder = props.input.length === 0 ? "Ask PatchPilot or type /help..." : "";
 
@@ -92,7 +106,7 @@ export function Composer(props: {
               <Text color="yellow">approval waiting</Text>
             ) : (
               <Text color="yellow">
-                {spinnerFrames[frameIndex]} {formatWorkingStatus(props.workState, verbIndex, props.status)}
+                {spinnerFrames[frameIndex]} {runStatus.verb}  ·  {runStatus.state}{runStatus.detail ? ` · ${runStatus.detail}` : ""}
                 <Text color="gray">{elapsedSeconds > 0 ? `  ${elapsedSeconds}s` : "  starting"}</Text>
               </Text>
             )}

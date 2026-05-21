@@ -96,6 +96,10 @@ export const waveFrameMs = 110;
 /** The verb only changes once every this many ms. */
 export const verbCycleMs = 10_000;
 
+export function randomRunStatusSeed(random: () => number = Math.random): number {
+  return Math.floor(Math.max(0, Math.min(0.999999999, random())) * 0x7fffffff);
+}
+
 /** Small deterministic hash so verb order is pseudo-random, not sequential. */
 function hashTick(tick: number, seed: number): number {
   let value = (Math.trunc(tick) * 2654435761 + Math.trunc(seed) * 40503 + 0x9e3779b9) >>> 0;
@@ -124,7 +128,13 @@ export function pulseGlyph(frame: number): string {
 export function runStatusVerb(elapsedMs: number, seed = 0): string {
   const safeElapsed = Number.isFinite(elapsedMs) && elapsedMs > 0 ? elapsedMs : 0;
   const tick = Math.floor(safeElapsed / verbCycleMs);
-  const index = hashTick(tick, seed) % runStatusVerbs.length;
+  let index = hashTick(tick, seed) % runStatusVerbs.length;
+  if (tick > 0) {
+    const previousIndex = hashTick(tick - 1, seed) % runStatusVerbs.length;
+    if (index === previousIndex) {
+      index = (index + 1 + (hashTick(tick + 1, seed) % (runStatusVerbs.length - 1))) % runStatusVerbs.length;
+    }
+  }
   return runStatusVerbs[index] ?? runStatusVerbs[0]!;
 }
 

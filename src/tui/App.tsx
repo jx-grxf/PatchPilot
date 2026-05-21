@@ -383,12 +383,19 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   // spinner glyph keeps animating, so the status line never flickers.
   useEffect(() => {
     if (!isRunning) {
-      setVerbTick(0);
+      setVerbTick(randomLegacyVerbIndex());
       return;
     }
 
+    setVerbTick(randomLegacyVerbIndex());
     const timer = setInterval(() => {
-      setVerbTick((currentTick) => currentTick + 1);
+      setVerbTick((currentTick) => {
+        let nextTick = randomLegacyVerbIndex();
+        if (nextTick === currentTick) {
+          nextTick += 1;
+        }
+        return nextTick;
+      });
     }, 10_000);
 
     return () => {
@@ -4021,6 +4028,10 @@ function formatAttachedDocuments(paths: string[]): string {
 
 function formatAttachmentDigestPath(filePath: string): string {
   return JSON.stringify(filePath.split(/[\\/]/).filter(Boolean).at(-1) ?? filePath);
+}
+
+function randomLegacyVerbIndex(): number {
+  return Math.floor(Math.random() * 1_000_000);
 }
 
 function eventToLine(event: AgentEvent): LogLineInput {

@@ -5,7 +5,7 @@ import type { CommandSuggestionItem } from "../components/CommandSuggestions.js"
 import { formatCompactTokens, formatCost, formatSessionTokens, shortenMiddle } from "../format.js";
 import type { OllamaHostDetails } from "../hosts.js";
 import { computeComposerLayout } from "../layout.js";
-import { formatElapsed, pulseGlyph, runStatusParts, spinnerFrameMs, spinnerGlyph, waveFrameMs } from "../runStatus.js";
+import { formatElapsed, pulseGlyph, randomRunStatusSeed, runStatusParts, spinnerFrameMs, spinnerGlyph, waveFrameMs } from "../runStatus.js";
 import type { AgentMode, LogLine } from "../types.js";
 import { RainbowText, WaveText } from "./AnimatedText.js";
 import { type Artifact, attachmentSymbol, extractAttachmentPaths, sanitizePastedText } from "./attachments.js";
@@ -538,6 +538,7 @@ function ShellComposer(props: {
 }): React.ReactElement {
   const [frame, setFrame] = useState(0);
   const [runningSince, setRunningSince] = useState<number | null>(null);
+  const [verbSeed, setVerbSeed] = useState(() => randomRunStatusSeed());
   // Token totals captured at run start so the live counter shows tokens spent
   // *this run*, not the whole session — Claude-Code-style "(2m 0s · ↑ 6.1k)".
   const [runStartTokens, setRunStartTokens] = useState<{ input: number; output: number } | null>(null);
@@ -558,7 +559,14 @@ function ShellComposer(props: {
       setRunningSince(null);
       setRunStartTokens(null);
     } else {
-      setRunningSince((current) => current ?? Date.now());
+      setRunningSince((current) => {
+        if (current === null) {
+          setVerbSeed(randomRunStatusSeed());
+          return Date.now();
+        }
+
+        return current;
+      });
       setRunStartTokens((current) =>
         current ?? { input: props.sessionTelemetry.promptTokens, output: props.sessionTelemetry.responseTokens },
       );
@@ -669,7 +677,7 @@ function ShellComposer(props: {
   const runInputTokens = runStartTokens ? Math.max(0, props.sessionTelemetry.promptTokens - runStartTokens.input) : 0;
   const runOutputTokens = runStartTokens ? Math.max(0, props.sessionTelemetry.responseTokens - runStartTokens.output) : 0;
   const accent = props.isRunning ? (props.ultramaxxRun ? "magenta" : "yellow") : props.approvalActive ? "yellow" : "cyan";
-  const parts = runStatusParts({ workState: props.workState, status: props.status, elapsedMs });
+  const parts = runStatusParts({ workState: props.workState, status: props.status, elapsedMs, seed: verbSeed });
   const safeCursor = Math.max(0, Math.min(cursor, props.input.length));
   const editorRows = layout.editorRows;
   const view = composerView(props.input, safeCursor, layout.inputWidth, editorRows);
