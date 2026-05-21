@@ -36,6 +36,7 @@ import { Composer, FooterHints } from "./components/Composer.js";
 import { ExperimentalPanel, experimentalFlagAt, experimentalFlagCount, type ExperimentalFlags } from "./components/ExperimentalPanel.js";
 import { ExperimentalShell } from "./experimental/ExperimentalShell.js";
 import { ThemePicker } from "./experimental/ThemePicker.js";
+import { type Artifact, attachmentKindForPath, attachmentLabel } from "./experimental/attachments.js";
 import { hasUltramaxx, stripUltramaxx } from "./experimental/ultramaxx.js";
 import { formatCompletionSummary } from "./runStatus.js";
 import { Header } from "./components/Header.js";
@@ -149,6 +150,9 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   const [ultramaxxRun, setUltramaxxRun] = useState(false);
   const [reauthPrompt, setReauthPrompt] = useState<{ task: string } | null>(null);
   const [reauthBusy, setReauthBusy] = useState(false);
+  const [artifacts, setArtifacts] = useState<Artifact[]>([]);
+  const artifactsRef = useRef<Artifact[]>([]);
+  const pendingAttachmentsRef = useRef<string[]>([]);
   const [onboardingIndex, setOnboardingIndex] = useState(0);
   const [onboardingInput, setOnboardingInput] = useState("");
   const [onboardingBusyMessage, setOnboardingBusyMessage] = useState<string | null>(null);
@@ -211,6 +215,51 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       ].slice(-maxTranscriptLines)
     );
   }, []);
+
+  const pushArtifact = useCallback((artifact: Artifact): void => {
+    artifactsRef.current = [...artifactsRef.current, artifact].slice(-40);
+    setArtifacts(artifactsRef.current);
+  }, []);
+
+  // Registers a pasted document as an attachment chip; returns the chip label
+  // ("Image #1") for the composer to insert inline.
+  const attachFile = useCallback(
+    (path: string): string => {
+      const kind = attachmentKindForPath(path) ?? "file";
+      const sameKind = artifactsRef.current.filter((item) => item.kind === kind && item.origin === "attached").length;
+      const label = attachmentLabel(kind, sameKind + 1);
+      pushArtifact({ id: Date.now() + Math.random(), kind, path, label, origin: "attached" });
+      pendingAttachmentsRef.current = [...pendingAttachmentsRef.current, path];
+      appendLine({
+        tone: "accent",
+        label: "attach",
+        text: `${label} attached`,
+        detail: path
+      });
+      return label;
+    },
+    [appendLine, pushArtifact]
+  );
+
+  // Best-effort: record a document PatchPilot wrote during a run.
+  const registerCreatedArtifact = useCallback(
+    (path: string): void => {
+      const kind = attachmentKindForPath(path);
+      if (!kind || artifactsRef.current.some((item) => item.path === path)) {
+        return;
+      }
+
+      const sameKind = artifactsRef.current.filter((item) => item.kind === kind && item.origin === "created").length;
+      pushArtifact({
+        id: Date.now() + Math.random(),
+        kind,
+        path,
+        label: attachmentLabel(kind, sameKind + 1),
+        origin: "created"
+      });
+    },
+    [pushArtifact]
+  );
 
   useEffect(() => {
     if (!isRunning || todos.every((todo) => todo.status !== "in_progress")) {
@@ -1285,7 +1334,15 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
               approvalResolverRef.current = resolve;
             })
         });
-        for await (const event of taskRunner.run(effectiveTask)) {
+        // Hand any documents the user attached this turn to the agent so it
+        // can read/analyse them with its file tools.
+        const pendingAttachments = pendingAttachmentsRef.current;
+        pendingAttachmentsRef.current = [];
+        const taskWithAttachments =
+          pendingAttachments.length > 0
+            ? `${effectiveTask}\n\n[Attached documents for this task — read or analyse them as needed: ${pendingAttachments.join(", ")}]`
+            : effectiveTask;
+        for await (const event of taskRunner.run(taskWithAttachments)) {
           setWorkState(event.workState);
           if (event.type === "metrics") {
             if (runnableSettings.provider === "ollama") {
@@ -1315,6 +1372,16 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
 
           if (event.type === "final") {
             finalMessage = event.message;
+          }
+
+          // Best-effort: list documents PatchPilot wrote in the artifacts bar.
+          if (event.type === "tool" && event.ok && /write|create|pdf|save|export/i.test(event.name)) {
+            const created = /((?:\/|~|\.\/|[\w.-]+\/)[\w./-]+\.(?:pdf|docx?|md|txt|png|jpe?g|webp))/i.exec(
+              `${event.summary ?? ""} ${event.preview ?? ""}`
+            );
+            if (created?.[1]) {
+              registerCreatedArtifact(created[1]);
+            }
           }
 
           // Expired Gemini-Wrapper cookies arrive as an error event (the run
@@ -1378,7 +1445,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         });
       }
     },
-    [agentMode, appendLine, experimentalFlags, isRunning, modelOptions, resumeContext, settings]
+    [agentMode, appendLine, experimentalFlags, isRunning, modelOptions, registerCreatedArtifact, resumeContext, settings]
   );
 
   const resolveReauthPrompt = useCallback(
@@ -2034,6 +2101,9 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           setTranscriptScrollOffset(0);
           setSessionScrollOffset(0);
           conversationTurnsRef.current = [];
+          artifactsRef.current = [];
+          pendingAttachmentsRef.current = [];
+          setArtifacts([]);
           return;
         case "new":
           if (isRunning) {
@@ -2063,6 +2133,9 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           setStatus("idle");
           setWorkState("idle");
           conversationTurnsRef.current = [];
+          artifactsRef.current = [];
+          pendingAttachmentsRef.current = [];
+          setArtifacts([]);
           // Leave the transcript empty so the startup banner shows again,
           // exactly like a fresh launch.
           return;
@@ -2641,8 +2714,10 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         rows={terminalRows}
         columns={terminalColumns}
         activeHost={activeHost}
+        artifacts={artifacts}
         onChange={setInput}
         onSubmit={(value) => void handleSubmit(value)}
+        onAttach={attachFile}
       />
     );
   }

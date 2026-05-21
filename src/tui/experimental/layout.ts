@@ -16,6 +16,7 @@ export type ExperimentalLayout = {
   approvalHeight: number;
   paletteHeight: number;
   todoDockHeight: number;
+  artifactsHeight: number;
   footerHeight: number;
 };
 
@@ -46,6 +47,7 @@ export function computeExperimentalLayout(options: {
   paletteItemCount: number;
   approvalActive: boolean;
   todoCount?: number;
+  hasArtifacts?: boolean;
 }): ExperimentalLayout {
   const rootHeight = Math.max(MIN_ROWS, Math.floor(options.rows) || MIN_ROWS);
   const rootWidth = Math.max(MIN_COLUMNS, Math.floor(options.columns) || MIN_COLUMNS);
@@ -72,8 +74,11 @@ export function computeExperimentalLayout(options: {
   const paletteHeight = paletteRows > 0 ? paletteRows + 6 : 0;
 
   const todoDockHeight = todoDockHeightFor(options.todoCount ?? 0);
+  // Artifacts bar: rounded border (2) + one chip row.
+  const artifactsHeight = options.hasArtifacts ? 3 : 0;
 
-  const fixed = HEADER_HEIGHT + FOOTER_HEIGHT + composerHeight + approvalHeight + paletteHeight + todoDockHeight;
+  const fixed =
+    HEADER_HEIGHT + FOOTER_HEIGHT + composerHeight + approvalHeight + paletteHeight + todoDockHeight + artifactsHeight;
   const transcriptHeight = Math.max(MIN_TRANSCRIPT_HEIGHT, rootHeight - fixed);
   const bodyHeight = rootHeight - HEADER_HEIGHT;
 
@@ -88,6 +93,7 @@ export function computeExperimentalLayout(options: {
     approvalHeight,
     paletteHeight,
     todoDockHeight,
+    artifactsHeight,
     footerHeight: FOOTER_HEIGHT,
   };
 }

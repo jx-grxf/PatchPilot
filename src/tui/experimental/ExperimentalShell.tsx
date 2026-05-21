@@ -8,9 +8,11 @@ import { computeComposerLayout } from "../layout.js";
 import { formatElapsed, pulseGlyph, runStatusParts, spinnerFrameMs, spinnerGlyph, waveFrameMs } from "../runStatus.js";
 import type { AgentMode, LogLine } from "../types.js";
 import { RainbowText, WaveText } from "./AnimatedText.js";
+import { type Artifact, attachmentSymbol, looksLikeAttachmentPath, sanitizePastedText, stripQuotes } from "./attachments.js";
 import { ExperimentalBanner } from "./Banner.js";
 import { composerView } from "./composer.js";
 import { CommandPalette } from "./CommandPalette.js";
+import { estimateGeminiCost, formatSavedCost } from "./geminiPricing.js";
 import { computeExperimentalLayout, windowRows } from "./layout.js";
 import { symbols, workStateColor } from "./theme.js";
 import { buildShellRows, buildTodoDock, truncate } from "./transcriptRows.js";
@@ -46,8 +48,10 @@ export type ExperimentalShellProps = {
   rows: number;
   columns: number;
   activeHost: OllamaHostDetails | null;
+  artifacts: Artifact[];
   onChange: (value: string) => void;
   onSubmit: (value: string) => void;
+  onAttach: (path: string) => string;
 };
 
 /**
@@ -68,11 +72,13 @@ export function ExperimentalShell(props: ExperimentalShellProps): React.ReactEle
     paletteItemCount: props.paletteItems.length,
     approvalActive,
     todoCount: props.todos.length,
+    hasArtifacts: props.artifacts.length > 0,
   });
 
   return (
     <Box flexDirection="column" height={layout.rootHeight} overflowY="hidden">
       <ShellHeader {...props} />
+      {layout.artifactsHeight > 0 ? <ArtifactsBar artifacts={props.artifacts} width={layout.transcriptWidth} /> : null}
       <ShellTranscript
         lines={props.lines}
         isRunning={props.isRunning}
@@ -101,6 +107,7 @@ export function ExperimentalShell(props: ExperimentalShellProps): React.ReactEle
         status={props.status}
         draftTokens={props.draftTokens}
         width={layout.transcriptWidth}
+        onAttach={props.onAttach}
         onChange={props.onChange}
         onSubmit={props.onSubmit}
       />
@@ -116,6 +123,12 @@ function ShellHeader(props: ExperimentalShellProps): React.ReactElement {
   const modeLabel = props.agentMode === "bypass" ? "build+bypass" : props.agentMode;
   const writeLabel = props.allowWrite ? "on" : props.agentMode === "build" ? "approval" : "off";
   const shellLabel = props.allowShell ? "on" : props.agentMode === "build" ? "approval" : "off";
+  // Gemini-Wrapper rides the free Gemini Web route; show what the same tokens
+  // would have cost on the paid Gemini API — i.e. the running saved amount.
+  const savedUsd =
+    props.provider === "gemini-wrapper"
+      ? estimateGeminiCost(props.sessionTelemetry.promptTokens, props.sessionTelemetry.responseTokens, props.model)
+      : null;
 
   return (
     <Box borderStyle="round" borderColor={accent} flexDirection="column" paddingX={1}>
@@ -130,6 +143,14 @@ function ShellHeader(props: ExperimentalShellProps): React.ReactElement {
           <Text color="white">{shortenMiddle(hostLabel, 16)}</Text>
         </Text>
         <Text wrap="truncate">
+          {savedUsd !== null ? (
+            <Text>
+              <Text color="green" bold>
+                saved {formatSavedCost(savedUsd)}
+              </Text>
+              <Text color="gray"> · </Text>
+            </Text>
+          ) : null}
           <Text color="gray">mode </Text>
           <Text color={modeColor} bold>
             {modeLabel}
@@ -148,6 +169,27 @@ function ShellHeader(props: ExperimentalShellProps): React.ReactElement {
           {formatSessionTokens(props.sessionTelemetry)} · {formatCost(props.sessionTelemetry.estimatedCostUsd)}
         </Text>
       </Box>
+    </Box>
+  );
+}
+
+/** Compact bar listing attached documents and files PatchPilot created. */
+function ArtifactsBar(props: { artifacts: Artifact[]; width: number }): React.ReactElement {
+  const visible = props.artifacts.slice(-10);
+  return (
+    <Box borderStyle="round" borderColor="gray" paddingX={1} overflowY="hidden">
+      <Text color="gray">{symbols.assistant} artifacts </Text>
+      <Text wrap="truncate">
+        {visible.map((artifact, index) => (
+          <Text key={artifact.id}>
+            {index > 0 ? <Text color="gray">   </Text> : null}
+            <Text color={artifact.origin === "created" ? "green" : "cyan"}>
+              {attachmentSymbol(artifact.kind)} {artifact.label}
+            </Text>
+            <Text color="gray">{artifact.origin === "created" ? " (new)" : ""}</Text>
+          </Text>
+        ))}
+      </Text>
     </Box>
   );
 }
@@ -375,6 +417,7 @@ function ShellComposer(props: {
   width: number;
   onChange: (value: string) => void;
   onSubmit: (value: string) => void;
+  onAttach: (path: string) => string;
 }): React.ReactElement {
   const [frame, setFrame] = useState(0);
   const [runningSince, setRunningSince] = useState<number | null>(null);
@@ -469,8 +512,18 @@ function ShellComposer(props: {
         return;
       }
 
-      props.onChange(`${props.input.slice(0, safeCursor)}${value}${props.input.slice(safeCursor)}`);
-      setCursor(safeCursor + value.length);
+      // Normalise pasted text so a multi-line paste cannot corrupt the editor.
+      const pasted = sanitizePastedText(value);
+      // A pasted path to an image / PDF / DOCX becomes an attachment chip.
+      if (looksLikeAttachmentPath(pasted)) {
+        const chip = `${props.onAttach(stripQuotes(pasted.trim()))} `;
+        props.onChange(`${props.input.slice(0, safeCursor)}${chip}${props.input.slice(safeCursor)}`);
+        setCursor(safeCursor + chip.length);
+        return;
+      }
+
+      props.onChange(`${props.input.slice(0, safeCursor)}${pasted}${props.input.slice(safeCursor)}`);
+      setCursor(safeCursor + pasted.length);
     },
     { isActive: typingActive },
   );
