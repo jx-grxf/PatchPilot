@@ -87,11 +87,14 @@ describe("GeminiWrapperClient", () => {
   });
 
   it("defaults Python bridge execution to PatchPilot's managed venv", () => {
+    const configDir = path.join(tmpdir(), "patchpilot-test-config");
     const env = {
-      PATCHPILOT_CONFIG_DIR: "/tmp/patchpilot-test-config"
+      PATCHPILOT_CONFIG_DIR: configDir
     } as NodeJS.ProcessEnv;
-    expect(getGeminiWrapperVenvDir(env)).toBe("/tmp/patchpilot-test-config/gemini-wrapper-venv");
-    expect(getGeminiWrapperCookieCacheDir(env)).toBe("/tmp/patchpilot-test-config/gemini-webapi-cache");
+    // Build expected paths with path.join so the assertion uses the platform
+    // separator (backslash on Windows, slash elsewhere).
+    expect(getGeminiWrapperVenvDir(env)).toBe(path.join(configDir, "gemini-wrapper-venv"));
+    expect(getGeminiWrapperCookieCacheDir(env)).toBe(path.join(configDir, "gemini-webapi-cache"));
     expect(readGeminiWrapperPythonCommand(env)).toBe(getManagedGeminiWrapperPythonPath(env));
   });
 

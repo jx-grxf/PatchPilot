@@ -53,8 +53,14 @@ export async function clipboardHasImage(): Promise<boolean> {
     }
 
     if (platform() === "win32") {
-      const script = "Add-Type -AssemblyName System.Windows.Forms; [Windows.Forms.Clipboard]::ContainsImage()";
-      const { stdout } = await run("powershell", ["-NoProfile", "-Command", script], { timeout: EXEC_TIMEOUT_MS });
+      // Clipboard access needs an STA thread and the System.Windows.Forms +
+      // System.Drawing assemblies — without -Sta GetImage/ContainsImage throw.
+      const script =
+        "Add-Type -AssemblyName System.Windows.Forms; Add-Type -AssemblyName System.Drawing; " +
+        "[System.Windows.Forms.Clipboard]::ContainsImage()";
+      const { stdout } = await run("powershell", ["-NoProfile", "-Sta", "-Command", script], {
+        timeout: EXEC_TIMEOUT_MS,
+      });
       return stdout.trim().toLowerCase() === "true";
     }
 
@@ -104,15 +110,20 @@ export async function readClipboardImage(): Promise<string | null> {
         return null;
       }
     } else if (platform() === "win32") {
+      // -Sta + both assemblies are required: GetImage() returns a
+      // System.Drawing.Bitmap, and ImageFormat lives in System.Drawing.
       const script = [
         "Add-Type -AssemblyName System.Windows.Forms;",
-        "$img = [Windows.Forms.Clipboard]::GetImage();",
+        "Add-Type -AssemblyName System.Drawing;",
+        "$img = [System.Windows.Forms.Clipboard]::GetImage();",
         "if ($img -ne $null) {",
         `  $img.Save(${JSON.stringify(target)}, [System.Drawing.Imaging.ImageFormat]::Png);`,
         "  'ok'",
         "} else { 'none' }",
       ].join(" ");
-      const { stdout } = await run("powershell", ["-NoProfile", "-Command", script], { timeout: EXEC_TIMEOUT_MS });
+      const { stdout } = await run("powershell", ["-NoProfile", "-Sta", "-Command", script], {
+        timeout: EXEC_TIMEOUT_MS,
+      });
       if (stdout.trim() !== "ok") {
         return null;
       }
