@@ -113,7 +113,12 @@ export async function checkOllamaHost(
     timeoutMs?: number;
   } = {}
 ): Promise<OllamaHost | null> {
-  const url = normalizeOllamaUrl(value);
+  let url: string;
+  try {
+    url = normalizeOllamaUrl(value);
+  } catch {
+    return null;
+  }
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), options.timeoutMs ?? 500);
 

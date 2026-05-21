@@ -2,7 +2,7 @@ import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { access, lstat, mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
-import { platform, tmpdir } from "node:os";
+import { homedir, platform, tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { deflateRawSync, inflateRawSync } from "node:zlib";
@@ -1269,11 +1269,12 @@ export class WorkspaceTools {
       return denied(`package script not found: ${normalizedScript}`, tool);
     }
 
-    const scriptCommand = scripts[normalizedScript];
-    const scriptSafetyError = validatePackageScriptCommand(scriptCommand, this.root);
+    const scriptCommands = collectPackageScriptCommands(scripts, normalizedScript);
+    const scriptSafetyError = validatePackageScriptCommands(scriptCommands, this.root);
     if (scriptSafetyError) {
       return denied(`${tool} denied package script before approval. ${scriptSafetyError}`, tool);
     }
+    const approvalCommand = scriptCommands.map((entry) => `${entry.name}: ${entry.command}`).join("\n");
 
     if (!this.allowShell) {
       const approval = await this.requestApproval(
@@ -1281,9 +1282,9 @@ export class WorkspaceTools {
         "shell",
         {
           script: normalizedScript,
-          command: scriptCommand
+          command: approvalCommand
         },
-        previewPackageScript(normalizedScript, scriptCommand, this.root)
+        previewPackageScriptSequence(normalizedScript, scriptCommands, this.root)
       );
       if (approval.decision === "deny") {
         return denied(`${tool} denied by permission policy.`, tool, approval);
@@ -1297,7 +1298,7 @@ export class WorkspaceTools {
       content: clip(output.output, 20_000),
       tool,
       category: toolSpecs[tool].category,
-      preview: previewPackageScript(normalizedScript, scriptCommand, this.root)
+      preview: previewPackageScriptSequence(normalizedScript, scriptCommands, this.root)
     };
   }
 
@@ -2410,7 +2411,7 @@ function extractPatchTargetPaths(patchContent: string): string[] {
       continue;
     }
 
-    const rawPath = line.slice(4).trim().split(/\s+/)[0] ?? "";
+    const rawPath = normalizePatchHeaderPath(line.slice(4));
     const normalizedPath = rawPath.replace(/^a\//, "").replace(/^b\//, "");
     if (normalizedPath && normalizedPath !== "/dev/null") {
       paths.push(normalizedPath);
@@ -2418,6 +2419,23 @@ function extractPatchTargetPaths(patchContent: string): string[] {
   }
 
   return [...new Set(paths)];
+}
+
+function normalizePatchHeaderPath(value: string): string {
+  const trimmedValue = value.trim();
+  if (!trimmedValue || trimmedValue === "/dev/null") {
+    return trimmedValue;
+  }
+
+  if (trimmedValue.startsWith("\"")) {
+    try {
+      return JSON.parse(trimmedValue) as string;
+    } catch {
+      return trimmedValue.slice(1).split("\"")[0] ?? trimmedValue;
+    }
+  }
+
+  return trimmedValue;
 }
 
 function validateShellCommand(command: string, workspaceRoot: string): string | null {
@@ -2458,6 +2476,31 @@ function validateShellCommand(command: string, workspaceRoot: string): string | 
       if (relativePath.startsWith("..") || path.isAbsolute(relativePath)) {
         return "absolute path arguments outside the workspace are blocked. Use inspect_document with /experimental file-analysis for external files.";
       }
+    }
+  }
+
+  return null;
+}
+
+type PackageScriptCommand = {
+  name: string;
+  command: string;
+};
+
+function collectPackageScriptCommands(scripts: Record<string, string>, scriptName: string): PackageScriptCommand[] {
+  return [`pre${scriptName}`, scriptName, `post${scriptName}`]
+    .filter((name) => typeof scripts[name] === "string")
+    .map((name) => ({
+      name,
+      command: scripts[name] ?? ""
+    }));
+}
+
+function validatePackageScriptCommands(commands: PackageScriptCommand[], workspaceRoot: string): string | null {
+  for (const entry of commands) {
+    const error = validatePackageScriptCommand(entry.command, workspaceRoot);
+    if (error) {
+      return `${entry.name}: ${error}`;
     }
   }
 
@@ -2627,16 +2670,17 @@ function toAbsoluteShellPath(value: string): string | null {
   }
 
   if (value === "~" || value.startsWith("~/")) {
-    return path.resolve(process.env.HOME ?? "", value === "~" ? "." : value.slice(2));
+    return path.resolve(homedir(), value === "~" ? "." : value.slice(2));
   }
 
   return null;
 }
 
-function previewPackageScript(name: string, command: string, workspaceRoot: string): string {
-  const risk = validatePackageScriptCommand(command, workspaceRoot);
+function previewPackageScriptSequence(name: string, commands: PackageScriptCommand[], workspaceRoot: string): string {
+  const commandSummary = commands.map((entry) => `${entry.name}: ${entry.command}`).join(" && ");
+  const risk = validatePackageScriptCommands(commands, workspaceRoot);
   const prefix = risk ? `Risky package script (${risk})` : "Run package script";
-  return `${prefix}: npm run ${name} -> ${clip(command, 220)}`;
+  return `${prefix}: npm run ${name} -> ${clip(commandSummary, 220)}`;
 }
 
 function approvalScopeKey(tool: AgentToolName, permission: Exclude<ToolPermission, "none">, args: Record<string, unknown>): string {

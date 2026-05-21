@@ -743,8 +743,8 @@ describe("WorkspaceTools", () => {
 
     expect(build.ok).toBe(false);
     expect(approvals).toEqual([
-      "echo:node -e \"console.log('ok')\"",
-      "build:node -e \"console.log('build')\""
+      "echo:echo: node -e \"console.log('ok')\"",
+      "build:build: node -e \"console.log('build')\""
     ]);
   });
 
@@ -773,6 +773,88 @@ describe("WorkspaceTools", () => {
     expect(result.ok).toBe(false);
     expect(result.summary).toContain("before approval");
     expect(approvals).toBe(0);
+  });
+
+  it("blocks dangerous npm lifecycle scripts before requesting approval", async () => {
+    await writeFile(
+      path.join(tempRoot, "package.json"),
+      JSON.stringify({
+        scripts: {
+          pretest: "git reset --hard",
+          test: "vitest run"
+        }
+      })
+    );
+    let approvals = 0;
+    const tools = new WorkspaceTools({
+      root: tempRoot,
+      allowWrite: false,
+      allowShell: false,
+      approvalHandler: async () => {
+        approvals += 1;
+        return "allow_once";
+      }
+    });
+
+    const result = await tools.execute({ name: "run_tests", arguments: {} });
+
+    expect(result.ok).toBe(false);
+    expect(result.summary).toContain("pretest");
+    expect(result.summary).toContain("before approval");
+    expect(approvals).toBe(0);
+  });
+
+  it("includes npm lifecycle scripts in approval scope and preview", async () => {
+    await writeFile(
+      path.join(tempRoot, "package.json"),
+      JSON.stringify({
+        scripts: {
+          prebuild: "node -e \"console.log('pre')\"",
+          build: "node -e \"console.log('build')\""
+        }
+      })
+    );
+    const approvals: string[] = [];
+    const tools = new WorkspaceTools({
+      root: tempRoot,
+      allowWrite: false,
+      allowShell: false,
+      approvalHandler: async (request) => {
+        approvals.push(String(request.arguments.command));
+        return "allow_once";
+      }
+    });
+
+    const result = await tools.execute({ name: "run_script", arguments: { script: "build" } });
+
+    expect(result.ok).toBe(true);
+    expect(result.preview).toContain("prebuild");
+    expect(approvals[0]).toContain("prebuild");
+    expect(approvals[0]).toContain("build");
+  });
+
+  it("rejects patches that target sensitive paths containing spaces", async () => {
+    const tools = new WorkspaceTools({
+      root: tempRoot,
+      allowWrite: true,
+      allowShell: false
+    });
+
+    const result = await tools.execute({
+      name: "apply_patch",
+      arguments: {
+        patch: [
+          "diff --git a/Library/Application Support/Google/Chrome/Default/Login Data b/Library/Application Support/Google/Chrome/Default/Login Data",
+          "--- /dev/null",
+          "+++ b/Library/Application Support/Google/Chrome/Default/Login Data",
+          "@@ -0,0 +1 @@",
+          "+secret"
+        ].join("\n")
+      }
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.summary).toContain("sensitive");
   });
 
   it("reads git status without enabling shell", async () => {
