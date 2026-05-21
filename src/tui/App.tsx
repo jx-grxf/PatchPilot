@@ -1211,7 +1211,13 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
 
       let finalMessage = "";
       try {
-        const runnableSettings = await resolveRunnableSettings(settings, modelOptions, appendLine, setModelOptions);
+        const runnableSettings = await resolveRunnableSettings(settings, modelOptions, appendLine, setModelOptions, (message) => {
+          if (settings.provider === "gemini-wrapper" && isGeminiCookieError(message)) {
+            setReauthPrompt({ task });
+            setStatus("gemini cookies expired");
+            setWorkState("waiting_approval");
+          }
+        });
         if (!runnableSettings) {
           return;
         }
@@ -2903,7 +2909,8 @@ async function resolveRunnableSettings(
   settings: AgentRunnerOptions,
   modelOptions: string[],
   appendLine: (line: LogLineInput) => void,
-  setModelOptions: React.Dispatch<React.SetStateAction<string[]>>
+  setModelOptions: React.Dispatch<React.SetStateAction<string[]>>,
+  onProviderError?: (message: string) => void
 ): Promise<AgentRunnerOptions | null> {
   let installedModels: string[];
   try {
@@ -2911,11 +2918,13 @@ async function resolveRunnableSettings(
       ? modelOptions
       : await loadAvailableModels(settings.provider, settings.ollamaUrl, setModelOptions);
   } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
     appendLine({
       tone: "danger",
       label: settings.provider,
-      text: error instanceof Error ? error.message : String(error)
+      text: message
     });
+    onProviderError?.(message);
     return null;
   }
 
