@@ -10,22 +10,30 @@ export async function fetchWithTimeout(
 ): Promise<Response> {
   const attempts = Math.max(1, (options.retries ?? 0) + 1);
   let lastError: unknown = null;
+  let lastStatus = 0;
 
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     try {
-      return await fetchOnceWithTimeout(input, init, options.timeoutMs);
+      const response = await fetchOnceWithTimeout(input, init, options.timeoutMs);
+      if (!isRetryableStatus(response.status) || attempt >= attempts || init.signal?.aborted) {
+        return response;
+      }
+
+      lastStatus = response.status;
+      await delay(readRetryDelayMs(response, attempt, options.retryDelayMs));
     } catch (error) {
       lastError = error;
       if (attempt >= attempts || init.signal?.aborted) {
         break;
       }
 
-      await delay(options.retryDelayMs ?? 150);
+      await delay(readRetryDelayMs(null, attempt, options.retryDelayMs));
     }
   }
 
+  const statusSuffix = lastStatus > 0 ? ` Last HTTP status: ${lastStatus}.` : "";
   const suffix = lastError instanceof Error ? ` ${lastError.message}` : "";
-  throw new Error(`${options.label} timed out or could not be reached after ${attempts} attempt${attempts === 1 ? "" : "s"}.${suffix}`);
+  throw new Error(`${options.label} timed out or could not be reached after ${attempts} attempt${attempts === 1 ? "" : "s"}.${statusSuffix}${suffix}`);
 }
 
 async function fetchOnceWithTimeout(input: string | URL, init: RequestInit, timeoutMs: number): Promise<Response> {
@@ -54,4 +62,38 @@ function delay(durationMs: number): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, durationMs);
   });
+}
+
+function isRetryableStatus(status: number): boolean {
+  return status === 429 || status === 500 || status === 502 || status === 503 || status === 504;
+}
+
+function readRetryDelayMs(response: Response | null, attempt: number, configuredDelayMs: number | undefined): number {
+  const retryAfterMs = readRetryAfterMs(response?.headers.get("retry-after") ?? null);
+  if (retryAfterMs !== null) {
+    return retryAfterMs;
+  }
+
+  const baseDelayMs = configuredDelayMs ?? 150;
+  const exponentialDelayMs = baseDelayMs * 2 ** Math.max(0, attempt - 1);
+  const jitterMs = Math.floor(Math.random() * Math.min(250, baseDelayMs));
+  return Math.min(5000, exponentialDelayMs + jitterMs);
+}
+
+function readRetryAfterMs(value: string | null): number | null {
+  if (!value) {
+    return null;
+  }
+
+  const numericSeconds = Number.parseFloat(value);
+  if (Number.isFinite(numericSeconds) && numericSeconds >= 0) {
+    return Math.min(30_000, numericSeconds * 1000);
+  }
+
+  const timestamp = Date.parse(value);
+  if (!Number.isNaN(timestamp)) {
+    return Math.min(30_000, Math.max(0, timestamp - Date.now()));
+  }
+
+  return null;
 }

@@ -1,4 +1,4 @@
-import type { ModelChatOptions, ModelChatResult, ModelTelemetry } from "./types.js";
+import { AGENT_TOOL_NAMES, MAX_TOOL_CALLS_PER_RESPONSE, type ModelChatOptions, type ModelChatResult, type ModelTelemetry } from "./types.js";
 import { fetchWithTimeout } from "./http.js";
 import { getNvidiaReasoningEffort } from "./reasoning.js";
 import { attachTokenCost } from "./tokenAccounting.js";
@@ -20,6 +20,7 @@ type NvidiaChatResponse = {
     message?: {
       content?: string;
     };
+    finish_reason?: string;
   }>;
   usage?: {
     prompt_tokens?: number;
@@ -85,6 +86,10 @@ export class NvidiaClient {
     }
 
     const content = payload.choices?.[0]?.message?.content?.trim() ?? "";
+    const finishReason = payload.choices?.[0]?.finish_reason;
+    if (isTruncatedFinishReason(finishReason)) {
+      throw new Error(`NVIDIA response for model "${options.model}" was truncated by max_tokens (${this.runtimeOptions.maxTokens}).`);
+    }
     if (!content) {
       throw new Error("NVIDIA returned an empty response.");
     }
@@ -120,7 +125,7 @@ export class NvidiaClient {
     try {
       return await fetchWithTimeout(`${this.baseUrl}${path}`, init, {
         timeoutMs: init?.method === "POST" ? 90_000 : 8000,
-        retries: init?.method === "POST" ? 0 : 1,
+        retries: init?.method === "POST" ? 2 : 1,
         label: `NVIDIA ${path}`
       });
     } catch (error) {
@@ -150,43 +155,17 @@ const agentResponseFormat = {
           properties: {
             action: { const: "tools" },
             message: { type: "string" },
-            tool_calls: {
+              tool_calls: {
               type: "array",
               minItems: 1,
+              maxItems: MAX_TOOL_CALLS_PER_RESPONSE,
               items: {
                 type: "object",
                 additionalProperties: false,
                 required: ["name", "arguments"],
                 properties: {
                   name: {
-                    enum: [
-                      "update_todo",
-                      "list_files",
-                      "read_file",
-                      "read_range",
-                      "file_info",
-                      "search_text",
-                      "inspect_document",
-                      "memory_search",
-                      "memory_remember",
-                      "git_status",
-                      "git_diff",
-                      "git_log",
-                      "git_show",
-                      "list_changed_files",
-                      "list_scripts",
-                      "repo_overview",
-                      "test_list",
-                      "dependency_tree",
-                      "write_file",
-                      "edit_file",
-                      "create_pdf",
-                      "create_docx",
-                      "apply_patch",
-                      "run_script",
-                      "run_tests",
-                      "run_shell"
-                    ]
+                    enum: AGENT_TOOL_NAMES
                   },
                   arguments: {
                     type: "object",
@@ -226,9 +205,13 @@ function isLikelyNvidiaChatModel(model: string): boolean {
 
 function readNvidiaRuntimeOptions(env: NodeJS.ProcessEnv = process.env): NvidiaRuntimeOptions {
   return {
-    maxTokens: readPositiveInteger(env.PATCHPILOT_NUM_PREDICT, 1024),
+    maxTokens: readPositiveInteger(env.PATCHPILOT_NUM_PREDICT, 8192),
     temperature: readTemperature(env.PATCHPILOT_TEMPERATURE, 0.1)
   };
+}
+
+function isTruncatedFinishReason(value: string | undefined): boolean {
+  return typeof value === "string" && /length|max_?tokens/i.test(value);
 }
 
 function toTelemetry(payload: NvidiaChatResponse, durationMs: number, model: string): ModelTelemetry {

@@ -296,7 +296,7 @@ export class GeminiWrapperClient {
     try {
       return await fetchWithTimeout(`${this.baseUrl}${path}`, init, {
         timeoutMs: init?.method === "POST" ? 90_000 : 8000,
-        retries: init?.method === "POST" ? 0 : 1,
+        retries: init?.method === "POST" ? 2 : 1,
         label: `Gemini-Wrapper ${path}`
       });
     } catch (error) {
@@ -848,7 +848,7 @@ function isUnauthenticatedGeminiWebStatus(status: string | undefined): boolean {
 
 function readGeminiWrapperRuntimeOptions(env: NodeJS.ProcessEnv = process.env): GeminiWrapperRuntimeOptions {
   return {
-    maxTokens: readPositiveInteger(env.PATCHPILOT_NUM_PREDICT, 1024),
+    maxTokens: readPositiveInteger(env.PATCHPILOT_NUM_PREDICT, 8192),
     temperature: readTemperature(env.PATCHPILOT_TEMPERATURE, 0.1),
     bridgeMinIntervalMs: readNonNegativeInteger(env.PATCHPILOT_GEMINI_WRAPPER_MIN_INTERVAL_MS, 1500),
     bridgeTimeoutMs: readPositiveInteger(env.PATCHPILOT_GEMINI_WRAPPER_TIMEOUT_MS, 180_000)

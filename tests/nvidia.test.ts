@@ -93,6 +93,7 @@ describe("NvidiaClient", () => {
             anyOf?: Array<{
               properties?: {
                 tool_calls?: {
+                  maxItems?: number;
                   items?: {
                     properties?: {
                       name?: {
@@ -119,6 +120,7 @@ describe("NvidiaClient", () => {
     });
     const schemaToolNames = requestBody.response_format?.json_schema?.schema?.anyOf?.[0]?.properties?.tool_calls?.items?.properties?.name?.enum ?? [];
     expect(schemaToolNames.sort()).toEqual(Object.keys(toolSpecs).sort());
+    expect(requestBody.response_format?.json_schema?.schema?.anyOf?.[0]?.properties?.tool_calls?.maxItems).toBe(12);
     expect(result.telemetry).toMatchObject({
       promptTokens: 10,
       responseTokens: 3,

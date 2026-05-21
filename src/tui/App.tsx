@@ -1233,6 +1233,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           reasoningEffort: ultramaxx ? "xhigh" : runnableSettings.reasoningEffort,
           thinkingMode: ultramaxx ? "adaptive" : runnableSettings.thinkingMode,
           subagents: ultramaxx ? true : runnableSettings.subagents,
+          ultramaxx,
           allowExternalFileAnalysis: experimentalFlags.fileAnalysis,
           memoryEnabled: experimentalFlags.memory,
           mode: effectiveMode,

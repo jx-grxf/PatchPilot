@@ -60,33 +60,38 @@ export type AgentWorkState =
   | "done"
   | "error";
 
-export type AgentToolName =
-  | "update_todo"
-  | "list_files"
-  | "read_file"
-  | "read_range"
-  | "file_info"
-  | "search_text"
-  | "inspect_document"
-  | "memory_remember"
-  | "memory_search"
-  | "git_status"
-  | "git_diff"
-  | "git_log"
-  | "git_show"
-  | "list_changed_files"
-  | "list_scripts"
-  | "repo_overview"
-  | "test_list"
-  | "dependency_tree"
-  | "write_file"
-  | "edit_file"
-  | "create_pdf"
-  | "create_docx"
-  | "apply_patch"
-  | "run_script"
-  | "run_tests"
-  | "run_shell";
+export const AGENT_TOOL_NAMES = [
+  "update_todo",
+  "list_files",
+  "read_file",
+  "read_range",
+  "file_info",
+  "search_text",
+  "inspect_document",
+  "memory_remember",
+  "memory_search",
+  "git_status",
+  "git_diff",
+  "git_log",
+  "git_show",
+  "list_changed_files",
+  "list_scripts",
+  "repo_overview",
+  "test_list",
+  "dependency_tree",
+  "write_file",
+  "edit_file",
+  "create_pdf",
+  "create_docx",
+  "apply_patch",
+  "run_script",
+  "run_tests",
+  "run_shell"
+] as const;
+
+export const MAX_TOOL_CALLS_PER_RESPONSE = 12;
+
+export type AgentToolName = (typeof AGENT_TOOL_NAMES)[number];
 
 export type AgentToolCall = {
   name: AgentToolName;

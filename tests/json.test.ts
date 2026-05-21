@@ -103,6 +103,27 @@ describe("parseAgentResponse", () => {
     }
   });
 
+  it("truncates overlong tool batches to the protocol maximum", () => {
+    const response = parseAgentResponse(
+      JSON.stringify({
+        action: "tools",
+        message: "many",
+        tool_calls: Array.from({ length: 20 }, () => ({
+          name: "list_files",
+          arguments: {
+            path: "."
+          }
+        }))
+      })
+    );
+
+    expect(response.action).toBe("tools");
+    if (response.action === "tools") {
+      expect(response.tool_calls).toHaveLength(12);
+      expect(response.message).toContain("Truncated to the first 12 tool calls");
+    }
+  });
+
   it("repairs raw control characters inside JSON strings", () => {
     expect(parseAgentResponse('{"action":"final","message":"first line\nsecond line"}')).toEqual({
       action: "final",

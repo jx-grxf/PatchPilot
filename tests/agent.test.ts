@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { executeToolCallsWithReadParallelism, normalizeTodoItems, recoverMalformedToolResponse } from "../src/core/agent.js";
+import { compactTranscript, executeToolCallsWithReadParallelism, findRepeatedToolCall, normalizeTodoItems, recoverMalformedToolResponse, shouldExpectTodos } from "../src/core/agent.js";
 import type { AgentToolCall, ToolResult } from "../src/core/types.js";
 import type { WorkspaceTools } from "../src/core/workspace.js";
 
@@ -121,6 +121,37 @@ describe("normalizeTodoItems", () => {
   });
 });
 
+describe("agent loop guards", () => {
+  it("detects multi-step implementation tasks that should start with todos", () => {
+    expect(shouldExpectTodos("fix provider retries and run the tests after changing the backend")).toBe(true);
+    expect(shouldExpectTodos("what stack is this")).toBe(false);
+    expect(shouldExpectTodos("tiny", true)).toBe(true);
+  });
+
+  it("detects repeated identical workspace tool calls with stable argument order", () => {
+    const recent: string[] = [];
+    expect(findRepeatedToolCall([{ name: "read_file", arguments: { path: "src/a.ts", mode: "full" } }], recent)).toBeNull();
+    expect(findRepeatedToolCall([{ name: "read_file", arguments: { mode: "full", path: "src/a.ts" } }], recent)).toBeNull();
+    expect(findRepeatedToolCall([{ name: "read_file", arguments: { path: "src/a.ts", mode: "full" } }], recent)?.name).toBe("read_file");
+  });
+
+  it("compacts older tool-result transcript blocks and keeps recent ones verbatim", () => {
+    const messages = [
+      { role: "system" as const, content: "system" },
+      { role: "user" as const, content: "task" },
+      toolResultMessage("read_file", "old file content".repeat(100)),
+      toolResultMessage("search_text", "middle search output"),
+      toolResultMessage("git_diff", "recent diff")
+    ];
+
+    compactTranscript(messages, 1);
+
+    expect(messages[2]?.content).toContain("Compacted earlier tool results");
+    expect(messages[3]?.content).toContain("\"tool_results\"");
+    expect(messages[4]?.content).toContain("\"tool_results\"");
+  });
+});
+
 function toolRecord(name: AgentToolCall["name"], id: string) {
   return {
     id,
@@ -136,4 +167,24 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
   });
+}
+
+function toolResultMessage(tool: string, content: string) {
+  return {
+    role: "user" as const,
+    content: [
+      "Tool results are encoded as JSON.",
+      JSON.stringify({
+        tool_results: [
+          {
+            index: 1,
+            tool,
+            ok: true,
+            summary: `${tool} summary`,
+            content
+          }
+        ]
+      })
+    ].join("\n")
+  };
 }

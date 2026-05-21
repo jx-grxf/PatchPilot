@@ -158,6 +158,9 @@ describe("GeminiClient", () => {
       maxOutputTokens: 256,
       temperature: 0
     });
+    expect(readGeminiRuntimeOptions({})).toMatchObject({
+      maxOutputTokens: 8192
+    });
   });
 
   it("fails clearly without an API key", async () => {
