@@ -66,16 +66,33 @@ PatchPilot is a terminal interface for running coding-agent tasks inside a repos
 | Feature | What it means |
 |---|---|
 | Local-first by default | Uses Ollama on your own machine unless you choose another route. |
+| Fullscreen experimental shell | A Claude-Code / Codex-CLI-style TUI: compact header, scrolling transcript, command palette, animated run status. `/theme` switches between the new shell and the legacy layout. |
 | Remote GPU workflow | Connect your laptop TUI to an Ollama host on a desktop, LAN, or Tailscale machine. |
 | Cloud provider routes | Gemini, Gemini-Wrapper, OpenRouter, NVIDIA, and Codex CLI OAuth are available from one TUI. |
 | Guided onboarding | First-run setup walks through local/remote mode, provider auth, host discovery, and model choice. |
 | Observable agent loop | Transcript, tool calls, telemetry, token counts, provider cache hits, latency, and cost estimates are visible. |
+| Document attachments | Paste a path to an image, PDF, or DOCX and it becomes an attachment chip; an artifacts bar lists what you attached and what PatchPilot created. |
+| `ultramaxx` power mode | Type `ultramaxx` in a prompt to escalate the run — higher reasoning effort, a larger step budget, and advisor subagents. |
+| Saved-cost counter | The gemini-wrapper route is free; the header shows what the same tokens would have cost on the paid Gemini API. |
 | Explicit permissions | Risky tools show a sticky approval box unless trusted bypass is explicitly accepted. |
 | Workspace boundary | File tools are constrained to the selected project root and block common secret files. |
 | Slash-command palette | Type `/` for browsable commands, provider switching, modes, models, diagnostics, and host selection. |
 | Advisor subagents | Explorer, planner, and reviewer advisor calls can brief the main agent before it edits. |
 | Ollama eject | `/eject` unloads the active Ollama model; `/eject all` clears models PatchPilot used in the session. |
 | CI-ready TypeScript | Strict TypeScript, Vitest, GitHub Actions, and package verification are included. |
+
+## Interface
+
+PatchPilot ships two interfaces. The **experimental shell** is the default: a
+fullscreen layout with a compact header, a real scrolling transcript, a
+bottom-pinned multiline composer, a categorized command palette, and animated
+run status. The **legacy** layout keeps the original sidebar split-pane TUI.
+Switch any time with `/theme` (or `/theme new` / `/theme legacy`) — the choice
+is remembered.
+
+Useful keys: `tab` cycles plan → build → build+bypass, `/` opens the command
+palette, `←/→` move the cursor inside the composer, `shift+enter` inserts a
+newline, and `esc` stops a running task.
 
 ## Why This Exists
 
