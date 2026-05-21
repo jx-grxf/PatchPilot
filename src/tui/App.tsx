@@ -37,6 +37,7 @@ import { clipboardHasImage, clipboardImageHint, readClipboardImage } from "../co
 import { CommandSuggestions, type CommandSuggestionItem } from "./components/CommandSuggestions.js";
 import { Composer, FooterHints } from "./components/Composer.js";
 import { ExperimentalPanel, experimentalFlagAt, experimentalFlagCount, type ExperimentalFlags } from "./components/ExperimentalPanel.js";
+import { runContextSlashCommand } from "./contextCommands.js";
 import { ExperimentalShell } from "./experimental/ExperimentalShell.js";
 import { ThemePicker } from "./experimental/ThemePicker.js";
 import { type Artifact, attachmentKindForPath, attachmentLabel, attachmentTypeForPath, formatSessionArtifactContext } from "./experimental/attachments.js";
@@ -1999,6 +2000,19 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
               toolTelemetry
             })
           });
+          return;
+        case "context":
+        case "ctx":
+        case "compact":
+        case "compress":
+          appendLine(
+            await runContextSlashCommand({
+              workspace: settings.workspace,
+              sessionId: sessionStoreRef.current.sessionId,
+              command: command === "compact" || command === "compress" ? "compact" : "context",
+              args
+            })
+          );
           return;
         case "sessions": {
           const sessions = await listWorkspaceSessions(settings.workspace);
