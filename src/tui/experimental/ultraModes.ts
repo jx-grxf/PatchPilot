@@ -99,3 +99,42 @@ function orderModes(modes: UltraMode[]): UltraMode[] {
 export function describeUltraModes(modes: UltraMode[]): string {
   return modes.map((mode) => ultraModeKeyword[mode]).join(" + ");
 }
+
+export type UltraSegment = {
+  text: string;
+  /** The ultra mode this segment spells out, or null for plain text. */
+  mode: UltraMode | null;
+};
+
+const keywordToMode = new Map<string, UltraMode>(
+  (Object.entries(ultraModeKeyword) as Array<[UltraMode, string]>).map(([mode, keyword]) => [keyword, mode]),
+);
+// One pass that finds any ultra keyword as a whole word, anywhere in the line.
+const anyKeywordPattern = new RegExp(`(?<![\\w-])(${ultraKeywords.join("|")})(?![\\w-])`, "ig");
+
+/**
+ * Split a composer line into plain and ultra-keyword segments so each keyword
+ * can be rendered with its own colour gradient — anywhere in the line.
+ */
+export function splitUltraSegments(line: string): UltraSegment[] {
+  if (!line) {
+    return [{ text: "", mode: null }];
+  }
+
+  const segments: UltraSegment[] = [];
+  let lastIndex = 0;
+  anyKeywordPattern.lastIndex = 0;
+  for (let match = anyKeywordPattern.exec(line); match; match = anyKeywordPattern.exec(line)) {
+    if (match.index > lastIndex) {
+      segments.push({ text: line.slice(lastIndex, match.index), mode: null });
+    }
+    segments.push({ text: match[0], mode: keywordToMode.get(match[0].toLowerCase()) ?? null });
+    lastIndex = match.index + match[0].length;
+  }
+
+  if (lastIndex < line.length) {
+    segments.push({ text: line.slice(lastIndex), mode: null });
+  }
+
+  return segments.length > 0 ? segments : [{ text: line, mode: null }];
+}
