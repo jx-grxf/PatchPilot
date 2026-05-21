@@ -1,0 +1,101 @@
+/**
+ * Ultra-modes — power-mode keywords the user can drop **anywhere** in a prompt
+ * (not only as a leading `/command`). Several can be combined in one prompt as
+ * long as they do not conflict; an incompatible pair is reported so the TUI can
+ * block the send instead of running a contradictory request.
+ *
+ *  - `ultramaxx`  — escalate: xhigh reasoning, large step budget, advisors on.
+ *  - `ultracheap` — minimize: cheapest model, low reasoning, terse, advisors off.
+ *  - `ultrafocus` — restrict the agent to a single file/folder (`ultrafocus:path`).
+ *  - `ultraloop`  — expand the run budget and require explicit self-verification
+ *                   before the final answer.
+ */
+export type UltraMode = "maxx" | "cheap" | "focus" | "loop";
+
+export const ultraModeKeyword: Record<UltraMode, string> = {
+  maxx: "ultramaxx",
+  cheap: "ultracheap",
+  focus: "ultrafocus",
+  loop: "ultraloop",
+};
+
+/** All ultra keywords, longest first so matching is unambiguous. */
+export const ultraKeywords: readonly string[] = Object.values(ultraModeKeyword);
+
+/**
+ * Pairs that must never run together. `maxx` and `cheap` sit on opposite ends
+ * of the cost/effort axis — escalating and minimizing at the same time is
+ * contradictory, so the prompt cannot be sent.
+ */
+const incompatiblePairs: ReadonlyArray<readonly [UltraMode, UltraMode]> = [["maxx", "cheap"]];
+
+export type UltraModeParse = {
+  /** Distinct modes found, in detection order. */
+  modes: UltraMode[];
+  /** Optional path argument captured from `ultrafocus:<path>` / `ultrafocus <path>`. */
+  focusPath: string | null;
+  /** The prompt with every ultra keyword (and focus path) removed. */
+  cleaned: string;
+  /** Human-readable conflict message, or null when the combination is valid. */
+  conflict: string | null;
+};
+
+// `ultrafocus` optionally swallows a following path token (`:path`, `=path`,
+// or a bare path after whitespace). A quoted path keeps spaces intact.
+const focusPattern = /\bultrafocus\b(?:\s*[:=]\s*|\s+)?("[^"]+"|'[^']+'|[^\s]+)?/i;
+const plainKeywordPattern = (keyword: string): RegExp => new RegExp(`(?<![\\w-])${keyword}(?![\\w-])`, "ig");
+
+/** True when the text contains any ultra keyword (anywhere, not just the start). */
+export function hasUltraMode(text: string): boolean {
+  return ultraKeywords.some((keyword) => plainKeywordPattern(keyword).test(text));
+}
+
+/**
+ * Parse every ultra keyword out of a prompt, capture the focus path, strip the
+ * keywords, and validate the combination.
+ */
+export function parseUltraModes(text: string): UltraModeParse {
+  const modes: UltraMode[] = [];
+  let cleaned = text;
+  let focusPath: string | null = null;
+
+  // `ultrafocus` first — it may carry a path argument that must be removed too.
+  const focusMatch = cleaned.match(focusPattern);
+  if (focusMatch) {
+    modes.push("focus");
+    const raw = focusMatch[1]?.trim() ?? "";
+    focusPath = raw ? raw.replace(/^["']|["']$/g, "").trim() || null : null;
+    cleaned = cleaned.replace(focusPattern, " ");
+  }
+
+  for (const mode of ["maxx", "cheap", "loop"] as const) {
+    const pattern = plainKeywordPattern(ultraModeKeyword[mode]);
+    if (pattern.test(cleaned)) {
+      modes.push(mode);
+      cleaned = cleaned.replace(plainKeywordPattern(ultraModeKeyword[mode]), " ");
+    }
+  }
+
+  cleaned = cleaned.replace(/\s{2,}/g, " ").trim();
+
+  let conflict: string | null = null;
+  for (const [left, right] of incompatiblePairs) {
+    if (modes.includes(left) && modes.includes(right)) {
+      conflict = `${ultraModeKeyword[left]} and ${ultraModeKeyword[right]} cannot be combined — one escalates effort and cost, the other minimizes it. Keep only one.`;
+      break;
+    }
+  }
+
+  return { modes: orderModes(modes), focusPath, cleaned, conflict };
+}
+
+/** Stable display order regardless of where the keywords appeared. */
+function orderModes(modes: UltraMode[]): UltraMode[] {
+  const order: UltraMode[] = ["maxx", "cheap", "focus", "loop"];
+  return order.filter((mode) => modes.includes(mode));
+}
+
+/** A short label like "ultramaxx + ultrafocus" for transcript messages. */
+export function describeUltraModes(modes: UltraMode[]): string {
+  return modes.map((mode) => ultraModeKeyword[mode]).join(" + ");
+}

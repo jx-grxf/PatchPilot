@@ -42,7 +42,7 @@ import { runContextSlashCommand } from "./contextCommands.js";
 import { ExperimentalShell } from "./experimental/ExperimentalShell.js";
 import { ThemePicker } from "./experimental/ThemePicker.js";
 import { type Artifact, attachmentKindForPath, attachmentLabel, attachmentTypeForPath, formatSessionArtifactContext } from "./experimental/attachments.js";
-import { hasUltramaxx, stripUltramaxx } from "./experimental/ultramaxx.js";
+import { describeUltraModes, parseUltraModes } from "./experimental/ultraModes.js";
 import { formatCompletionSummary } from "./runStatus.js";
 import { Header } from "./components/Header.js";
 import { OnboardingPanel, type ApiKeyProvider, type OnboardingState } from "./components/OnboardingPanel.js";
@@ -1383,15 +1383,39 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         return;
       }
 
-      // ultramaxx power mode: the keyword anywhere in the prompt escalates
-      // reasoning effort and the step budget for this run.
-      const ultramaxx = hasUltramaxx(task);
-      const effectiveTask = ultramaxx ? stripUltramaxx(task) : task;
-      if (ultramaxx && !effectiveTask) {
+      // Ultra-modes: power-mode keywords (ultramaxx / ultracheap / ultrafocus /
+      // ultraloop) found anywhere in the prompt. Several may combine; an
+      // incompatible pair blocks the send so a contradictory run never starts.
+      const ultra = parseUltraModes(task);
+      if (ultra.conflict) {
+        appendLine({
+          kind: "status",
+          tone: "danger",
+          label: "ultra",
+          text: ultra.conflict,
+          detail: "Remove one of the conflicting keywords, then send again."
+        });
+        return;
+      }
+
+      const ultramaxx = ultra.modes.includes("maxx");
+      const ultracheap = ultra.modes.includes("cheap");
+      const ultrafocus = ultra.modes.includes("focus");
+      const ultraloop = ultra.modes.includes("loop");
+      const effectiveTask = ultra.modes.length > 0 ? ultra.cleaned : task;
+      if (ultra.modes.length > 0 && !effectiveTask) {
         appendLine({
           tone: "warning",
-          label: "ultramaxx",
-          text: "ultramaxx needs an actual task after the keyword."
+          label: "ultra",
+          text: `${describeUltraModes(ultra.modes)} needs an actual task after the keyword.`
+        });
+        return;
+      }
+      if (ultrafocus && !ultra.focusPath) {
+        appendLine({
+          tone: "warning",
+          label: "ultra",
+          text: "ultrafocus needs a path — write ultrafocus:src/file.ts or ultrafocus \"my dir\"."
         });
         return;
       }
@@ -1410,12 +1434,25 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         label: "you",
         text: task
       });
-      if (ultramaxx) {
+      if (ultra.modes.length > 0) {
+        const engagedDetail: string[] = [];
+        if (ultramaxx) {
+          engagedDetail.push("ultramaxx: xhigh reasoning, expanded step budget, advisors on.");
+        }
+        if (ultracheap) {
+          engagedDetail.push("ultracheap: low reasoning, terse output, advisors off.");
+        }
+        if (ultrafocus) {
+          engagedDetail.push(`ultrafocus: the agent stays inside ${ultra.focusPath}.`);
+        }
+        if (ultraloop) {
+          engagedDetail.push("ultraloop: expanded budget with explicit final self-check before finishing.");
+        }
         appendLine({
           tone: "accent",
-          label: "ultramaxx",
-          text: "✻ ULTRAMAXX engaged — xhigh reasoning, expanded step budget, advisor subagents on.",
-          detail: "The model is told to plan with todos first and verify before finishing."
+          label: "ultra",
+          text: `✻ ${describeUltraModes(ultra.modes).toUpperCase()} engaged`,
+          detail: engagedDetail.join("\n")
         });
       }
 
@@ -1450,13 +1487,39 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
             title: "Known session context"
           })
           .catch(() => "");
-        const effectiveResumeContext = [resumeContext, sessionMemory, artifactContext, persistedContext].filter(Boolean).join("\n\n");
+        // Ultra-mode run instructions — injected as advisory context so each
+        // mode shapes the run without changing the workspace root.
+        const ultraInstructions: string[] = [];
+        if (ultrafocus && ultra.focusPath) {
+          ultraInstructions.push(
+            `ULTRAFOCUS is active. Restrict every read, edit, and command to \`${ultra.focusPath}\` and the files it directly depends on. Do not modify anything outside that path; if the task genuinely needs other files, stop and say so instead.`
+          );
+        }
+        if (ultraloop) {
+          ultraInstructions.push(
+            "ULTRALOOP is active. Do not finish until the user's actual goal is fully achieved and verified — not merely attempted. Before any final answer, restate the goal, list what is done, list any remaining gap, and keep working if something is still missing."
+          );
+        }
+        if (ultracheap) {
+          ultraInstructions.push(
+            "ULTRACHEAP is active. Keep output terse, avoid unnecessary tool calls, and take the most direct path to a correct result."
+          );
+        }
+        const effectiveResumeContext = [resumeContext, sessionMemory, artifactContext, persistedContext, ultraInstructions.join("\n\n")]
+          .filter(Boolean)
+          .join("\n\n");
         const taskRunner = new AgentRunner({
           ...runnableSettings,
-          maxSteps: ultramaxx ? Math.max(runnableSettings.maxSteps, 40) : runnableSettings.maxSteps,
-          reasoningEffort: ultramaxx ? "xhigh" : runnableSettings.reasoningEffort,
-          thinkingMode: ultramaxx ? "adaptive" : runnableSettings.thinkingMode,
-          subagents: ultramaxx ? true : runnableSettings.subagents,
+          maxSteps: ultraloop
+            ? Math.max(runnableSettings.maxSteps, 60)
+            : ultramaxx
+              ? Math.max(runnableSettings.maxSteps, 40)
+              : ultracheap
+                ? Math.min(runnableSettings.maxSteps, 12)
+                : runnableSettings.maxSteps,
+          reasoningEffort: ultramaxx ? "xhigh" : ultracheap ? "low" : runnableSettings.reasoningEffort,
+          thinkingMode: ultramaxx || ultraloop ? "adaptive" : ultracheap ? "fixed" : runnableSettings.thinkingMode,
+          subagents: ultramaxx || ultraloop ? true : ultracheap ? false : runnableSettings.subagents,
           ultramaxx,
           allowExternalFileAnalysis: experimentalFlags.fileAnalysis,
           memoryEnabled: experimentalFlags.memory,
