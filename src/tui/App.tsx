@@ -904,6 +904,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           savePatchPilotEnvValues({
             PATCHPILOT_PROVIDER: "gemini-wrapper",
             PATCHPILOT_MODEL: curatedModel,
+            PATCHPILOT_GEMINI_WRAPPER_MODE: "python",
             PATCHPILOT_ONBOARDING_COMPLETE: "1"
           });
           process.env.PATCHPILOT_ONBOARDING_COMPLETE = "1";
@@ -944,10 +945,12 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         }
 
         process.env.PATCHPILOT_GEMINI_WRAPPER_BASE_URL = baseUrl;
+        process.env.PATCHPILOT_GEMINI_WRAPPER_MODE = "http";
         savePatchPilotEnvValues({
           PATCHPILOT_PROVIDER: "gemini-wrapper",
           PATCHPILOT_MODEL: defaultGeminiWrapperModel,
-          PATCHPILOT_GEMINI_WRAPPER_BASE_URL: baseUrl
+          PATCHPILOT_GEMINI_WRAPPER_BASE_URL: baseUrl,
+          PATCHPILOT_GEMINI_WRAPPER_MODE: "http"
         });
         setOnboardingNotice({
           tone: "success",
@@ -985,6 +988,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           PATCHPILOT_PROVIDER: "gemini-wrapper",
           PATCHPILOT_MODEL: defaultGeminiWrapperModel,
           PATCHPILOT_GEMINI_WRAPPER_BASE_URL: onboarding.baseUrl,
+          PATCHPILOT_GEMINI_WRAPPER_MODE: "http",
           ...(apiKey ? { PATCHPILOT_GEMINI_WRAPPER_API_KEY: apiKey } : {})
         });
         setOnboardingNotice({
@@ -2872,7 +2876,12 @@ function hasApiKey(provider: ApiKeyProvider): boolean {
   }
 
   if (provider === "gemini-wrapper") {
-    return Boolean(readGeminiWrapperBaseUrl() || readGeminiWrapperCookiesJson());
+    const baseUrl = readGeminiWrapperBaseUrl();
+    if (readGeminiWrapperMode() === "http") {
+      return !geminiWrapperRequiresApiKey(baseUrl) || Boolean(readGeminiWrapperApiKey());
+    }
+
+    return Boolean(readGeminiWrapperCookiesJson());
   }
 
   if (provider === "openrouter") {

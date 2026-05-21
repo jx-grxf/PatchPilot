@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { normalizeModelProvider } from "../src/core/modelClient.js";
 import { NvidiaClient, readNvidiaApiKey } from "../src/core/nvidia.js";
+import { toolSpecs } from "../src/core/workspace.js";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -85,16 +86,39 @@ describe("NvidiaClient", () => {
       ]
     });
 
-      expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toMatchObject({
-        model: "a/model",
-        response_format: {
-          type: "json_schema",
-          json_schema: {
-            name: "patchpilot_agent_response",
-            strict: true
-          }
+    const requestBody = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)) as {
+      response_format?: {
+        json_schema?: {
+          schema?: {
+            anyOf?: Array<{
+              properties?: {
+                tool_calls?: {
+                  items?: {
+                    properties?: {
+                      name?: {
+                        enum?: string[];
+                      };
+                    };
+                  };
+                };
+              };
+            }>;
+          };
+        };
+      };
+    };
+    expect(requestBody).toMatchObject({
+      model: "a/model",
+      response_format: {
+        type: "json_schema",
+        json_schema: {
+          name: "patchpilot_agent_response",
+          strict: true
         }
-      });
+      }
+    });
+    const schemaToolNames = requestBody.response_format?.json_schema?.schema?.anyOf?.[0]?.properties?.tool_calls?.items?.properties?.name?.enum ?? [];
+    expect(schemaToolNames.sort()).toEqual(Object.keys(toolSpecs).sort());
     expect(result.telemetry).toMatchObject({
       promptTokens: 10,
       responseTokens: 3,

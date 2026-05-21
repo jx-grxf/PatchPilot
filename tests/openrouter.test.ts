@@ -110,6 +110,9 @@ describe("OpenRouterClient", () => {
       model: "a/model",
       response_format: {
         type: "json_object"
+      },
+      provider: {
+        require_parameters: true
       }
     });
     expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))).not.toHaveProperty("reasoning");
@@ -195,6 +198,9 @@ describe("OpenRouterClient", () => {
         model: "openrouter/auto",
         response_format: {
           type: "json_object"
+        },
+        provider: {
+          require_parameters: true
         }
       });
       expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).not.toHaveProperty("usage");

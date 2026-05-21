@@ -111,7 +111,8 @@ export class OpenRouterClient {
         max_tokens: this.runtimeOptions.maxTokens,
         temperature: this.runtimeOptions.temperature,
         reasoning: this.supportsReasoning(options.model) ? getOpenRouterReasoningConfig(options.reasoningEffort) : undefined,
-        response_format: options.formatJson && this.supportsJson(options.model) !== false ? { type: "json_object" } : undefined
+        response_format: options.formatJson && this.supportsJson(options.model) !== false ? { type: "json_object" } : undefined,
+        provider: options.formatJson && this.supportsJson(options.model) !== false ? { require_parameters: true } : undefined
       })),
       signal: options.signal
     });
