@@ -76,6 +76,78 @@ describe("computeExperimentalLayout", () => {
   });
 });
 
+describe("computeExperimentalLayout under overlay pressure", () => {
+  const overlaySizes: Array<[number, number]> = [
+    [80, 24],
+    [100, 30],
+    [120, 40],
+  ];
+
+  it.each(overlaySizes)(
+    "never clips the critical UI when every overlay is active at %ix%i",
+    (columns, rows) => {
+      const layout = computeExperimentalLayout({
+        rows,
+        columns,
+        composerInput: "investigate the repository ".repeat(60),
+        paletteItemCount: 8,
+        approvalActive: true,
+        todoCount: 6,
+        hasArtifacts: true,
+      });
+
+      // Critical safety surfaces keep their full reserved height.
+      expect(layout.headerHeight).toBe(4);
+      expect(layout.footerHeight).toBe(1);
+      expect(layout.approvalHeight).toBeGreaterThan(0);
+      expect(layout.composerHeight).toBeGreaterThanOrEqual(5);
+
+      // Critical UI always fits inside the terminal on its own.
+      const critical =
+        layout.headerHeight + layout.composerHeight + layout.approvalHeight + layout.footerHeight;
+      expect(critical).toBeLessThanOrEqual(layout.rootHeight);
+
+      // Nothing is allocated past the bottom of the terminal.
+      const sum =
+        layout.headerHeight +
+        layout.artifactsHeight +
+        layout.transcriptHeight +
+        layout.todoDockHeight +
+        layout.approvalHeight +
+        layout.paletteHeight +
+        layout.composerHeight +
+        layout.footerHeight;
+      expect(sum).toBe(layout.rootHeight);
+
+      // The transcript is never given a negative or zero height.
+      expect(layout.transcriptHeight).toBeGreaterThanOrEqual(1);
+    },
+  );
+
+  it("folds secondary panels before shrinking the transcript at 80x24", () => {
+    const bare = computeExperimentalLayout({
+      rows: 24,
+      columns: 80,
+      composerInput: "",
+      paletteItemCount: 0,
+      approvalActive: false,
+    });
+    const pressured = computeExperimentalLayout({
+      rows: 24,
+      columns: 80,
+      composerInput: "",
+      paletteItemCount: 8,
+      approvalActive: true,
+      todoCount: 6,
+      hasArtifacts: true,
+    });
+
+    // Under pressure the secondary panels yield rather than the critical UI.
+    const secondary = pressured.paletteHeight + pressured.todoDockHeight + pressured.artifactsHeight;
+    expect(secondary).toBeLessThan(bare.transcriptHeight);
+  });
+});
+
 describe("windowRows", () => {
   it("anchors short content to the top with no overflow", () => {
     const window = windowRows(4, 20, 0);

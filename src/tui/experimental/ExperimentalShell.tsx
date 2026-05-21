@@ -321,7 +321,8 @@ function ShellTranscript(props: {
       </Box>
       {window.hasOverflow ? (
         <Text color="gray">
-          {symbols.todoActive} {rowStart + 1}–{rowEnd}/{rows.length} · ↑↓ pgup/pgdn scroll
+          {symbols.todoActive}{" "}
+          {rowEnd > rowStart ? `${rowStart + 1}–${rowEnd}` : "banner"}/{rows.length} · ↑↓ pgup/pgdn scroll
         </Text>
       ) : null}
     </Box>

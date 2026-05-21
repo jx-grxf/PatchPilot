@@ -40,6 +40,10 @@ export function todoDockHeightFor(todoCount: number): number {
   return Math.min(count, MAX_TODO_DOCK_ROWS) + 1 + 2;
 }
 
+// Minimum height the todo dock may be folded down to: border (2) + header +
+// one visible item. Below this it is dropped entirely.
+const MIN_TODO_DOCK_HEIGHT = 4;
+
 export function computeExperimentalLayout(options: {
   rows: number;
   columns: number;
@@ -69,17 +73,48 @@ export function computeExperimentalLayout(options: {
 
   const approvalHeight = options.approvalActive ? APPROVAL_HEIGHT : 0;
 
+  // Priority allocator: header, the blocking prompt, the composer and the
+  // footer are critical safety surfaces — they get their full height first and
+  // are never clipped. Whatever is left is shared between the transcript and
+  // the secondary panels (palette, todos, artifacts), which fold before any
+  // critical UI is touched.
+  const critical = HEADER_HEIGHT + FOOTER_HEIGHT + composerHeight + approvalHeight;
+
   const paletteRows = Math.min(MAX_PALETTE_ROWS, Math.max(0, options.paletteItemCount));
   // palette: header row + items + preview block (3) + border.
-  const paletteHeight = paletteRows > 0 ? paletteRows + 6 : 0;
-
-  const todoDockHeight = todoDockHeightFor(options.todoCount ?? 0);
+  const paletteDesired = paletteRows > 0 ? paletteRows + 6 : 0;
+  const todoDesired = todoDockHeightFor(options.todoCount ?? 0);
   // Artifacts bar: rounded border (2) + one chip row.
-  const artifactsHeight = options.hasArtifacts ? 3 : 0;
+  const artifactsDesired = options.hasArtifacts ? 3 : 0;
 
-  const fixed =
-    HEADER_HEIGHT + FOOTER_HEIGHT + composerHeight + approvalHeight + paletteHeight + todoDockHeight + artifactsHeight;
-  const transcriptHeight = Math.max(MIN_TRANSCRIPT_HEIGHT, rootHeight - fixed);
+  // Budget for the secondary panels, after reserving the transcript minimum.
+  let budget = Math.max(0, rootHeight - critical - MIN_TRANSCRIPT_HEIGHT);
+
+  // Palette is highest priority while open — the user is actively navigating
+  // it — so it gets its full height or nothing.
+  const paletteHeight = paletteDesired > 0 && budget >= paletteDesired ? paletteDesired : 0;
+  budget -= paletteHeight;
+
+  // Todos may fold: full height if it fits, otherwise shrunk to whatever space
+  // is left down to MIN_TODO_DOCK_HEIGHT, else dropped.
+  let todoDockHeight = 0;
+  if (todoDesired > 0) {
+    if (budget >= todoDesired) {
+      todoDockHeight = todoDesired;
+    } else if (budget >= MIN_TODO_DOCK_HEIGHT) {
+      todoDockHeight = budget;
+    }
+  }
+  budget -= todoDockHeight;
+
+  // Artifacts bar is lowest priority — shown only if it still fits whole.
+  const artifactsHeight = artifactsDesired > 0 && budget >= artifactsDesired ? artifactsDesired : 0;
+
+  const secondary = paletteHeight + todoDockHeight + artifactsHeight;
+  // The transcript flexes into the remainder. It keeps its minimum whenever the
+  // critical UI fits; on extreme terminals it yields below the minimum so the
+  // composer and prompts always stay fully visible.
+  const transcriptHeight = Math.max(1, rootHeight - critical - secondary);
   const bodyHeight = rootHeight - HEADER_HEIGHT;
 
   return {

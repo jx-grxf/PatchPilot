@@ -21,5 +21,6 @@ Thumbs.db
 /.PATCHPILOT.md
 /PATCHPILOT.md
 /patchpilot.md
-/REPO_ANALYSIS_REPORT.md
-/gemini-wrapper-summary.md
+AGENTS.md
+CLAUDE.md
+.commandcode
