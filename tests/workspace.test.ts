@@ -545,6 +545,24 @@ describe("WorkspaceTools", () => {
     expect(result.summary).toContain("sensitive");
   });
 
+  it("rejects patches that create symlinks", async () => {
+    const tools = new WorkspaceTools({
+      root: tempRoot,
+      allowWrite: true,
+      allowShell: false
+    });
+
+    const result = await tools.execute({
+      name: "apply_patch",
+      arguments: {
+        patch: ["diff --git a/leak.txt b/leak.txt", "new file mode 120000", "index 0000000..c7d76fa", "--- /dev/null", "+++ b/leak.txt", "@@ -0,0 +1 @@", "+/Users/x/.ssh/id_ed25519"].join("\n")
+      }
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.summary).toContain("symlink");
+  });
+
   it("accepts update_todo as a side-effect-free state tool", async () => {
     const tools = new WorkspaceTools({
       root: tempRoot,
@@ -1279,6 +1297,39 @@ describe("WorkspaceTools", () => {
     expect(result.ok).toBe(false);
     expect(result.summary).toContain("sensitive path");
     expect(approvals).toBe(0);
+  });
+
+  it("blocks shell reads through symlinks before approval", async () => {
+    const outsideRoot = await mkdtemp(path.join(tmpdir(), "patchpilot-outside-"));
+    await writeFile(path.join(outsideRoot, "secret.txt"), "classified\n");
+    await symlink(path.join(outsideRoot, "secret.txt"), path.join(tempRoot, "leak.txt"));
+
+    let approvals = 0;
+    const tools = new WorkspaceTools({
+      root: tempRoot,
+      allowWrite: false,
+      allowShell: false,
+      approvalHandler: async () => {
+        approvals += 1;
+        return "allow_once";
+      }
+    });
+
+    const result = await tools.execute({
+      name: "run_shell",
+      arguments: {
+        command: "cat leak.txt"
+      }
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.summary).toContain("escapes workspace");
+    expect(approvals).toBe(0);
+
+    await rm(outsideRoot, {
+      recursive: true,
+      force: true
+    });
   });
 
   it("rejects writing through a symlinked directory outside the workspace", async () => {

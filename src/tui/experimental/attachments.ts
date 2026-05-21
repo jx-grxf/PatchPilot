@@ -224,6 +224,22 @@ export function attachmentSymbol(kind: AttachmentKind): string {
   return kindSymbols[kind];
 }
 
+export function formatSessionArtifactContext(artifacts: Artifact[], limit = 12): string {
+  const visibleArtifacts = artifacts.slice(-limit);
+  if (visibleArtifacts.length === 0) {
+    return "";
+  }
+
+  return [
+    "Known session attachments and artifacts (most recent last).",
+    "If the user asks about a prior uploaded file or artifact, use these paths and inspect the document before answering; provider chat state may not retain file inputs across PatchPilot runs.",
+    ...visibleArtifacts.map((artifact) => {
+      const type = attachmentTypeForPath(artifact.path);
+      return `- ${artifact.label} origin=${artifact.origin} type=${type} path=${JSON.stringify(artifact.path)}`;
+    })
+  ].join("\n");
+}
+
 // Control characters except tab (\t) and newline (\n) — built via escapes so
 // no raw control bytes live in this source file.
 const controlCharsPattern = new RegExp("[\\u0000-\\u0008\\u000b\\u000c\\u000e-\\u001f\\u007f]", "g");

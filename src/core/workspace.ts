@@ -1327,6 +1327,11 @@ export class WorkspaceTools {
       return denied(`run_shell denied. ${shellSafetyError}`);
     }
 
+    const shellPathError = await this.validateShellPathArguments(command);
+    if (shellPathError) {
+      return denied(`run_shell denied. ${shellPathError}`);
+    }
+
     if (!this.allowShell) {
       const approval = await this.requestApproval(
         "run_shell",
@@ -1482,6 +1487,10 @@ export class WorkspaceTools {
   }
 
   private async validatePatchTargets(patchContent: string): Promise<string | null> {
+    if (patchCreatesSymlink(patchContent)) {
+      return "apply_patch denied symlink patches.";
+    }
+
     for (const targetPath of extractPatchTargetPaths(patchContent)) {
       if (isPlaceholderPath(targetPath)) {
         return `apply_patch denied placeholder path: ${targetPath}`;
@@ -1503,6 +1512,33 @@ export class WorkspaceTools {
         }
       } catch (error) {
         return error instanceof Error ? error.message : String(error);
+      }
+    }
+
+    return null;
+  }
+
+  private async validateShellPathArguments(command: string): Promise<string | null> {
+    const tokens = tokenizeShellCommand(command);
+    for (const segment of splitPipeline(tokens)) {
+      for (const token of segment.slice(1)) {
+        const normalizedToken = stripQuotes(token);
+        if (!normalizedToken || normalizedToken === "|" || normalizedToken.startsWith("-")) {
+          continue;
+        }
+
+        const absolutePath = toAbsoluteShellPath(normalizedToken) ?? path.resolve(this.root, normalizedToken);
+        const existingPath = await lstat(absolutePath).catch(() => null);
+        if (!existingPath) {
+          continue;
+        }
+
+        try {
+          const resolvedPath = await realpath(absolutePath);
+          await this.assertSafeResolvedWorkspacePath(resolvedPath, normalizedToken);
+        } catch (error) {
+          return error instanceof Error ? error.message : String(error);
+        }
       }
     }
 
@@ -2453,6 +2489,10 @@ function extractPatchTargetPaths(patchContent: string): string[] {
   return [...new Set(paths)];
 }
 
+function patchCreatesSymlink(patchContent: string): boolean {
+  return /^new file mode 120000$/m.test(patchContent) || /^new mode 120000$/m.test(patchContent);
+}
+
 function normalizePatchHeaderPath(value: string): string {
   const trimmedValue = value.trim();
   if (!trimmedValue || trimmedValue === "/dev/null") {
@@ -2480,7 +2520,7 @@ function validateShellCommand(command: string, workspaceRoot: string): string | 
     return "shell command separators are blocked; use a single pipeline.";
   }
 
-  const tokens = trimmedCommand.match(/"[^"]*"|'[^']*'|\S+/g) ?? [];
+  const tokens = tokenizeShellCommand(trimmedCommand);
   if (tokens.length === 0) {
     return "command is empty.";
   }
@@ -2553,7 +2593,7 @@ function validatePackageScriptCommand(command: string, workspaceRoot: string): s
     return "background shell execution is blocked in package scripts.";
   }
 
-  const tokens = trimmedCommand.match(/"[^"]*"|'[^']*'|\S+/g) ?? [];
+  const tokens = tokenizeShellCommand(trimmedCommand);
   for (const commandTokens of splitPackageCommandTokens(tokens)) {
     for (const segment of splitPipeline(commandTokens)) {
       const segmentError = validatePackageScriptSegment(segment);
@@ -2597,6 +2637,10 @@ function splitPackageCommandTokens(tokens: string[]): string[][] {
   }
 
   return commands;
+}
+
+function tokenizeShellCommand(command: string): string[] {
+  return command.match(/"[^"]*"|'[^']*'|\S+/g) ?? [];
 }
 
 function validatePackageScriptSegment(tokens: string[]): string | null {

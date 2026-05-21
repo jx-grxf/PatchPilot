@@ -38,7 +38,7 @@ import { Composer, FooterHints } from "./components/Composer.js";
 import { ExperimentalPanel, experimentalFlagAt, experimentalFlagCount, type ExperimentalFlags } from "./components/ExperimentalPanel.js";
 import { ExperimentalShell } from "./experimental/ExperimentalShell.js";
 import { ThemePicker } from "./experimental/ThemePicker.js";
-import { type Artifact, attachmentKindForPath, attachmentLabel, attachmentTypeForPath } from "./experimental/attachments.js";
+import { type Artifact, attachmentKindForPath, attachmentLabel, attachmentTypeForPath, formatSessionArtifactContext } from "./experimental/attachments.js";
 import { hasUltramaxx, stripUltramaxx } from "./experimental/ultramaxx.js";
 import { formatCompletionSummary } from "./runStatus.js";
 import { Header } from "./components/Header.js";
@@ -1335,6 +1335,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       }
 
       let finalMessage = "";
+      let turnAttachmentPaths: string[] = [];
       try {
         const runnableSettings = await resolveRunnableSettings(settings, modelOptions, appendLine, setModelOptions, (message) => {
           if (settings.provider === "gemini-wrapper" && isGeminiCookieError(message)) {
@@ -1357,7 +1358,10 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           conversationTurnsRef.current.length > 0
             ? `Earlier in this PatchPilot session (most recent last), for continuity only — the request below still takes priority and is not restricted to these paths:\n${conversationTurnsRef.current.join("\n")}`
             : "";
-        const effectiveResumeContext = [resumeContext, sessionMemory].filter(Boolean).join("\n\n");
+        const artifactContext = shouldIncludeSessionArtifactContext(effectiveTask, artifactsRef.current)
+          ? formatSessionArtifactContext(artifactsRef.current)
+          : "";
+        const effectiveResumeContext = [resumeContext, sessionMemory, artifactContext].filter(Boolean).join("\n\n");
         const taskRunner = new AgentRunner({
           ...runnableSettings,
           maxSteps: ultramaxx ? Math.max(runnableSettings.maxSteps, 40) : runnableSettings.maxSteps,
@@ -1414,6 +1418,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         // Hand any documents the user attached this turn to the agent so it
         // can read/analyse them with its file tools.
         const pendingAttachments = pendingAttachmentsRef.current;
+        turnAttachmentPaths = pendingAttachments;
         pendingAttachmentsRef.current = [];
         const taskWithAttachments =
           pendingAttachments.length > 0
@@ -1520,6 +1525,8 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         conversationTurnsRef.current = [
           ...conversationTurnsRef.current,
           `- Asked: "${task.replace(/\s+/g, " ").trim().slice(0, 220)}"${
+            turnAttachmentPaths.length > 0 ? ` attachments: ${turnAttachmentPaths.map(formatAttachmentDigestPath).join(", ")}` : ""
+          }${
             finalMessage ? ` → outcome: ${finalMessage.replace(/\s+/g, " ").trim().slice(0, 220)}` : ""
           }`
         ].slice(-6);
@@ -3764,6 +3771,18 @@ function formatAttachedDocuments(paths: string[]): string {
       return `- ${attachmentLabel(kind, index, filePath)} path=${JSON.stringify(filePath)}`;
     })
     .join("\n");
+}
+
+function shouldIncludeSessionArtifactContext(task: string, artifacts: Artifact[]): boolean {
+  if (artifacts.length === 0) {
+    return false;
+  }
+
+  return /\b(anhang|anhänge|anhaenge|artifact|artefakt|attached|attachment|bild|datei|docx|document|dokument|file|foto|pdf|referat|screenshot|text|upload)\b/i.test(task);
+}
+
+function formatAttachmentDigestPath(filePath: string): string {
+  return JSON.stringify(filePath.split(/[\\/]/).filter(Boolean).at(-1) ?? filePath);
 }
 
 function eventToLine(event: AgentEvent): LogLineInput {

@@ -4,6 +4,7 @@ import {
   attachmentLabel,
   attachmentTypeForPath,
   extractAttachmentPaths,
+  formatSessionArtifactContext,
   looksLikeAttachmentPath,
   sanitizePastedText,
   stripQuotes,
@@ -40,6 +41,20 @@ describe("attachment classification", () => {
     expect(attachmentLabel("pdf", 3, "/a/b/report.pdf")).toBe("[PDF #3]");
     expect(attachmentLabel("docx", 2, "/a/b/spec.docx")).toBe("[DOCX #2]");
     expect(attachmentTypeForPath("/a/b/photo.jpeg")).toBe("JPG");
+  });
+
+  it("formats prior artifacts as follow-up context", () => {
+    expect(
+      formatSessionArtifactContext([
+        {
+          id: 1,
+          kind: "pdf",
+          path: "/Users/x/Downloads/Deutsch Referat.pdf",
+          label: "[PDF #1]",
+          origin: "attached"
+        }
+      ])
+    ).toContain('path="/Users/x/Downloads/Deutsch Referat.pdf"');
   });
 
   it("extracts multiple attachment paths from a paste", () => {
