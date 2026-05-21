@@ -244,8 +244,10 @@ function ArtifactsBar(props: { artifacts: Artifact[]; width: number }): React.Re
   const visible = props.artifacts.slice(-10);
   return (
     <Box borderStyle="round" borderColor="gray" paddingX={1} overflowY="hidden">
-      <Text color="gray">{symbols.assistant} artifacts </Text>
+      {/* One width-bounded row: a single truncating <Text> keeps the chip list
+          from wrapping into extra rows and breaking the reserved height. */}
       <Text wrap="truncate">
+        <Text color="gray">{symbols.assistant} artifacts </Text>
         {visible.map((artifact, index) => (
           <Text key={artifact.id}>
             {index > 0 ? <Text color="gray">   </Text> : null}
