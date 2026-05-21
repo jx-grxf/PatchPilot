@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { describeUltraModes, hasUltraMode, parseUltraModes } from "../src/tui/experimental/ultraModes.js";
+import { describeUltraModes, hasUltraMode, parseUltraModes, splitUltraSegments } from "../src/tui/experimental/ultraModes.js";
 
 describe("parseUltraModes", () => {
   it("detects a single keyword anywhere in the prompt, not just at the start", () => {
@@ -56,5 +56,16 @@ describe("parseUltraModes", () => {
 describe("describeUltraModes", () => {
   it("joins keywords for transcript messages", () => {
     expect(describeUltraModes(["maxx", "loop"])).toBe("ultramaxx + ultraloop");
+  });
+});
+
+describe("splitUltraSegments", () => {
+  it("marks ultra keywords anywhere in a composer line", () => {
+    expect(splitUltraSegments("fix this ultracheap then ultraloop")).toEqual([
+      { text: "fix this ", mode: null },
+      { text: "ultracheap", mode: "cheap" },
+      { text: " then ", mode: null },
+      { text: "ultraloop", mode: "loop" }
+    ]);
   });
 });

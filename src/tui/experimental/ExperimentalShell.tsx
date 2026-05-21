@@ -7,7 +7,7 @@ import type { OllamaHostDetails } from "../hosts.js";
 import { computeComposerLayout } from "../layout.js";
 import { formatElapsed, pulseGlyph, randomRunStatusSeed, runStatusParts, spinnerFrameMs, spinnerGlyph, waveFrameMs } from "../runStatus.js";
 import type { AgentMode, LogLine } from "../types.js";
-import { RainbowText, WaveText } from "./AnimatedText.js";
+import { GradientText, RainbowText, WaveText, ultraGradients } from "./AnimatedText.js";
 import { type Artifact, attachmentSymbol, extractAttachmentPaths, sanitizePastedText } from "./attachments.js";
 import { ExperimentalBanner } from "./Banner.js";
 import { composerView, deleteComposerText, insertComposerText } from "./composer.js";
@@ -16,7 +16,7 @@ import { estimateGeminiCost, formatSavedCost } from "./geminiPricing.js";
 import { computeExperimentalLayout, windowRows } from "./layout.js";
 import { symbols, workStateColor } from "./theme.js";
 import { buildShellRows, buildTodoDock, truncate } from "./transcriptRows.js";
-import { hasUltramaxx, splitUltramaxxSegments } from "./ultramaxx.js";
+import { hasUltraMode, splitUltraSegments, type UltraMode } from "./ultraModes.js";
 
 export type ExperimentalShellProps = {
   provider: ModelProvider;
@@ -551,9 +551,9 @@ function ShellComposer(props: {
     maxHeight: 7,
   });
 
-  // Animate while running, and also while the draft contains the ultramaxx
-  // keyword so its rainbow flows as you type.
-  const animating = props.isRunning || hasUltramaxx(props.input);
+  // Animate while running, and also while the draft contains an ultra keyword
+  // so its gradient flows as you type.
+  const animating = props.isRunning || hasUltraMode(props.input);
   useEffect(() => {
     if (!props.isRunning) {
       setRunningSince(null);
@@ -749,9 +749,15 @@ function ShellComposer(props: {
             <ComposerCursorRow text={row} cursorCol={view.cursorCol} frame={frame} />
           ) : (
             <Text>
-              {splitUltramaxxSegments(row).map((segment, segmentIndex) =>
-                segment.ultramaxx ? (
-                  <RainbowText key={`seg-${segmentIndex}`} text={segment.text} frame={index + segmentIndex} bold />
+              {splitUltraSegments(row).map((segment, segmentIndex) =>
+                segment.mode ? (
+                  <GradientText
+                    key={`seg-${segmentIndex}`}
+                    text={segment.text}
+                    palette={ultraGradients[segment.mode]}
+                    frame={index + segmentIndex}
+                    bold
+                  />
                 ) : (
                   <Text key={`seg-${segmentIndex}`} color="white">
                     {segment.text}
@@ -785,10 +791,10 @@ function ShellComposer(props: {
   );
 }
 
-/** Render a composer text part, rainbow-animated when it is the ultramaxx keyword. */
-function ComposerPart(props: { text: string; ultramaxx: boolean; frame: number }): React.ReactElement {
-  if (props.ultramaxx) {
-    return <RainbowText text={props.text} frame={props.frame} bold />;
+/** Render a composer text part, gradient-animated when it is an ultra keyword. */
+function ComposerPart(props: { text: string; mode: UltraMode | null; frame: number }): React.ReactElement {
+  if (props.mode) {
+    return <GradientText text={props.text} palette={ultraGradients[props.mode]} frame={props.frame} bold />;
   }
 
   return <Text color="white">{props.text}</Text>;
@@ -796,11 +802,11 @@ function ComposerPart(props: { text: string; ultramaxx: boolean; frame: number }
 
 /**
  * Render one composer row with the block cursor at the given column, keeping
- * the `ultramaxx` keyword rainbow-coloured around the caret.
+ * ultra keywords gradient-coloured around the caret.
  */
 function ComposerCursorRow(props: { text: string; cursorCol: number; frame: number }): React.ReactElement {
   const col = Math.max(0, Math.min(props.cursorCol, props.text.length));
-  const segments = splitUltramaxxSegments(props.text);
+  const segments = splitUltraSegments(props.text);
   const nodes: React.ReactNode[] = [];
   let pos = 0;
   let key = 0;
@@ -813,7 +819,7 @@ function ComposerCursorRow(props: { text: string; cursorCol: number; frame: numb
       const at = segment.text.slice(local, local + 1) || " ";
       const after = segment.text.slice(local + 1);
       if (before) {
-        nodes.push(<ComposerPart key={`p-${key++}`} text={before} ultramaxx={segment.ultramaxx} frame={props.frame} />);
+        nodes.push(<ComposerPart key={`p-${key++}`} text={before} mode={segment.mode} frame={props.frame} />);
       }
       nodes.push(
         <Text key={`p-${key++}`} inverse>
@@ -821,10 +827,10 @@ function ComposerCursorRow(props: { text: string; cursorCol: number; frame: numb
         </Text>,
       );
       if (after) {
-        nodes.push(<ComposerPart key={`p-${key++}`} text={after} ultramaxx={segment.ultramaxx} frame={props.frame} />);
+        nodes.push(<ComposerPart key={`p-${key++}`} text={after} mode={segment.mode} frame={props.frame} />);
       }
     } else if (segment.text.length > 0) {
-      nodes.push(<ComposerPart key={`p-${key++}`} text={segment.text} ultramaxx={segment.ultramaxx} frame={props.frame} />);
+      nodes.push(<ComposerPart key={`p-${key++}`} text={segment.text} mode={segment.mode} frame={props.frame} />);
     }
     pos = end;
   }
