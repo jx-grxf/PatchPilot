@@ -7,7 +7,10 @@ import { fetchWithTimeout } from "./http.js";
 import { attachTokenCost, estimateTokens } from "./tokenAccounting.js";
 
 export const defaultGeminiWrapperModel = "auto";
-export const geminiWrapperShortcutModels = ["auto", "flash-lite", "flash", "pro"] as const;
+// Gemini 3 has no flash-lite tier — gemini_webapi 2.0.0 exposes only
+// pro / flash / flash-thinking. Offering "flash-lite" advertised a model that
+// does not exist and hard-failed every request, so it is no longer a shortcut.
+export const geminiWrapperShortcutModels = ["auto", "flash", "pro"] as const;
 export const geminiWrapperLegacyModels = ["thinking"] as const;
 export const geminiWrapperCuratedModels = [...geminiWrapperShortcutModels, ...geminiWrapperLegacyModels] as const;
 export const geminiWebApiVersion = "2.0.0";
@@ -400,14 +403,12 @@ export class GeminiWrapperClient {
       return "";
     }
 
-    if (!isGeminiWrapperShortcutModel(normalizedModel)) {
-      return normalizedModel;
-    }
-
-    const descriptors = await this.getCachedModelDescriptors().catch(() => []);
-    const descriptor = resolveGeminiWrapperShortcutDescriptor(normalizedModel, descriptors);
-    if (descriptor) {
-      return descriptor.id;
+    if (isGeminiWrapperShortcutModel(normalizedModel)) {
+      const descriptors = await this.getCachedModelDescriptors().catch(() => []);
+      const descriptor = resolveGeminiWrapperShortcutDescriptor(normalizedModel, descriptors);
+      if (descriptor) {
+        return descriptor.id;
+      }
     }
 
     return normalizeGeminiWrapperBridgeModelFallback(normalizedModel);
@@ -688,14 +689,21 @@ function normalizeGeminiWrapperModel(model: string): string {
   return trimmedModel || defaultGeminiWrapperModel;
 }
 
-function normalizeGeminiWrapperBridgeModelFallback(model: string): string {
+/**
+ * Map a curated shortcut to the model string the gemini_webapi bridge accepts
+ * when live discovery is unavailable. Every returned non-empty value must be a
+ * valid gemini_webapi `Model` model_name, or the bridge request hard-fails.
+ */
+export function normalizeGeminiWrapperBridgeModelFallback(model: string): string {
   const normalizedModel = normalizeGeminiWrapperModel(model).trim();
   if (normalizedModel === defaultGeminiWrapperModel || normalizedModel === "gemini-web-default") {
     return "";
   }
 
+  // Legacy alias — a stray "flash-lite" maps to the closest valid tier rather
+  // than crashing the bridge with an unknown-model error.
   if (normalizedModel === "flash-lite") {
-    return "flash-lite";
+    return "gemini-3-flash";
   }
 
   if (normalizedModel === "flash") {
@@ -755,14 +763,9 @@ function mergeGeminiWrapperModelDescriptors(models: ModelDescriptor[]): ModelDes
       description: "Let Gemini Web choose its current default model."
     },
     {
-      id: "flash-lite",
-      displayName: "Flash-Lite",
-      description: "Shortcut resolved from live Gemini Web discovery."
-    },
-    {
       id: "flash",
       displayName: "Flash",
-      description: "Shortcut resolved from live Gemini Web discovery, preferring Gemini 3.5 Flash when the bridge exposes it."
+      description: "Gemini 3 Flash — fast tier, resolved from live Gemini Web discovery."
     },
     {
       id: "pro",
@@ -802,16 +805,8 @@ function resolveGeminiWrapperShortcutDescriptor(shortcut: string, descriptors: M
   const dynamicDescriptors = descriptors.filter((descriptor) => !geminiWrapperCuratedModels.includes(descriptor.id as typeof geminiWrapperCuratedModels[number]));
   const matches = (pattern: RegExp) => dynamicDescriptors.filter((descriptor) => pattern.test(formatModelDescriptorSearchText(descriptor)));
 
-  if (shortcut === "flash-lite") {
-    return matches(/flash[-\s]?lite/i)[0] ?? null;
-  }
-
   if (shortcut === "flash") {
-    return (
-      matches(/3\.5.*flash/i).find((descriptor) => !/lite|thinking/i.test(formatModelDescriptorSearchText(descriptor))) ??
-      matches(/\bflash\b/i).find((descriptor) => !/lite|thinking/i.test(formatModelDescriptorSearchText(descriptor))) ??
-      null
-    );
+    return matches(/\bflash\b/i).find((descriptor) => !/lite|thinking/i.test(formatModelDescriptorSearchText(descriptor))) ?? null;
   }
 
   if (shortcut === "pro") {
@@ -1368,9 +1363,25 @@ async def main():
             files = payload.get("files") or []
             if files:
                 request_kwargs["files"] = files
-            response = await client.generate_content(payload.get("prompt") or "", **request_kwargs)
+            used_model = request_model or "auto"
+            model_warning = None
+            prompt_text = payload.get("prompt") or ""
+            try:
+                response = await client.generate_content(prompt_text, **request_kwargs)
+            except ValueError as model_error:
+                # An unknown model name must not fail the whole request — retry
+                # on Gemini Web's default model and report it back.
+                if "model" not in str(model_error).lower():
+                    raise
+                request_kwargs.pop("model", None)
+                used_model = "auto"
+                model_warning = f"Requested model '{request_model}' is unavailable; used the Gemini Web default instead."
+                response = await client.generate_content(prompt_text, **request_kwargs)
             text = getattr(response, "text", None) or str(response)
-            return {"content": text, "accountStatus": status_name, "model": request_model or "auto"}
+            result = {"content": text, "accountStatus": status_name, "model": used_model}
+            if model_warning:
+                result["warning"] = model_warning
+            return result
         finally:
             await client.close()
 
