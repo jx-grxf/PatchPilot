@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { compactTranscript, executeToolCallsWithReadParallelism, findRepeatedToolCall, normalizeTodoItems, recoverMalformedToolResponse, shouldExpectTodos } from "../src/core/agent.js";
+import { compactTranscript, executeToolCallsWithReadParallelism, findRepeatedToolCall, normalizeTodoItems, recoverMalformedToolResponse, shouldExpectTodos, shouldStopAfterEmptyToolBatches } from "../src/core/agent.js";
 import type { AgentToolCall, ToolResult } from "../src/core/types.js";
 import type { WorkspaceTools } from "../src/core/workspace.js";
 
@@ -62,12 +62,13 @@ describe("executeToolCallsWithReadParallelism", () => {
 
     const results = await executeToolCallsWithReadParallelism(tools, [
       toolRecord("read_file", "read-1"),
+      toolRecord("find_files", "find-1"),
       toolRecord("search_text", "search-1"),
       toolRecord("git_status", "status-1")
     ]);
 
-    expect(maxActiveCalls).toBe(3);
-    expect(results.map((result) => result.toolCallId)).toEqual(["read-1", "search-1", "status-1"]);
+    expect(maxActiveCalls).toBe(4);
+    expect(results.map((result) => result.toolCallId)).toEqual(["read-1", "find-1", "search-1", "status-1"]);
   });
 
   it("keeps mutating calls as ordering barriers", async () => {
@@ -135,6 +136,11 @@ describe("agent loop guards", () => {
     expect(findRepeatedToolCall([{ name: "read_file", arguments: { path: "src/a.ts", mode: "full" } }], recent)?.name).toBe("read_file");
   });
 
+  it("stops after repeated empty tool batches", () => {
+    expect(shouldStopAfterEmptyToolBatches(1)).toBe(false);
+    expect(shouldStopAfterEmptyToolBatches(2)).toBe(true);
+  });
+
   it("compacts older tool-result transcript blocks and keeps recent ones verbatim", () => {
     const messages = [
       { role: "system" as const, content: "system" },
@@ -157,7 +163,7 @@ function toolRecord(name: AgentToolCall["name"], id: string) {
     id,
     call: {
       name,
-      arguments: name === "search_text" ? { query: "needle" } : name === "git_status" ? {} : { path: "src/index.ts" }
+      arguments: name === "search_text" || name === "find_files" ? { query: "needle" } : name === "git_status" ? {} : { path: "src/index.ts" }
     },
     workState: "reading" as const
   };

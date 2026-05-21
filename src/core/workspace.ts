@@ -119,6 +119,14 @@ export const toolSpecs: Record<AgentToolName, ToolSpec> = {
     permission: "none",
     category: "read"
   },
+  find_files: {
+    name: "find_files",
+    description: "Find workspace files by path/name substring.",
+    risk: "low",
+    sideEffects: "none",
+    permission: "none",
+    category: "search"
+  },
   read_file: {
     name: "read_file",
     description: "Read a complete text/code file.",
@@ -350,6 +358,8 @@ export class WorkspaceTools {
           return this.updateTodo(call.arguments);
         case "list_files":
           return await this.listFiles(readString(call.arguments.path, "."));
+        case "find_files":
+          return await this.findFiles(readString(call.arguments.query, ""), readNumber(call.arguments.limit, 80));
         case "read_file":
           return await this.readFile(readString(call.arguments.path, ""));
         case "read_range":
@@ -484,6 +494,40 @@ export class WorkspaceTools {
       content: entries.join("\n"),
       tool: "list_files",
       category: toolSpecs.list_files.category
+    };
+  }
+
+  private async findFiles(query: string, limit: number): Promise<ToolResult> {
+    const normalizedQuery = query.trim().replaceAll("\\", "/").toLowerCase();
+    if (!normalizedQuery) {
+      return denied("find_files requires a non-empty query.", "find_files");
+    }
+
+    if (isPlaceholderPath(normalizedQuery)) {
+      return denied(`find_files denied placeholder query: ${query}`, "find_files");
+    }
+
+    if (isSensitivePath(normalizedQuery)) {
+      return denied(`find_files denied sensitive query: ${query}`, "find_files");
+    }
+
+    const normalizedLimit = Math.max(1, Math.min(200, Math.floor(limit || 80)));
+    const files = await walkFiles(this.root, this.root, await this.rootRealPath, 10, 1200);
+    const matches = files
+      .filter((filePath) => filePath.toLowerCase().includes(normalizedQuery))
+      .slice(0, normalizedLimit);
+
+    return {
+      ok: true,
+      summary: `found ${matches.length} file match${matches.length === 1 ? "" : "es"}`,
+      content: matches.join("\n") || "No matching files.",
+      tool: "find_files",
+      category: toolSpecs.find_files.category,
+      metadata: {
+        query: normalizedQuery,
+        limit: normalizedLimit,
+        truncated: matches.length >= normalizedLimit
+      }
     };
   }
 

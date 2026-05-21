@@ -63,6 +63,7 @@ export type AgentWorkState =
 export const AGENT_TOOL_NAMES = [
   "update_todo",
   "list_files",
+  "find_files",
   "read_file",
   "read_range",
   "file_info",

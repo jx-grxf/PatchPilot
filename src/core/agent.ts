@@ -96,6 +96,7 @@ export class AgentRunner {
     let didPushBackForVerification = false;
     let hadWrite = false;
     let verifiedSinceLastWrite = true;
+    let emptyToolBatches = 0;
     const recentToolSignatures: string[] = [];
 
     if (ultramaxx) {
@@ -327,6 +328,36 @@ export class AgentRunner {
         });
         return;
       }
+      if (toolCalls.length === 0) {
+        emptyToolBatches += 1;
+        messages.push({
+          role: "assistant",
+          content: JSON.stringify(parsedResponse)
+        });
+
+        if (shouldStopAfterEmptyToolBatches(emptyToolBatches)) {
+          yield {
+            type: "final",
+            message: "Stopped because the model returned a tool action without tool calls twice. Retry the task or switch models.",
+            workState: "error"
+          };
+          await this.options.sessionStore?.append({
+            type: "run.failed",
+            runId,
+            message: "Model returned empty tool batches repeatedly.",
+            failedAt: new Date().toISOString()
+          });
+          return;
+        }
+
+        messages.push({
+          role: "user",
+          content: "You returned action:\"tools\" without any tool_calls. Either call one valid tool now or return action:\"final\" with the completed answer."
+        });
+        stepIndex += 1;
+        continue;
+      }
+      emptyToolBatches = 0;
 
       const { todoCalls, workspaceCalls } = splitTodoToolCalls(toolCalls);
       if (expectsTodos && todos.length === 0 && workspaceCalls.length > 0 && !didNudgeForTodos) {
@@ -745,6 +776,7 @@ function buildSystemPrompt(
     "Available tools:",
     "- update_todo: {\"items\":[{\"id\":\"inspect\",\"content\":\"Inspect relevant files\",\"status\":\"in_progress\"},{\"id\":\"verify\",\"content\":\"Run checks\",\"status\":\"pending\"}]} to maintain the visible task checklist. For multi-step implementation work, call this before and after meaningful task changes.",
     "- list_files: {\"path\":\".\"}",
+    "- find_files: {\"query\":\"agent\",\"limit\":80} for matching workspace file paths without reading file contents",
     "- read_file: {\"path\":\"src/index.ts\"}",
     "- read_range: {\"path\":\"src/index.ts\",\"start\":1,\"end\":80}",
     "- file_info: {\"path\":\"src/index.ts\"}",
@@ -790,6 +822,10 @@ function looksLikeClarification(message: string): boolean {
     normalizedMessage.endsWith("?") &&
     /\b(what|which|please provide|would you like|do you want|can you specify|welche|was genau|bitte)\b/.test(normalizedMessage)
   );
+}
+
+export function shouldStopAfterEmptyToolBatches(emptyToolBatches: number): boolean {
+  return emptyToolBatches >= 2;
 }
 
 export function findRepeatedToolCall(toolCalls: Parameters<WorkspaceTools["execute"]>[0][], recentSignatures: string[]): Parameters<WorkspaceTools["execute"]>[0] | null {

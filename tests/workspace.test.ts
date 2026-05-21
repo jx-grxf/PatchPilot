@@ -54,6 +54,50 @@ describe("WorkspaceTools", () => {
     expect(result.content).toContain("src/index.ts");
   });
 
+  it("finds workspace files by path substring without exposing ignored sensitive paths", async () => {
+    await mkdir(path.join(tempRoot, "src", "core"), { recursive: true });
+    await mkdir(path.join(tempRoot, ".patchpilot", "sessions"), { recursive: true });
+    await writeFile(path.join(tempRoot, "src", "core", "agent.ts"), "export const ok = true;\n");
+    await writeFile(path.join(tempRoot, ".patchpilot", "sessions", "agent-secret.jsonl"), "secret\n");
+    await writeFile(path.join(tempRoot, ".env"), "AGENT_TOKEN=secret\n");
+    const tools = new WorkspaceTools({
+      root: tempRoot,
+      allowWrite: false,
+      allowShell: false
+    });
+
+    const result = await tools.execute({
+      name: "find_files",
+      arguments: {
+        query: "agent",
+        limit: 10
+      }
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.content).toContain("src/core/agent.ts");
+    expect(result.content).not.toContain(".patchpilot");
+    expect(result.content).not.toContain(".env");
+  });
+
+  it("rejects sensitive file search queries", async () => {
+    const tools = new WorkspaceTools({
+      root: tempRoot,
+      allowWrite: false,
+      allowShell: false
+    });
+
+    const result = await tools.execute({
+      name: "find_files",
+      arguments: {
+        query: ".env"
+      }
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.summary).toContain("sensitive");
+  });
+
   it("treats workspace-prefixed paths as relative to the root", async () => {
     const workspaceName = path.basename(tempRoot);
     const tools = new WorkspaceTools({
