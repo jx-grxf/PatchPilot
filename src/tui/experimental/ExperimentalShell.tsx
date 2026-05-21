@@ -14,7 +14,7 @@ import { CommandPalette } from "./CommandPalette.js";
 import { computeExperimentalLayout, windowRows } from "./layout.js";
 import { symbols, workStateColor } from "./theme.js";
 import { buildShellRows, buildTodoDock, truncate } from "./transcriptRows.js";
-import { splitUltramaxxSegments } from "./ultramaxx.js";
+import { hasUltramaxx, splitUltramaxxSegments } from "./ultramaxx.js";
 
 export type ExperimentalShellProps = {
   provider: ModelProvider;
@@ -358,14 +358,21 @@ function ShellComposer(props: {
     maxHeight: 7,
   });
 
+  // Animate while running, and also while the draft contains the ultramaxx
+  // keyword so its rainbow flows as you type.
+  const animating = props.isRunning || hasUltramaxx(props.input);
   useEffect(() => {
     if (!props.isRunning) {
       setRunningSince(null);
+    } else {
+      setRunningSince((current) => current ?? Date.now());
+    }
+
+    if (!animating) {
       setFrame(0);
       return;
     }
 
-    setRunningSince((current) => current ?? Date.now());
     const timer = setInterval(() => {
       setFrame((current) => current + 1);
     }, waveFrameMs);
@@ -373,7 +380,7 @@ function ShellComposer(props: {
     return () => {
       clearInterval(timer);
     };
-  }, [props.isRunning]);
+  }, [props.isRunning, animating]);
 
   // Keep the cursor valid when the draft is replaced from outside (submit,
   // slash-command fill, /clear).
@@ -501,7 +508,7 @@ function ShellComposer(props: {
             </Text>
           </Box>
           {index === view.cursorRow ? (
-            <ComposerCursorRow text={row} cursorCol={view.cursorCol} />
+            <ComposerCursorRow text={row} cursorCol={view.cursorCol} frame={frame} />
           ) : (
             <Text>
               {splitUltramaxxSegments(row).map((segment, segmentIndex) =>
@@ -540,19 +547,57 @@ function ShellComposer(props: {
   );
 }
 
-/** Render one composer row with the block cursor at the given column. */
-function ComposerCursorRow(props: { text: string; cursorCol: number }): React.ReactElement {
+/** Render a composer text part, rainbow-animated when it is the ultramaxx keyword. */
+function ComposerPart(props: { text: string; ultramaxx: boolean; frame: number }): React.ReactElement {
+  if (props.ultramaxx) {
+    return <RainbowText text={props.text} frame={props.frame} bold />;
+  }
+
+  return <Text color="white">{props.text}</Text>;
+}
+
+/**
+ * Render one composer row with the block cursor at the given column, keeping
+ * the `ultramaxx` keyword rainbow-coloured around the caret.
+ */
+function ComposerCursorRow(props: { text: string; cursorCol: number; frame: number }): React.ReactElement {
   const col = Math.max(0, Math.min(props.cursorCol, props.text.length));
-  const before = props.text.slice(0, col);
-  const at = props.text.slice(col, col + 1) || " ";
-  const after = props.text.slice(col + 1);
-  return (
-    <Text>
-      <Text color="white">{before}</Text>
-      <Text inverse>{at}</Text>
-      <Text color="white">{after}</Text>
-    </Text>
-  );
+  const segments = splitUltramaxxSegments(props.text);
+  const nodes: React.ReactNode[] = [];
+  let pos = 0;
+  let key = 0;
+  for (const segment of segments) {
+    const start = pos;
+    const end = pos + segment.text.length;
+    if (segment.text.length > 0 && col >= start && col < end) {
+      const local = col - start;
+      const before = segment.text.slice(0, local);
+      const at = segment.text.slice(local, local + 1) || " ";
+      const after = segment.text.slice(local + 1);
+      if (before) {
+        nodes.push(<ComposerPart key={`p-${key++}`} text={before} ultramaxx={segment.ultramaxx} frame={props.frame} />);
+      }
+      nodes.push(
+        <Text key={`p-${key++}`} inverse>
+          {at}
+        </Text>,
+      );
+      if (after) {
+        nodes.push(<ComposerPart key={`p-${key++}`} text={after} ultramaxx={segment.ultramaxx} frame={props.frame} />);
+      }
+    } else if (segment.text.length > 0) {
+      nodes.push(<ComposerPart key={`p-${key++}`} text={segment.text} ultramaxx={segment.ultramaxx} frame={props.frame} />);
+    }
+    pos = end;
+  }
+  if (col >= props.text.length) {
+    nodes.push(
+      <Text key={`p-${key++}`} inverse>
+        {" "}
+      </Text>,
+    );
+  }
+  return <Text>{nodes}</Text>;
 }
 
 function ShellFooter(props: { agentMode: AgentMode; paletteOpen: boolean }): React.ReactElement {
