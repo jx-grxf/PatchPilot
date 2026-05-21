@@ -34,6 +34,7 @@ import { ApprovalPanel } from "./components/ApprovalPanel.js";
 import { CommandSuggestions, type CommandSuggestionItem } from "./components/CommandSuggestions.js";
 import { Composer, FooterHints } from "./components/Composer.js";
 import { ExperimentalPanel, experimentalFlagAt, experimentalFlagCount, type ExperimentalFlags } from "./components/ExperimentalPanel.js";
+import { ExperimentalShell } from "./experimental/ExperimentalShell.js";
 import { Header } from "./components/Header.js";
 import { OnboardingPanel, type ApiKeyProvider, type OnboardingState } from "./components/OnboardingPanel.js";
 import { Sidebar } from "./components/Sidebar.js";
@@ -106,6 +107,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   const [experimentalOpen, setExperimentalOpen] = useState(false);
   const [experimentalIndex, setExperimentalIndex] = useState(0);
   const [experimentalFlags, setExperimentalFlags] = useState<ExperimentalFlags>({
+    terminalShell: readBooleanEnv(process.env.PATCHPILOT_EXPERIMENTAL_TERMINAL_SHELL, false),
     fileAnalysis: readBooleanEnv(process.env.PATCHPILOT_EXPERIMENTAL_FILE_ANALYSIS, false),
     memory: readBooleanEnv(process.env.PATCHPILOT_EXPERIMENTAL_MEMORY, false),
     subagents: props.subagents
@@ -1803,13 +1805,15 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           });
           setExperimentalFlags((currentFlags) => ({
             ...currentFlags,
-            ...(requestedFlag === "file-analysis"
-              ? { fileAnalysis: enabled }
-              : requestedFlag === "memory"
-                ? { memory: enabled }
-                : requestedFlag === "subagents" || requestedFlag === "agents"
-                  ? { subagents: enabled }
-                  : {})
+            ...(requestedFlag === "tui" || requestedFlag === "terminal-shell" || requestedFlag === "shell"
+              ? { terminalShell: enabled }
+              : requestedFlag === "file-analysis"
+                ? { fileAnalysis: enabled }
+                : requestedFlag === "memory"
+                  ? { memory: enabled }
+                  : requestedFlag === "subagents" || requestedFlag === "agents"
+                    ? { subagents: enabled }
+                    : {})
           }));
           appendLine({
             tone: "success",
@@ -2091,6 +2095,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
             }));
           }
           savePatchPilotEnvValues({
+            PATCHPILOT_EXPERIMENTAL_TERMINAL_SHELL: nextFlags.terminalShell ? "1" : "0",
             PATCHPILOT_EXPERIMENTAL_FILE_ANALYSIS: nextFlags.fileAnalysis ? "1" : "0",
             PATCHPILOT_EXPERIMENTAL_MEMORY: nextFlags.memory ? "1" : "0",
             PATCHPILOT_EXPERIMENTAL_SUBAGENTS: nextFlags.subagents ? "1" : "0"
@@ -2331,6 +2336,41 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       clearInterval(timer);
     };
   }, []);
+
+  if (experimentalFlags.terminalShell && !onboarding && !experimentalOpen) {
+    return (
+      <ExperimentalShell
+        provider={settings.provider}
+        model={settings.model}
+        workspace={settings.workspace}
+        sessionId={sessionStoreRef.current.sessionId}
+        agentMode={agentMode}
+        allowWrite={settings.allowWrite}
+        allowShell={settings.allowShell}
+        subagents={settings.subagents}
+        workState={workState}
+        status={status}
+        isRunning={isRunning}
+        telemetry={telemetry}
+        sessionTelemetry={sessionTelemetry}
+        draftTokens={draftTokens}
+        lines={lines}
+        todos={todos}
+        todoFrame={todoFrame}
+        pendingApproval={pendingApproval}
+        bypassConfirmation={bypassConfirmation}
+        transcriptScrollOffset={transcriptScrollOffset}
+        input={input}
+        paletteItems={paletteItems}
+        paletteIndex={paletteIndex}
+        rows={terminalRows}
+        columns={terminalColumns}
+        activeHost={activeHost}
+        onChange={setInput}
+        onSubmit={(value) => void handleSubmit(value)}
+      />
+    );
+  }
 
   return (
     <Box flexDirection="column" paddingX={1} height={rootHeight} overflowY="hidden">
