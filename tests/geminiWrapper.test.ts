@@ -971,14 +971,23 @@ describe("GeminiWrapperClient", () => {
   });
 
   it("includes response body details for non-JSON wrapper errors", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response("<html>bad gateway</html>", {
-        status: 502,
-        headers: {
-          "retry-after": "3"
-        }
-      })
-    );
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(
+        new Response("<html>bad gateway</html>", {
+          status: 502,
+          headers: {
+            "retry-after": "3"
+          }
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response("<html>bad gateway</html>", {
+          status: 502,
+          headers: {
+            "retry-after": "3"
+          }
+        })
+      );
 
     await expect(new GeminiWrapperClient("http://localhost:8787/v1", "", undefined, "http").listModels()).rejects.toThrow(/bad gateway.*retry-after 3s/);
   });

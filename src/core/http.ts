@@ -11,29 +11,39 @@ export async function fetchWithTimeout(
   const attempts = Math.max(1, (options.retries ?? 0) + 1);
   let lastError: unknown = null;
   let lastStatus = 0;
+  let attempted = 0;
+  const parentSignal = init.signal ?? undefined;
 
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    attempted = attempt;
     try {
       const response = await fetchOnceWithTimeout(input, init, options.timeoutMs);
-      if (!isRetryableStatus(response.status) || attempt >= attempts || init.signal?.aborted) {
+      if (!isRetryableStatus(response.status) || attempt >= attempts || parentSignal?.aborted) {
         return response;
       }
 
       lastStatus = response.status;
-      await delay(readRetryDelayMs(response, attempt, options.retryDelayMs));
+      await discardResponseBody(response);
+      await delay(readRetryDelayMs(response, attempt, options.retryDelayMs), parentSignal);
+      if (parentSignal?.aborted) {
+        break;
+      }
     } catch (error) {
       lastError = error;
-      if (attempt >= attempts || init.signal?.aborted) {
+      if (attempt >= attempts || parentSignal?.aborted) {
         break;
       }
 
-      await delay(readRetryDelayMs(null, attempt, options.retryDelayMs));
+      await delay(readRetryDelayMs(null, attempt, options.retryDelayMs), parentSignal);
+      if (parentSignal?.aborted) {
+        break;
+      }
     }
   }
 
   const statusSuffix = lastStatus > 0 ? ` Last HTTP status: ${lastStatus}.` : "";
   const suffix = lastError instanceof Error ? ` ${lastError.message}` : "";
-  throw new Error(`${options.label} timed out or could not be reached after ${attempts} attempt${attempts === 1 ? "" : "s"}.${statusSuffix}${suffix}`);
+  throw new Error(`${options.label} timed out or could not be reached after ${attempted} attempt${attempted === 1 ? "" : "s"}.${statusSuffix}${suffix}`);
 }
 
 async function fetchOnceWithTimeout(input: string | URL, init: RequestInit, timeoutMs: number): Promise<Response> {
@@ -58,10 +68,31 @@ async function fetchOnceWithTimeout(input: string | URL, init: RequestInit, time
   }
 }
 
-function delay(durationMs: number): Promise<void> {
+function delay(durationMs: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
-    setTimeout(resolve, durationMs);
+    if (signal?.aborted) {
+      resolve();
+      return;
+    }
+
+    const abort = (): void => {
+      clearTimeout(timeout);
+      resolve();
+    };
+    const timeout = setTimeout(() => {
+      signal?.removeEventListener("abort", abort);
+      resolve();
+    }, durationMs);
+    signal?.addEventListener("abort", abort, { once: true });
   });
+}
+
+async function discardResponseBody(response: Response): Promise<void> {
+  try {
+    await response.body?.cancel();
+  } catch {
+    // Best-effort cleanup before retrying; the next attempt should still run.
+  }
 }
 
 function isRetryableStatus(status: number): boolean {

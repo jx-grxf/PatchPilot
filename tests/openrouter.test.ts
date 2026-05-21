@@ -258,6 +258,58 @@ describe("OpenRouterClient", () => {
     });
   });
 
+  it("falls back from out-of-range temperature config", async () => {
+    const previousTemperature = process.env.PATCHPILOT_TEMPERATURE;
+    process.env.PATCHPILOT_TEMPERATURE = "2.5";
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: "ok"
+              }
+            }
+          ],
+          usage: {
+            prompt_tokens: 1,
+            completion_tokens: 1,
+            total_tokens: 2,
+            cost: 0
+          }
+        }),
+        {
+          status: 200,
+          headers: {
+            "Content-Type": "application/json"
+          }
+        }
+      )
+    );
+
+    try {
+      await new OpenRouterClient("test-key", "https://openrouter.test/api/v1").chat({
+        model: "a/model",
+        messages: [
+          {
+            role: "user",
+            content: "hello"
+          }
+        ]
+      });
+    } finally {
+      if (previousTemperature === undefined) {
+        delete process.env.PATCHPILOT_TEMPERATURE;
+      } else {
+        process.env.PATCHPILOT_TEMPERATURE = previousTemperature;
+      }
+    }
+
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toMatchObject({
+      temperature: 0.1
+    });
+  });
+
   it("normalizes provider aliases and free model names", () => {
     expect(normalizeModelProvider("openrouter")).toBe("openrouter");
     expect(normalizeModelProvider("open-router")).toBe("openrouter");

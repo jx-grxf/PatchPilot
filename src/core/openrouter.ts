@@ -337,5 +337,5 @@ function readPositiveInteger(value: string | undefined, fallback: number): numbe
 
 function readTemperature(value: string | undefined, fallback: number): number {
   const parsedValue = Number.parseFloat(value ?? "");
-  return Number.isFinite(parsedValue) && parsedValue >= 0 ? parsedValue : fallback;
+  return Number.isFinite(parsedValue) && parsedValue >= 0 && parsedValue <= 2 ? parsedValue : fallback;
 }

@@ -128,4 +128,50 @@ describe("NvidiaClient", () => {
       tokenSource: "provider"
     });
   });
+
+  it("falls back from out-of-range temperature config", async () => {
+    const previousTemperature = process.env.PATCHPILOT_TEMPERATURE;
+    process.env.PATCHPILOT_TEMPERATURE = "3";
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: "ok"
+              }
+            }
+          ]
+        }),
+        {
+          status: 200,
+          headers: {
+            "Content-Type": "application/json"
+          }
+        }
+      )
+    );
+
+    try {
+      await new NvidiaClient("test-key", "https://integrate.api.nvidia.com/v1").chat({
+        model: "meta/llama-3.1-70b-instruct",
+        messages: [
+          {
+            role: "user",
+            content: "hello"
+          }
+        ]
+      });
+    } finally {
+      if (previousTemperature === undefined) {
+        delete process.env.PATCHPILOT_TEMPERATURE;
+      } else {
+        process.env.PATCHPILOT_TEMPERATURE = previousTemperature;
+      }
+    }
+
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toMatchObject({
+      temperature: 0.1
+    });
+  });
 });
