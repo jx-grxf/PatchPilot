@@ -1986,7 +1986,7 @@ function isPlaceholderPath(value: string): boolean {
   return ["relative/path", "path/to/file", "file/path", "<path>", "<file>", "filename"].includes(normalizedValue);
 }
 
-function isSensitivePath(value: string): boolean {
+export function isSensitivePath(value: string): boolean {
   const normalizedPath = value.trim().replaceAll("\\", "/");
   return normalizedPath
     .split("/")

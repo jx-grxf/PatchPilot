@@ -294,6 +294,21 @@ export type SessionEvent =
       runId: string;
       message: string;
       failedAt: string;
+    }
+  | {
+      type: "context.pinned";
+      runId?: string;
+      itemId: string;
+      pinned: boolean;
+      label?: string;
+      createdAt: string;
+    }
+  | {
+      type: "context.compacted";
+      runId?: string;
+      summaryId: string;
+      itemIds: string[];
+      createdAt: string;
     };
 
 export type ModelTelemetry = {

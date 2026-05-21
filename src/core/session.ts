@@ -231,6 +231,10 @@ function formatEventForResume(event: SessionEvent): string {
       return `- assistant finished: ${clip(event.message, 500)}`;
     case "run.failed":
       return `- run failed: ${clip(event.message, 300)}`;
+    case "context.pinned":
+      return `- context ${event.pinned ? "pinned" : "unpinned"}: ${event.label ?? event.itemId}`;
+    case "context.compacted":
+      return `- context compacted into ${event.summaryId} from ${event.itemIds.length} items`;
     case "model.request":
       return "";
   }
