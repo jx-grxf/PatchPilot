@@ -5,6 +5,7 @@ import { AgentRunner, type AgentRunnerOptions } from "../core/agent.js";
 import { cleanupPatchPilot, readCleanupTarget } from "../core/cleanup.js";
 import { defaultCodexModel, hasCodexCliOAuth } from "../core/codex.js";
 import { describeComputeTarget } from "../core/compute.js";
+import { ContextStore } from "../core/contextStore.js";
 import { runDoctor } from "../core/doctor.js";
 import { savePatchPilotEnvValues } from "../core/env.js";
 import { defaultGeminiModel, readGeminiApiKey } from "../core/gemini.js";
@@ -110,6 +111,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   const lastEscapeStopAtRef = useRef(0);
   const lastAttachmentWarningRef = useRef("");
   const sessionStoreRef = useRef(new SessionStore({ workspace: props.workspace }));
+  const contextStoreRef = useRef(new ContextStore({ workspace: props.workspace, sessionId: sessionStoreRef.current.sessionId }));
   const approvalResolverRef = useRef<((decision: PermissionDecision) => void) | null>(null);
   const runtimeStateRef = useRef({
     isRunning: false,
@@ -240,6 +242,17 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   const pushArtifact = useCallback((artifact: Artifact): void => {
     artifactsRef.current = [...artifactsRef.current, artifact].slice(-40);
     setArtifacts(artifactsRef.current);
+    void contextStoreRef.current.append({
+      kind: artifact.origin === "attached" ? "attachment" : "artifact",
+      source: artifact.origin === "attached" ? "user" : "tool",
+      label: artifact.label,
+      path: artifact.path,
+      priority: artifact.origin === "attached" ? 85 : 75,
+      meta: {
+        artifactKind: artifact.kind,
+        origin: artifact.origin
+      }
+    }).catch(() => undefined);
   }, []);
 
   // Registers a pasted document as an attachment chip; returns the chip label
@@ -1423,10 +1436,14 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           conversationTurnsRef.current.length > 0
             ? `Earlier in this PatchPilot session (most recent last), for continuity only — the request below still takes priority and is not restricted to these paths:\n${conversationTurnsRef.current.join("\n")}`
             : "";
-        const artifactContext = shouldIncludeSessionArtifactContext(effectiveTask, artifactsRef.current)
-          ? formatSessionArtifactContext(artifactsRef.current)
-          : "";
-        const effectiveResumeContext = [resumeContext, sessionMemory, artifactContext].filter(Boolean).join("\n\n");
+        const artifactContext = formatSessionArtifactContext(artifactsRef.current);
+        const persistedContext = await contextStoreRef.current
+          .buildContextBlock({
+            maxItems: 12,
+            title: "Known session context"
+          })
+          .catch(() => "");
+        const effectiveResumeContext = [resumeContext, sessionMemory, artifactContext, persistedContext].filter(Boolean).join("\n\n");
         const taskRunner = new AgentRunner({
           ...runnableSettings,
           maxSteps: ultramaxx ? Math.max(runnableSettings.maxSteps, 40) : runnableSettings.maxSteps,
@@ -1595,6 +1612,19 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
             finalMessage ? ` → outcome: ${finalMessage.replace(/\s+/g, " ").trim().slice(0, 220)}` : ""
           }`
         ].slice(-6);
+        void contextStoreRef.current.append({
+          kind: "turn",
+          source: "user",
+          label: task.replace(/\s+/g, " ").trim().slice(0, 120) || "PatchPilot turn",
+          text: [
+            `Asked: ${task.replace(/\s+/g, " ").trim()}`,
+            turnAttachmentPaths.length > 0 ? `Attachments: ${turnAttachmentPaths.join(", ")}` : "",
+            finalMessage ? `Outcome: ${finalMessage.replace(/\s+/g, " ").trim().slice(0, 500)}` : ""
+          ]
+            .filter(Boolean)
+            .join("\n"),
+          priority: turnAttachmentPaths.length > 0 ? 65 : 35
+        }).catch(() => undefined);
         appendLine({
           kind: "status",
           tone: "muted",
@@ -2037,6 +2067,11 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
               workspace: settings.workspace,
               sessionId: selectedSession.sessionId
             });
+            contextStoreRef.current = new ContextStore({
+              workspace: settings.workspace,
+              sessionId: selectedSession.sessionId
+            });
+            await contextStoreRef.current.bootstrapFromSession(await sessionStoreRef.current.loadEvents());
             await sessionStoreRef.current.append({
               type: "session.resumed",
               sessionId: selectedSession.sessionId,
@@ -2325,6 +2360,10 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           }
           sessionStoreRef.current = new SessionStore({
             workspace: settings.workspace
+          });
+          contextStoreRef.current = new ContextStore({
+            workspace: settings.workspace,
+            sessionId: sessionStoreRef.current.sessionId
           });
           await sessionStoreRef.current.create();
           setLines([]);
@@ -3971,14 +4010,6 @@ function formatAttachedDocuments(paths: string[]): string {
       return `- ${attachmentLabel(kind, index, filePath)} path=${JSON.stringify(filePath)}`;
     })
     .join("\n");
-}
-
-function shouldIncludeSessionArtifactContext(task: string, artifacts: Artifact[]): boolean {
-  if (artifacts.length === 0) {
-    return false;
-  }
-
-  return /\b(anhang|anhänge|anhaenge|artifact|artefakt|attached|attachment|bild|datei|docx|document|dokument|file|foto|pdf|referat|screenshot|text|upload)\b/i.test(task);
 }
 
 function formatAttachmentDigestPath(filePath: string): string {
