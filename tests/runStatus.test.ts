@@ -1,10 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
+  completionVerbs,
+  formatCompletionSummary,
   formatElapsed,
-  formatRunStatus,
+  formatRunDuration,
+  pulseGlyph,
+  pulseGlyphs,
+  runStatusParts,
   runStatusVerb,
   runStatusVerbs,
-  spinnerFrameMs,
   spinnerGlyph,
   spinnerGlyphs,
   verbCycleMs,
@@ -18,53 +22,75 @@ describe("run-status verb stability", () => {
     expect(runStatusVerb(verbCycleMs - 1)).toBe(verb);
   });
 
-  it("advances the verb only when the slow cycle elapses", () => {
-    expect(runStatusVerb(verbCycleMs)).not.toBe(runStatusVerb(0));
-    expect(runStatusVerb(verbCycleMs * 2)).not.toBe(runStatusVerb(verbCycleMs));
-  });
-
   it("does not change the verb across consecutive fast spinner frames", () => {
     // The verb must never be derived from the spinner frame.
     const elapsed = 3200;
-    const first = formatRunStatus({ workState: "reading", status: "", elapsedMs: elapsed });
-    const second = formatRunStatus({ workState: "reading", status: "", elapsedMs: elapsed + spinnerFrameMs });
+    const first = runStatusParts({ workState: "reading", status: "", elapsedMs: elapsed }).verb;
+    const second = runStatusParts({ workState: "reading", status: "", elapsedMs: elapsed + 90 }).verb;
     expect(first).toBe(second);
   });
 
-  it("is deterministic and bounded", () => {
-    expect(runStatusVerb(-100)).toBe(runStatusVerbs[0]);
+  it("rotates through several verbs and is not a fixed alphabetical cycle", () => {
+    const seen = new Set<string>();
+    let sequentialSteps = 0;
+    for (let tick = 0; tick < 30; tick += 1) {
+      const verb = runStatusVerb(tick * verbCycleMs);
+      const next = runStatusVerb((tick + 1) * verbCycleMs);
+      seen.add(verb);
+      if (runStatusVerbs.indexOf(next) === runStatusVerbs.indexOf(verb) + 1) {
+        sequentialSteps += 1;
+      }
+    }
+    expect(seen.size).toBeGreaterThan(5);
+    // A pseudo-random order should almost never advance strictly by +1.
+    expect(sequentialSteps).toBeLessThan(5);
+  });
+
+  it("is deterministic and always returns a known verb", () => {
+    expect(runStatusVerb(12_345)).toBe(runStatusVerb(12_345));
+    expect(runStatusVerbs).toContain(runStatusVerb(-100));
     expect(runStatusVerbs).toContain(runStatusVerb(999_999));
   });
 });
 
-describe("spinner glyphs", () => {
+describe("spinner and pulse glyphs", () => {
   it("cycles the braille frames", () => {
     expect(spinnerGlyph(0)).toBe(spinnerGlyphs[0]);
     expect(spinnerGlyph(spinnerGlyphs.length)).toBe(spinnerGlyphs[0]);
     expect(spinnerGlyph(1)).not.toBe(spinnerGlyph(0));
   });
 
-  it("handles negative and fractional frames", () => {
-    expect(spinnerGlyphs).toContain(spinnerGlyph(-3));
-    expect(spinnerGlyphs).toContain(spinnerGlyph(2.7));
+  it("cycles the pulse glyphs and tolerates odd frames", () => {
+    expect(pulseGlyph(0)).toBe(pulseGlyphs[0]);
+    expect(pulseGlyphs).toContain(pulseGlyph(-3));
+    expect(pulseGlyphs).toContain(pulseGlyph(2.7));
   });
 });
 
-describe("formatRunStatus", () => {
-  it("includes the work state and an optional status detail", () => {
-    expect(formatRunStatus({ workState: "waiting_approval", status: "", elapsedMs: 0 })).toContain("waiting approval");
-    expect(formatRunStatus({ workState: "reading", status: "scanning src", elapsedMs: 0 })).toContain(": scanning src");
+describe("runStatusParts", () => {
+  it("splits the status into verb, state, and detail", () => {
+    const parts = runStatusParts({ workState: "waiting_approval", status: "scanning src", elapsedMs: 0 });
+    expect(runStatusVerbs).toContain(parts.verb);
+    expect(parts.state).toBe("waiting approval");
+    expect(parts.detail).toBe("scanning src");
   });
 
   it("drops the detail when it merely repeats the state", () => {
-    expect(formatRunStatus({ workState: "reading", status: "reading", elapsedMs: 0 })).not.toContain(":");
+    expect(runStatusParts({ workState: "reading", status: "reading", elapsedMs: 0 }).detail).toBe("");
   });
 });
 
-describe("formatElapsed", () => {
-  it("formats seconds and minutes", () => {
+describe("duration formatting", () => {
+  it("formats seconds, minutes, and hours", () => {
     expect(formatElapsed(0)).toBe("starting");
     expect(formatElapsed(4200)).toBe("4s");
-    expect(formatElapsed(75_000)).toBe("1m 15s");
+    expect(formatRunDuration(75_000)).toBe("1m 15s");
+    expect(formatRunDuration(3_900_000)).toBe("1h 05m");
+  });
+
+  it("builds a completion summary like 'Crunched for 17m 58s'", () => {
+    const summary = formatCompletionSummary(1_078_000, 3);
+    expect(summary).toMatch(/^[A-Z][a-z]+ for \d+m \d{2}s$/);
+    expect(completionVerbs).toContain(summary.split(" ")[0]);
   });
 });
