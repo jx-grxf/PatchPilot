@@ -307,7 +307,7 @@ export type ModelTelemetry = {
   totalDurationMs: number;
   estimatedCostUsd: number | null;
   tokenSource: "provider" | "estimated";
-  costSource: "api-pricing" | "local" | "unknown";
+  costSource: "api-pricing" | "local" | "unknown" | "fallback-pricing" | "free-route";
 };
 
 export type SessionTelemetry = {
@@ -318,4 +318,5 @@ export type SessionTelemetry = {
   responseTokens: number;
   totalTokens: number;
   estimatedCostUsd: number | null;
+  costSource: "api-pricing" | "local" | "unknown" | "fallback-pricing" | "free-route" | "mixed";
 };

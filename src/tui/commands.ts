@@ -145,6 +145,13 @@ export const slashCommands: SlashCommand[] = [
     category: "session"
   },
   {
+    name: "usage",
+    usage: "/usage",
+    description: "Show detailed token, tool-call, cache, and cost counters.",
+    category: "session",
+    detail: "Shows current-session request counts, input/output/cache tokens, tool counters by name, and estimated cost/savings. If exact model pricing is unavailable, PatchPilot marks the figure as fallback-priced."
+  },
+  {
     name: "sessions",
     usage: "/sessions",
     description: "List recent PatchPilot sessions for this workspace.",

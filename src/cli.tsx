@@ -203,6 +203,7 @@ program
         model={String(options.model)}
         ollamaUrl={String(options.ollamaUrl)}
         workspace={workspace}
+        packageVersion={readPackageVersion()}
         allowWrite={Boolean(options.apply)}
         allowShell={Boolean(options.allowShell)}
         maxSteps={Number.isFinite(maxSteps) ? maxSteps : 8}

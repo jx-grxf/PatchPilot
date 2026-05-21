@@ -34,6 +34,7 @@ const textFileExtensions = new Set([
   ".h",
   ".hpp",
   ".html",
+  ".svg",
   ".js",
   ".json",
   ".jsx",
@@ -45,6 +46,7 @@ const textFileExtensions = new Set([
   ".ts",
   ".tsx",
   ".txt",
+  ".jsonl",
   ".java",
   ".kt",
   ".go",
@@ -646,6 +648,19 @@ export class WorkspaceTools {
         return providerResult;
       }
       return mergeFallbackDocumentResult(providerResult, docxFallback);
+    }
+
+    if (extension === ".doc") {
+      const docFallback = await extractLegacyDocText(absolutePath, this.timeoutMs, this.signal);
+      if (wantsLocalOnly || !this.documentAnalyzer || hasUsefulExtractedText(docFallback)) {
+        return docFallback;
+      }
+
+      const providerResult = await this.analyzeDocumentWithProvider(absolutePath, "Analyze this Word document for PatchPilot. Extract the relevant text, headings, and document structure.");
+      if (providerResult.ok) {
+        return providerResult;
+      }
+      return mergeFallbackDocumentResult(providerResult, docFallback);
     }
 
     if (isImageFile(absolutePath)) {
@@ -1424,7 +1439,7 @@ export class WorkspaceTools {
     }
 
     const extension = path.extname(trimmedPath).toLowerCase();
-    if (!isLikelyTextFile(trimmedPath) && extension !== ".pdf" && extension !== ".docx" && !isImageFile(trimmedPath)) {
+    if (!isLikelyTextFile(trimmedPath) && extension !== ".pdf" && extension !== ".docx" && extension !== ".doc" && !isImageFile(trimmedPath)) {
       throw new Error(`external file analysis does not support ${extension || "this file type"} yet.`);
     }
 
@@ -2169,6 +2184,23 @@ async function extractDocxText(filePath: string): Promise<ToolResult> {
     };
   } catch (error) {
     return denied(`DOCX text extraction needs unzip on PATH and a valid .docx file. ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+async function extractLegacyDocText(filePath: string, timeoutMs: number, signal?: AbortSignal): Promise<ToolResult> {
+  try {
+    const { stdout } = await execFileAsync("textutil", ["-convert", "txt", "-stdout", filePath], {
+      timeout: timeoutMs,
+      signal,
+      maxBuffer: 2_000_000
+    });
+    return {
+      ok: true,
+      summary: `extracted text from ${path.basename(filePath)}`,
+      content: clip(stdout || "No extractable DOC text found.", 20_000)
+    };
+  } catch (error) {
+    return denied(`DOC text extraction needs macOS textutil and a valid .doc file. ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 

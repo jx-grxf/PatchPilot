@@ -90,9 +90,9 @@ describe("GeminiClient", () => {
       promptDurationMs: 0,
       responseDurationMs: 500,
       totalDurationMs: 500,
-      estimatedCostUsd: null,
+      estimatedCostUsd: 0.0000205,
       tokenSource: "provider",
-      costSource: "unknown"
+      costSource: "api-pricing"
     });
   });
 

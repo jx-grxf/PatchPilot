@@ -26,6 +26,7 @@ export type AgentRunnerOptions = {
   memoryEnabled?: boolean;
   ultramaxx?: boolean;
   signal?: AbortSignal;
+  shouldStopAfterStep?: () => boolean;
   sessionStore?: SessionStore;
   approvalHandler?: (request: ApprovalRequest) => Promise<PermissionDecision>;
 };
@@ -491,6 +492,20 @@ export class AgentRunner {
       compactTranscript(messages);
 
       stepIndex += 1;
+      if (this.options.shouldStopAfterStep?.()) {
+        yield {
+          type: "final",
+          message: "Stopped after the current step.",
+          workState: "done"
+        };
+        await this.options.sessionStore?.append({
+          type: "run.failed",
+          runId,
+          message: "Stopped after the current step.",
+          failedAt: new Date().toISOString()
+        });
+        return;
+      }
       if (this.options.thinkingMode === "adaptive" && stepIndex >= maxSteps && shouldExtendAdaptiveRun(task, toolResults, maxSteps, ultramaxx ? 60 : 32)) {
         const nextMaxSteps = Math.min(ultramaxx ? 60 : 32, maxSteps + 4);
         if (nextMaxSteps > maxSteps) {

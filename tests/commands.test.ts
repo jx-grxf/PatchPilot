@@ -42,4 +42,13 @@ describe("filterSlashCommands", () => {
       })
     ]);
   });
+
+  it("includes detailed usage counters", () => {
+    expect(filterSlashCommands("/usage")).toEqual([
+      expect.objectContaining({
+        name: "usage",
+        category: "session"
+      })
+    ]);
+  });
 });

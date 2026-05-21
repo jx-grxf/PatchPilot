@@ -2,8 +2,8 @@ import type { ModelTelemetry, SessionTelemetry } from "../core/types.js";
 import type { GpuStats } from "./systemStats.js";
 import type { LogTone } from "./types.js";
 
-export type InkColor = "gray" | "white" | "green" | "yellow" | "red" | "cyan";
-export type StatusColor = "gray" | "green" | "yellow" | "red" | "cyan";
+export type InkColor = "gray" | "white" | "green" | "yellow" | "red" | "cyan" | "blue" | "magenta";
+export type StatusColor = "gray" | "green" | "yellow" | "red" | "cyan" | "blue" | "magenta";
 
 export function getModelHint(model: string): { text: string; color: "green" | "yellow" } {
   const normalizedModel = model.toLowerCase();

@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
+import { statSync } from "node:fs";
 import { Box, Text, useApp, useInput, useStdout } from "ink";
 import { AgentRunner, type AgentRunnerOptions } from "../core/agent.js";
 import { cleanupPatchPilot, readCleanupTarget } from "../core/cleanup.js";
@@ -27,8 +28,9 @@ import { defaultOpenRouterModel, isOpenRouterFreeModel, readOpenRouterApiKey } f
 import { ensurePatchPilotGitignore, patchPilotInitPrompt } from "../core/projectInit.js";
 import { formatReasoningSupport } from "../core/reasoning.js";
 import { buildSessionResumeContext, listWorkspaceSessions, loadSessionSummary, SessionStore } from "../core/session.js";
-import { addTelemetryToSession, emptySessionTelemetry, estimateTokens } from "../core/tokenAccounting.js";
+import { addTelemetryToSession, emptySessionTelemetry, estimateComparableApiCost, estimateTokens } from "../core/tokenAccounting.js";
 import type { AgentEvent, AgentTodoItem, AgentToolName, AgentWorkState, ApprovalRequest, ModelDescriptor, ModelProvider, ModelTelemetry, PermissionDecision, SessionTelemetry } from "../core/types.js";
+import { checkForPatchPilotUpdate, installPatchPilotUpdate, type UpdateCheckResult } from "../core/updateCheck.js";
 import { getToolSpec, WorkspaceTools } from "../core/workspace.js";
 import { ApprovalPanel } from "./components/ApprovalPanel.js";
 import { CommandSuggestions, type CommandSuggestionItem } from "./components/CommandSuggestions.js";
@@ -36,7 +38,7 @@ import { Composer, FooterHints } from "./components/Composer.js";
 import { ExperimentalPanel, experimentalFlagAt, experimentalFlagCount, type ExperimentalFlags } from "./components/ExperimentalPanel.js";
 import { ExperimentalShell } from "./experimental/ExperimentalShell.js";
 import { ThemePicker } from "./experimental/ThemePicker.js";
-import { type Artifact, attachmentKindForPath, attachmentLabel } from "./experimental/attachments.js";
+import { type Artifact, attachmentKindForPath, attachmentLabel, attachmentTypeForPath } from "./experimental/attachments.js";
 import { hasUltramaxx, stripUltramaxx } from "./experimental/ultramaxx.js";
 import { formatCompletionSummary } from "./runStatus.js";
 import { Header } from "./components/Header.js";
@@ -50,10 +52,11 @@ import { computeComposerLayout } from "./layout.js";
 import { initialAgentMode, modeDescription, modePermissionLabel, nextAgentMode, permissionsForMode } from "./modes.js";
 import { selectableModels } from "./modelSelection.js";
 import { readGpuStats, readSystemStats, type GpuStats, type SystemStats } from "./systemStats.js";
-import { maxTranscriptLines, type AdvisorNote, type AgentMode, type LogLine, type LogLineInput } from "./types.js";
+import { maxTranscriptLines, type AdvisorNote, type AgentMode, type LogLine, type LogLineInput, type ToolTelemetry } from "./types.js";
 
 export type PatchPilotAppProps = AgentRunnerOptions & {
   initialTask?: string;
+  packageVersion?: string;
 };
 
 type PaletteSuggestion = CommandSuggestionItem & {
@@ -62,6 +65,8 @@ type PaletteSuggestion = CommandSuggestionItem & {
 };
 
 type UiTheme = "new" | "legacy";
+
+type UpdatePromptState = Extract<UpdateCheckResult, { available: true }>;
 
 const themeOptions: Array<{ value: UiTheme; label: string; description: string }> = [
   {
@@ -97,7 +102,11 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   const [input, setInput] = useState(props.initialTask ?? "");
   const didRunInitialTask = useRef(false);
   const didOpenDefaultOnboarding = useRef(false);
+  const didCheckForUpdates = useRef(false);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const softStopRequestedRef = useRef(false);
+  const lastEscapeStopAtRef = useRef(0);
+  const lastAttachmentWarningRef = useRef("");
   const sessionStoreRef = useRef(new SessionStore({ workspace: props.workspace }));
   const approvalResolverRef = useRef<((decision: PermissionDecision) => void) | null>(null);
   const runtimeStateRef = useRef({
@@ -124,8 +133,11 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   const [status, setStatus] = useState("idle");
   const [workState, setWorkState] = useState<AgentWorkState>("idle");
   const [pendingApproval, setPendingApproval] = useState<ApprovalRequest | null>(null);
+  const [updatePrompt, setUpdatePrompt] = useState<UpdatePromptState | null>(null);
+  const [updateBusy, setUpdateBusy] = useState(false);
   const [telemetry, setTelemetry] = useState<ModelTelemetry | null>(null);
   const [sessionTelemetry, setSessionTelemetry] = useState<SessionTelemetry>(() => emptySessionTelemetry());
+  const [toolTelemetry, setToolTelemetry] = useState<ToolTelemetry>(() => emptyToolTelemetry());
   const [resumeContext, setResumeContext] = useState("");
   const [systemStats, setSystemStats] = useState<SystemStats>(() => readSystemStats().stats);
   const [gpuStats, setGpuStats] = useState<GpuStats | null>(null);
@@ -198,7 +210,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   const paletteReservedHeight = !onboarding && paletteItems.length > 0 ? Math.min(8, paletteItems.length) + 7 : 0;
   const composerReservedHeight = onboarding || experimentalOpen ? 0 : computeComposerLayout({ input, width: transcriptWidth, promptWidth: 8 }).height;
   const footerReservedHeight = onboarding || experimentalOpen ? 0 : 1;
-  const approvalReservedHeight = !onboarding && !experimentalOpen && (pendingApproval || bypassConfirmation) ? 7 : 0;
+  const approvalReservedHeight = !onboarding && !experimentalOpen && (pendingApproval || bypassConfirmation || updatePrompt || updateBusy) ? 7 : 0;
   const bodyHeight = Math.max(8, rootHeight - headerReservedHeight);
   const transcriptHeight = Math.max(4, bodyHeight - composerReservedHeight - paletteReservedHeight - footerReservedHeight - approvalReservedHeight);
   const panelHeight = onboarding || experimentalOpen ? bodyHeight : transcriptHeight;
@@ -222,23 +234,35 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   }, []);
 
   // Registers a pasted document as an attachment chip; returns the chip label
-  // ("Image #1") for the composer to insert inline.
+  // ("[PNG #1]") for the composer to insert inline.
   const attachFile = useCallback(
     (path: string): string => {
       const kind = attachmentKindForPath(path) ?? "file";
-      const sameKind = artifactsRef.current.filter((item) => item.kind === kind && item.origin === "attached").length;
-      const label = attachmentLabel(kind, sameKind + 1);
+      const type = attachmentTypeForPath(path);
+      const sameType = artifactsRef.current.filter((item) => item.origin === "attached" && attachmentTypeForPath(item.path) === type).length;
+      const label = attachmentLabel(kind, sameType + 1, path);
       pushArtifact({ id: Date.now() + Math.random(), kind, path, label, origin: "attached" });
-      pendingAttachmentsRef.current = [...pendingAttachmentsRef.current, path];
+      const nextPendingAttachments = [...pendingAttachmentsRef.current, path];
+      pendingAttachmentsRef.current = nextPendingAttachments;
       appendLine({
         tone: "accent",
         label: "attach",
         text: `${label} attached`,
         detail: path
       });
+      const warning = attachmentLimitWarning(nextPendingAttachments, settings.provider);
+      if (warning && warning !== lastAttachmentWarningRef.current) {
+        lastAttachmentWarningRef.current = warning;
+        appendLine({
+          tone: "warning",
+          label: "attach",
+          text: warning,
+          detail: "For Gemini/Gemini-Wrapper, send large batches in smaller prompts or ask PatchPilot to inspect the files in separate calls."
+        });
+      }
       return label;
     },
-    [appendLine, pushArtifact]
+    [appendLine, pushArtifact, settings.provider]
   );
 
   // Best-effort: record a document PatchPilot wrote during a run.
@@ -249,12 +273,13 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         return;
       }
 
-      const sameKind = artifactsRef.current.filter((item) => item.kind === kind && item.origin === "created").length;
+      const type = attachmentTypeForPath(path);
+      const sameType = artifactsRef.current.filter((item) => item.origin === "created" && attachmentTypeForPath(item.path) === type).length;
       pushArtifact({
         id: Date.now() + Math.random(),
         kind,
         path,
-        label: attachmentLabel(kind, sameKind + 1),
+        label: attachmentLabel(kind, sameType + 1, path),
         origin: "created"
       });
     },
@@ -317,6 +342,55 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       setPendingApproval(null);
     },
     [appendLine, pendingApproval]
+  );
+
+  const resolveUpdatePrompt = useCallback(
+    async (accept: boolean): Promise<void> => {
+      const pending = updatePrompt;
+      if (!pending || updateBusy) {
+        return;
+      }
+
+      if (!accept) {
+        setUpdatePrompt(null);
+        setStatus("idle");
+        appendLine({
+          tone: "muted",
+          label: "update",
+          text: `Skipped PatchPilot ${pending.latestVersion}.`,
+          detail: `Manual command: ${pending.command}`
+        });
+        return;
+      }
+
+      setUpdateBusy(true);
+      setStatus(`updating to ${pending.latestVersion}`);
+      appendLine({
+        tone: "accent",
+        label: "update",
+        text: `Running ${pending.command}`
+      });
+      try {
+        const result = await installPatchPilotUpdate(pending.latestVersion);
+        setUpdatePrompt(null);
+        appendLine({
+          tone: "success",
+          label: "update",
+          text: `⚡ Successfully updated to v${result.version}. Please restart PatchPilot.`,
+          detail: result.command
+        });
+      } catch (error) {
+        appendLine({
+          tone: "danger",
+          label: "update",
+          text: error instanceof Error ? error.message : String(error),
+          detail: `Automatic update failed. Manual command: ${pending.command}`
+        });
+      } finally {
+        setUpdateBusy(false);
+      }
+    },
+    [appendLine, updateBusy, updatePrompt]
   );
 
   const applyMode = useCallback(
@@ -1238,6 +1312,8 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       }
 
       const runStartedAt = Date.now();
+      softStopRequestedRef.current = false;
+      lastEscapeStopAtRef.current = 0;
       setInput("");
       setTranscriptScrollOffset(0);
       setTodos([]);
@@ -1293,6 +1369,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           memoryEnabled: experimentalFlags.memory,
           mode: effectiveMode,
           signal: abortController.signal,
+          shouldStopAfterStep: () => softStopRequestedRef.current,
           sessionStore: sessionStoreRef.current,
           resumeContext: effectiveResumeContext,
           approvalHandler: (request) =>
@@ -1340,7 +1417,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         pendingAttachmentsRef.current = [];
         const taskWithAttachments =
           pendingAttachments.length > 0
-            ? `${effectiveTask}\n\n[Attached documents for this task — read or analyse them as needed: ${pendingAttachments.join(", ")}]`
+            ? `${effectiveTask}\n\n[Attached documents for this task — read or analyse them as needed with inspect_document. Paths are JSON-escaped and may contain spaces:\n${formatAttachedDocuments(pendingAttachments)}\n]`
             : effectiveTask;
         for await (const event of taskRunner.run(taskWithAttachments)) {
           setWorkState(event.workState);
@@ -1356,6 +1433,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           if (event.type === "subagent") {
             setTelemetry(event.metrics);
             setSessionTelemetry((currentSession) => addTelemetryToSession(currentSession, event.metrics));
+            setToolTelemetry((currentTools) => addToolTelemetry(currentTools, "subagent", true));
             setAdvisorNotes((currentNotes) =>
               upsertAdvisorNote(currentNotes, {
                 role: event.role,
@@ -1367,6 +1445,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           if (event.type === "todo") {
             setTodos(event.items);
             setStatus(event.summary);
+            setToolTelemetry((currentTools) => addToolTelemetry(currentTools, "update_todo", true));
             continue;
           }
 
@@ -1376,12 +1455,20 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
 
           // Best-effort: list documents PatchPilot wrote in the artifacts bar.
           if (event.type === "tool" && event.ok && /write|create|pdf|save|export/i.test(event.name)) {
-            const created = /((?:\/|~|\.\/|[\w.-]+\/)[\w./-]+\.(?:pdf|docx?|md|txt|png|jpe?g|webp))/i.exec(
+            const created = /((?:\/|~|\.\/|[\w.-]+\/)[\w./-]+\.(?:pdf|docx?|md|txt|jsonl?|csv|ya?ml|toml|xml|html?|css|tsx?|jsx?|mjs|cjs|py|sh|zsh|bash|sql|log|diff|patch|png|jpe?g|gif|webp|bmp|heic|svg))/i.exec(
               `${event.summary ?? ""} ${event.preview ?? ""}`
             );
             if (created?.[1]) {
               registerCreatedArtifact(created[1]);
             }
+          }
+
+          if (event.type === "tool") {
+            setToolTelemetry((currentTools) => addToolTelemetry(currentTools, event.name, event.ok));
+          }
+
+          if (event.type === "approval") {
+            setToolTelemetry((currentTools) => addApprovalTelemetry(currentTools, event.decision));
           }
 
           // Expired Gemini-Wrapper cookies arrive as an error event (the run
@@ -1808,6 +1895,25 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
               : `provider ${settings.provider} | model ${settings.model} | host ${settings.provider} api | compute cloud | agents ${settings.subagents ? "on" : "off"} | think ${settings.thinkingMode} | reasoning ${formatReasoningSupport(settings.provider, settings.model, settings.reasoningEffort === "adaptive" ? undefined : settings.reasoningEffort)} | mode ${agentMode} | write ${modePermissionLabel(agentMode, "write")} | shell ${modePermissionLabel(agentMode, "shell")} | draft ${draftTokens} tok | last ${formatTokens(telemetry)} | session ${formatSessionTokens(sessionTelemetry)} | cost ${formatCost(sessionTelemetry.estimatedCostUsd)}`
           });
           return;
+        case "usage":
+          appendLine({
+            tone: "accent",
+            label: "usage",
+            text: formatUsageSummary({
+              provider: settings.provider,
+              model: settings.model,
+              telemetry,
+              sessionTelemetry,
+              toolTelemetry
+            }),
+            detail: formatUsageDetail({
+              provider: settings.provider,
+              model: settings.model,
+              sessionTelemetry,
+              toolTelemetry
+            })
+          });
+          return;
         case "sessions": {
           const sessions = await listWorkspaceSessions(settings.workspace);
           appendLine({
@@ -2015,6 +2121,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
             setAdvisorNotes([]);
             setTelemetry(null);
             setSessionTelemetry(emptySessionTelemetry());
+            setToolTelemetry(emptyToolTelemetry());
           }
           appendLine({
             tone: "success",
@@ -2098,6 +2205,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           setTelemetry(null);
           setResumeContext("");
           setSessionTelemetry(emptySessionTelemetry());
+          setToolTelemetry(emptyToolTelemetry());
           setTranscriptScrollOffset(0);
           setSessionScrollOffset(0);
           conversationTurnsRef.current = [];
@@ -2124,6 +2232,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           setTodos([]);
           setTelemetry(null);
           setSessionTelemetry(emptySessionTelemetry());
+          setToolTelemetry(emptyToolTelemetry());
           setPendingApproval(null);
           approvalResolverRef.current = null;
           setBypassConfirmation(false);
@@ -2224,9 +2333,40 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   }, []);
 
   useEffect(() => {
+    if (didCheckForUpdates.current || process.env.PATCHPILOT_UPDATE_CHECK === "0") {
+      return;
+    }
+
+    didCheckForUpdates.current = true;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 5000);
+    setStatus("checking for updates");
+    void checkForPatchPilotUpdate(props.packageVersion ?? "0.0.0", controller.signal)
+      .then((result) => {
+        if (result.available) {
+          setUpdatePrompt(result);
+          setStatus(`update available ${result.currentVersion} -> ${result.latestVersion}`);
+        } else {
+          setStatus((current) => (current === "checking for updates" ? "idle" : current));
+        }
+      })
+      .catch(() => {
+        setStatus((current) => (current === "checking for updates" ? "idle" : current));
+      })
+      .finally(() => {
+        clearTimeout(timer);
+      });
+
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
+  }, [props.packageVersion]);
+
+  useEffect(() => {
     runtimeStateRef.current.isRunning = isRunning;
-    runtimeStateRef.current.hasPendingApproval = Boolean(pendingApproval || bypassConfirmation);
-  }, [bypassConfirmation, isRunning, pendingApproval]);
+    runtimeStateRef.current.hasPendingApproval = Boolean(pendingApproval || bypassConfirmation || updatePrompt || updateBusy);
+  }, [bypassConfirmation, isRunning, pendingApproval, updateBusy, updatePrompt]);
 
   useEffect(() => {
     if (!props.initialTask || didRunInitialTask.current || onboarding || process.env.PATCHPILOT_ONBOARDING_COMPLETE !== "1") {
@@ -2433,6 +2573,25 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       return;
     }
 
+    if (updateBusy) {
+      return;
+    }
+
+    if (updatePrompt) {
+      const normalizedInput = inputValue.toLowerCase();
+      if (normalizedInput === "y") {
+        void resolveUpdatePrompt(true);
+        return;
+      }
+
+      if (normalizedInput === "n" || key.escape) {
+        void resolveUpdatePrompt(false);
+        return;
+      }
+
+      return;
+    }
+
     if (reauthPrompt) {
       const normalizedInput = inputValue.toLowerCase();
       if (normalizedInput === "y") {
@@ -2467,14 +2626,30 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
     }
 
     if (isRunning && key.escape) {
-      abortControllerRef.current?.abort();
+      const now = Date.now();
+      const isDoubleEscape = now - lastEscapeStopAtRef.current <= 700;
+      lastEscapeStopAtRef.current = now;
+
+      if (isDoubleEscape) {
+        abortControllerRef.current?.abort();
+        appendLine({
+          kind: "status",
+          tone: "warning",
+          label: "stop",
+          text: "Force stopping current task now..."
+        });
+        setStatus("force stopping");
+        return;
+      }
+
+      softStopRequestedRef.current = true;
       appendLine({
         kind: "status",
         tone: "warning",
         label: "stop",
-        text: "Stopping current task..."
+        text: "Will stop after the current step. Press esc again quickly to force stop now."
       });
-      setStatus("stopping");
+      setStatus("stopping after current step");
       return;
     }
 
@@ -2705,6 +2880,8 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         todoFrame={todoFrame}
         pendingApproval={pendingApproval}
         bypassConfirmation={bypassConfirmation}
+        updatePrompt={updatePrompt}
+        updateBusy={updateBusy}
         reauthActive={Boolean(reauthPrompt) || reauthBusy}
         reauthBusy={reauthBusy}
         transcriptScrollOffset={transcriptScrollOffset}
@@ -2803,6 +2980,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
               workState={workState}
               isApprovalWaiting={Boolean(pendingApproval || bypassConfirmation)}
             />
+            <UpdatePromptPanel prompt={updatePrompt} busy={updateBusy} />
             <ApprovalPanel request={pendingApproval} bypassConfirmation={bypassConfirmation} />
             <Composer
               input={input}
@@ -3361,6 +3539,231 @@ function isReasoningEffort(value: string | undefined): value is AgentRunnerOptio
 function upsertAdvisorNote(notes: AdvisorNote[], nextNote: AdvisorNote): AdvisorNote[] {
   const nextNotes = notes.filter((note) => note.role !== nextNote.role);
   return [...nextNotes, nextNote].slice(-2);
+}
+
+function UpdatePromptPanel(props: {
+  prompt: UpdatePromptState | null;
+  busy: boolean;
+}): React.ReactElement | null {
+  if (!props.prompt && !props.busy) {
+    return null;
+  }
+
+  const command = props.prompt?.command ?? "npm update -g @jx-grxf/patchpilot";
+  return (
+    <Box borderStyle="double" borderColor="yellow" flexDirection="column" paddingX={1}>
+      <Text color="yellow" bold>
+        UPDATE AVAILABLE
+      </Text>
+      {props.busy ? (
+        <>
+          <Text color="cyan">Updating PatchPilot...</Text>
+          <Text color="gray">{command}</Text>
+        </>
+      ) : (
+        <>
+          <Text color="white">Install PatchPilot {props.prompt?.latestVersion} now?</Text>
+          <Text color="gray">
+            Current {props.prompt?.currentVersion} · source {props.prompt?.source} · {command}
+          </Text>
+          <Text>
+            <Text color="green" bold>
+              [y]
+            </Text>
+            <Text color="gray"> update   </Text>
+            <Text color="red" bold>
+              [n / esc]
+            </Text>
+            <Text color="gray"> skip</Text>
+          </Text>
+        </>
+      )}
+    </Box>
+  );
+}
+
+function emptyToolTelemetry(): ToolTelemetry {
+  return {
+    total: 0,
+    succeeded: 0,
+    failed: 0,
+    approvals: 0,
+    denied: 0,
+    byTool: {}
+  };
+}
+
+function addToolTelemetry(current: ToolTelemetry, tool: AgentToolName | "subagent", ok: boolean): ToolTelemetry {
+  return {
+    ...current,
+    total: current.total + 1,
+    succeeded: current.succeeded + (ok ? 1 : 0),
+    failed: current.failed + (ok ? 0 : 1),
+    byTool: {
+      ...current.byTool,
+      [tool]: (current.byTool[tool] ?? 0) + 1
+    }
+  };
+}
+
+function addApprovalTelemetry(current: ToolTelemetry, decision: PermissionDecision): ToolTelemetry {
+  return {
+    ...current,
+    approvals: current.approvals + (decision === "deny" ? 0 : 1),
+    denied: current.denied + (decision === "deny" ? 1 : 0)
+  };
+}
+
+function formatUsageSummary(options: {
+  provider: ModelProvider;
+  model: string;
+  telemetry: ModelTelemetry | null;
+  sessionTelemetry: SessionTelemetry;
+  toolTelemetry: ToolTelemetry;
+}): string {
+  const session = options.sessionTelemetry;
+  const cost = formatCost(session.estimatedCostUsd);
+  const saved = estimateSessionSavings(options.provider, options.model, session);
+  const pricingNote = pricingSourceLabel(session.costSource, saved.source);
+  return [
+    `${session.requests} request${session.requests === 1 ? "" : "s"}`,
+    `${session.promptTokens} in`,
+    `${session.responseTokens} out`,
+    `${session.cachedPromptTokens} cached`,
+    `${options.toolTelemetry.total} tool call${options.toolTelemetry.total === 1 ? "" : "s"}`,
+    `cost ${cost}`,
+    saved.costUsd !== null ? `saved ${formatCost(saved.costUsd)}` : "saved -",
+    pricingNote
+  ].join(" · ");
+}
+
+function formatUsageDetail(options: {
+  provider: ModelProvider;
+  model: string;
+  sessionTelemetry: SessionTelemetry;
+  toolTelemetry: ToolTelemetry;
+}): string {
+  const session = options.sessionTelemetry;
+  const saved = estimateSessionSavings(options.provider, options.model, session);
+  const toolRows = Object.entries(options.toolTelemetry.byTool)
+    .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+    .map(([tool, count]) => `${tool}: ${count}`)
+    .join("\n");
+  return [
+    `model: ${options.provider}/${options.model}`,
+    `tokens: ${session.promptTokens} input, ${session.responseTokens} output, ${session.cachedPromptTokens} cached, ${session.cacheWriteTokens} cache-write, ${session.totalTokens} total`,
+    `cost: ${formatCost(session.estimatedCostUsd)} (${session.costSource})`,
+    saved.costUsd !== null ? `lifetime saved this session: ${formatCost(saved.costUsd)} (${saved.source})` : "lifetime saved this session: -",
+    options.toolTelemetry.total > 0
+      ? `tools: ${options.toolTelemetry.total} total, ${options.toolTelemetry.succeeded} ok, ${options.toolTelemetry.failed} failed, ${options.toolTelemetry.approvals} approved, ${options.toolTelemetry.denied} denied`
+      : "tools: none yet",
+    toolRows ? `tool counters:\n${toolRows}` : "",
+    session.costSource === "fallback-pricing" || saved.source === "fallback-pricing"
+      ? "pricing note: exact model pricing was not available, so PatchPilot used a conservative general cloud-model estimate."
+      : session.costSource === "unknown"
+        ? "pricing note: exact pricing is unavailable for this provider/model."
+        : ""
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+function estimateSessionSavings(provider: ModelProvider, model: string, session: SessionTelemetry): {
+  costUsd: number | null;
+  source: "api-pricing" | "fallback-pricing" | "unknown";
+} {
+  return estimateComparableApiCost(provider, model, session.promptTokens, session.responseTokens, session.cachedPromptTokens);
+}
+
+function pricingSourceLabel(costSource: SessionTelemetry["costSource"], savedSource: "api-pricing" | "fallback-pricing" | "unknown"): string {
+  if (costSource === "fallback-pricing" || savedSource === "fallback-pricing") {
+    return "fallback pricing";
+  }
+  if (costSource === "unknown" && savedSource === "unknown") {
+    return "pricing unknown";
+  }
+  if (costSource === "free-route") {
+    return "free route";
+  }
+  if (costSource === "mixed") {
+    return "mixed pricing";
+  }
+  return "priced";
+}
+
+const bytesPerMiB = 1024 * 1024;
+const geminiAppsPromptFileLimit = 10;
+const geminiNonVideoFileLimitBytes = 100 * bytesPerMiB;
+const geminiApiPdfLimitBytes = 50 * bytesPerMiB;
+const geminiPdfCautionBytes = 20 * bytesPerMiB;
+const geminiInlineRequestWarnBytes = 25 * bytesPerMiB;
+
+function attachmentLimitWarning(paths: string[], provider: ModelProvider): string | null {
+  if (paths.length === 0 || (provider !== "gemini" && provider !== "gemini-wrapper")) {
+    return null;
+  }
+
+  const files = paths.map((filePath) => ({
+    path: filePath,
+    type: attachmentTypeForPath(filePath),
+    size: readFileSize(filePath)
+  }));
+  const knownTotalBytes = files.reduce((total, file) => total + (file.size ?? 0), 0);
+  const tooLargePdf = files.find((file) => file.type === "PDF" && typeof file.size === "number" && file.size > geminiApiPdfLimitBytes);
+  const largePdf = files.find((file) => file.type === "PDF" && typeof file.size === "number" && file.size > geminiPdfCautionBytes);
+  const tooLargeFile = files.find((file) => typeof file.size === "number" && file.size > geminiNonVideoFileLimitBytes);
+
+  if (paths.length > geminiAppsPromptFileLimit) {
+    return `Attached ${paths.length} files; Gemini web-style uploads are capped around ${geminiAppsPromptFileLimit} files per prompt. Split this into smaller batches.`;
+  }
+
+  if (tooLargePdf) {
+    return `${attachmentTypeForPath(tooLargePdf.path)} file ${tooLargePdf.path.split("/").at(-1) ?? tooLargePdf.path} is over 50 MiB; Gemini API PDF input can reject it.`;
+  }
+
+  if (tooLargeFile) {
+    return `${attachmentTypeForPath(tooLargeFile.path)} file ${tooLargeFile.path.split("/").at(-1) ?? tooLargeFile.path} is over 100 MiB; Gemini file prompts may reject it.`;
+  }
+
+  if (largePdf) {
+    return `${attachmentTypeForPath(largePdf.path)} file ${largePdf.path.split("/").at(-1) ?? largePdf.path} is over 20 MiB; Gemini PDF analysis can be slow or incomplete.`;
+  }
+
+  if (knownTotalBytes > geminiInlineRequestWarnBytes) {
+    return `Attached files total about ${formatMiB(knownTotalBytes)}; Gemini analysis is more reliable in smaller batches.`;
+  }
+
+  if (paths.length > 3) {
+    return `Attached ${paths.length} files; PatchPilot will reference them, but Gemini/Gemini-Wrapper is more reliable if you split large batches.`;
+  }
+
+  return null;
+}
+
+function readFileSize(filePath: string): number | null {
+  try {
+    const stats = statSync(filePath);
+    return stats.isFile() ? stats.size : null;
+  } catch {
+    return null;
+  }
+}
+
+function formatMiB(bytes: number): string {
+  return `${Math.round((bytes / bytesPerMiB) * 10) / 10} MiB`;
+}
+
+function formatAttachedDocuments(paths: string[]): string {
+  const counts = new Map<string, number>();
+  return paths
+    .map((filePath) => {
+      const kind = attachmentKindForPath(filePath) ?? "file";
+      const type = attachmentTypeForPath(filePath);
+      const index = (counts.get(type) ?? 0) + 1;
+      counts.set(type, index);
+      return `- ${attachmentLabel(kind, index, filePath)} path=${JSON.stringify(filePath)}`;
+    })
+    .join("\n");
 }
 
 function eventToLine(event: AgentEvent): LogLineInput {

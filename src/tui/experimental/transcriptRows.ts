@@ -8,6 +8,10 @@ export type ShellRow = {
   label: string;
   text: string;
   color: InkColor;
+  symbolColor?: InkColor;
+  labelColor?: InkColor;
+  textColor?: InkColor;
+  effect?: "rainbow";
   bold?: boolean;
   dim?: boolean;
 };
@@ -23,6 +27,9 @@ export function buildShellRows(lines: LogLine[], width: number): ShellRow[] {
     const color = blockColor(line.kind, danger);
     const symbol = blockSymbol(line.kind);
     const label = line.kind === "tool" && line.tool ? line.tool : line.label;
+    const labelColor = labelAccentColor(line.kind, label, line.workState, danger);
+    const textColor = bodyColor(line.kind, danger);
+    const effect = label.toLowerCase() === "ultramaxx" ? "rainbow" : undefined;
     const textRows = wrapText(line.text, textWidth);
     const metadata = [
       line.preview ? `preview ${line.preview}` : "",
@@ -38,6 +45,10 @@ export function buildShellRows(lines: LogLine[], width: number): ShellRow[] {
       label: index === 0 ? label.slice(0, LABEL_WIDTH) : "",
       text,
       color,
+      symbolColor: labelColor,
+      labelColor,
+      textColor,
+      effect: index === 0 ? effect : undefined,
       bold: index === 0,
     }));
 
@@ -51,6 +62,56 @@ export function buildShellRows(lines: LogLine[], width: number): ShellRow[] {
 
     return rows;
   });
+}
+
+function labelAccentColor(
+  kind: LogLine["kind"],
+  label: string,
+  workState: LogLine["workState"],
+  danger: boolean,
+): InkColor {
+  const normalized = label.toLowerCase();
+  if (danger || normalized === "stop" || workState === "error") {
+    return "red";
+  }
+  if (normalized === "ultramaxx") {
+    return "magenta";
+  }
+  if (normalized === "planning" || workState === "planning" || normalized === "usage") {
+    return "blue";
+  }
+  if (normalized === "gemini-wrapper" || normalized === "gemini" || normalized === "attach") {
+    return "cyan";
+  }
+  if (normalized === "update" || normalized === "approval" || workState === "waiting_approval" || workState === "editing" || workState === "verifying") {
+    return "yellow";
+  }
+  if (kind === "tool") {
+    return "green";
+  }
+  if (kind === "diff") {
+    return "yellow";
+  }
+  if (kind === "final" || workState === "done" || workState === "idle") {
+    return "green";
+  }
+  if (kind === "assistant") {
+    return "cyan";
+  }
+  return "gray";
+}
+
+function bodyColor(kind: LogLine["kind"], danger: boolean): InkColor {
+  if (danger || kind === "error") {
+    return "red";
+  }
+  if (kind === "user") {
+    return "white";
+  }
+  if (kind === "final") {
+    return "white";
+  }
+  return "gray";
 }
 
 /** Build the todo dock rows. */

@@ -8,7 +8,7 @@ import { computeComposerLayout } from "../layout.js";
 import { formatElapsed, pulseGlyph, runStatusParts, spinnerFrameMs, spinnerGlyph, waveFrameMs } from "../runStatus.js";
 import type { AgentMode, LogLine } from "../types.js";
 import { RainbowText, WaveText } from "./AnimatedText.js";
-import { type Artifact, attachmentSymbol, looksLikeAttachmentPath, sanitizePastedText, stripQuotes } from "./attachments.js";
+import { type Artifact, attachmentSymbol, extractAttachmentPaths, sanitizePastedText } from "./attachments.js";
 import { ExperimentalBanner } from "./Banner.js";
 import { composerView } from "./composer.js";
 import { CommandPalette } from "./CommandPalette.js";
@@ -39,6 +39,13 @@ export type ExperimentalShellProps = {
   todoFrame: number;
   pendingApproval: ApprovalRequest | null;
   bypassConfirmation: boolean;
+  updatePrompt: {
+    currentVersion: string;
+    latestVersion: string;
+    source: "npm" | "github";
+    command: string;
+  } | null;
+  updateBusy: boolean;
   reauthActive: boolean;
   reauthBusy: boolean;
   transcriptScrollOffset: number;
@@ -64,7 +71,7 @@ export type ExperimentalShellProps = {
  * owns its own typing input.
  */
 export function ExperimentalShell(props: ExperimentalShellProps): React.ReactElement {
-  const approvalActive = Boolean(props.pendingApproval || props.bypassConfirmation || props.reauthActive);
+  const approvalActive = Boolean(props.pendingApproval || props.bypassConfirmation || props.reauthActive || props.updatePrompt || props.updateBusy);
   const layout = computeExperimentalLayout({
     rows: props.rows,
     columns: props.columns,
@@ -92,6 +99,8 @@ export function ExperimentalShell(props: ExperimentalShellProps): React.ReactEle
       ) : null}
       {props.reauthActive ? (
         <ShellReauth busy={props.reauthBusy} />
+      ) : props.updatePrompt || props.updateBusy ? (
+        <ShellUpdate prompt={props.updatePrompt} busy={props.updateBusy} />
       ) : approvalActive ? (
         <ShellApproval request={props.pendingApproval} bypassConfirmation={props.bypassConfirmation} />
       ) : null}
@@ -112,6 +121,63 @@ export function ExperimentalShell(props: ExperimentalShellProps): React.ReactEle
         onSubmit={props.onSubmit}
       />
       <ShellFooter agentMode={props.agentMode} paletteOpen={props.paletteItems.length > 0} />
+    </Box>
+  );
+}
+
+function ShellUpdate(props: {
+  prompt: ExperimentalShellProps["updatePrompt"];
+  busy: boolean;
+}): React.ReactElement {
+  const [frame, setFrame] = useState(0);
+
+  useEffect(() => {
+    if (!props.busy) {
+      setFrame(0);
+      return;
+    }
+
+    const timer = setInterval(() => {
+      setFrame((current) => current + 1);
+    }, spinnerFrameMs);
+
+    return () => {
+      clearInterval(timer);
+    };
+  }, [props.busy]);
+
+  const latestVersion = props.prompt?.latestVersion ?? "";
+  const command = props.prompt?.command ?? "npm update -g @jx-grxf/patchpilot";
+  return (
+    <Box borderStyle="double" borderColor="yellow" flexDirection="column" paddingX={1}>
+      <Text color="yellow" bold>
+        {symbols.approval} PATCHPILOT UPDATE AVAILABLE
+      </Text>
+      {props.busy ? (
+        <>
+          <Text color="cyan">
+            <Text bold>{spinnerGlyph(frame)}</Text> Updating PatchPilot…
+          </Text>
+          <Text color="gray">{command}</Text>
+        </>
+      ) : (
+        <>
+          <Text color="white">Install PatchPilot {latestVersion} now?</Text>
+          <Text color="gray">
+            Current {props.prompt?.currentVersion ?? "-"} · source {props.prompt?.source ?? "npm"} · {command}
+          </Text>
+          <Text>
+            <Text color="green" bold>
+              [y]
+            </Text>
+            <Text color="gray"> update   </Text>
+            <Text color="red" bold>
+              [n / esc]
+            </Text>
+            <Text color="gray"> skip</Text>
+          </Text>
+        </>
+      )}
     </Box>
   );
 }
@@ -203,25 +269,42 @@ function ShellTranscript(props: {
   width: number;
 }): React.ReactElement {
   const rows = buildShellRows(props.lines, props.width);
-  const viewport = Math.max(1, props.height - 2);
+  const [frame, setFrame] = useState(0);
+  const hasRainbowRows = rows.some((row) => row.effect === "rainbow");
+  useEffect(() => {
+    if (!hasRainbowRows) {
+      setFrame(0);
+      return;
+    }
+
+    const timer = setInterval(() => {
+      setFrame((current) => current + 1);
+    }, waveFrameMs);
+
+    return () => {
+      clearInterval(timer);
+    };
+  }, [hasRainbowRows]);
+
+  const preferredBannerHeight = props.width >= 88 && props.height >= 20 ? 12 : 3;
+  const bannerHeight = Math.max(0, Math.min(props.height - 2, preferredBannerHeight));
+  const viewport = Math.max(1, props.height - 2 - bannerHeight);
   const overflow = rows.length > viewport;
   // Reserve one row for the scroll indicator when content overflows.
   const contentViewport = Math.max(1, overflow ? viewport - 1 : viewport);
   const window = windowRows(rows.length, contentViewport, props.scrollOffset);
   const visibleRows = rows.slice(window.start, window.end);
-  const showBanner = props.lines.length === 0;
   const borderColor = props.ultramaxxRun ? "magenta" : props.isRunning ? "yellow" : "cyan";
 
   return (
     <Box borderStyle="round" borderColor={borderColor} flexDirection="column" paddingX={1} height={props.height} overflowY="hidden">
+      <Box height={bannerHeight} overflowY="hidden">
+        <ExperimentalBanner width={props.width} height={bannerHeight} />
+      </Box>
       {/* Content fills the scroll region: overflowing content fills it
           completely, short output anchors to the top. */}
       <Box flexDirection="column" flexGrow={1} overflowY="hidden">
-        {showBanner ? (
-          <ExperimentalBanner width={props.width} height={props.height} />
-        ) : (
-          visibleRows.map((row, index) => <ShellRowView key={`row-${index}`} row={row} />)
-        )}
+        {visibleRows.map((row, index) => <ShellRowView key={`row-${index}`} row={row} frame={frame} />)}
       </Box>
       {window.hasOverflow ? (
         <Text color="gray">
@@ -232,20 +315,31 @@ function ShellTranscript(props: {
   );
 }
 
-function ShellRowView(props: { row: ReturnType<typeof buildShellRows>[number] }): React.ReactElement {
+function ShellRowView(props: { row: ReturnType<typeof buildShellRows>[number]; frame: number }): React.ReactElement {
+  const symbolColor = props.row.symbolColor ?? props.row.color;
+  const labelColor = props.row.labelColor ?? props.row.color;
+  const textColor = props.row.textColor ?? props.row.color;
   return (
     <Box>
       <Box width={2}>
-        <Text color={props.row.color} dimColor={props.row.dim}>
-          {props.row.symbol}
-        </Text>
+        {props.row.effect === "rainbow" && props.row.symbol ? (
+          <RainbowText text={props.row.symbol} frame={props.frame} bold={props.row.bold} />
+        ) : (
+          <Text color={symbolColor} dimColor={props.row.dim}>
+            {props.row.symbol}
+          </Text>
+        )}
       </Box>
       <Box width={12} marginRight={1}>
-        <Text color={props.row.color} bold={props.row.bold} dimColor={props.row.dim} wrap="truncate">
-          {props.row.label}
-        </Text>
+        {props.row.effect === "rainbow" && props.row.label ? (
+          <RainbowText text={props.row.label} frame={props.frame} bold={props.row.bold} />
+        ) : (
+          <Text color={labelColor} bold={props.row.bold} dimColor={props.row.dim} wrap="truncate">
+            {props.row.label}
+          </Text>
+        )}
       </Box>
-      <Text color={props.row.color} dimColor={props.row.dim} wrap="truncate">
+      <Text color={textColor} dimColor={props.row.dim} wrap="truncate">
         {props.row.text}
       </Text>
     </Box>
@@ -278,7 +372,7 @@ function ShellTodoDock(props: {
         </Text>
       </Box>
       {rows.slice(1).map((row, index) => (
-        <ShellRowView key={`todo-${index}`} row={row} />
+        <ShellRowView key={`todo-${index}`} row={row} frame={props.todoFrame} />
       ))}
     </Box>
   );
@@ -514,9 +608,10 @@ function ShellComposer(props: {
 
       // Normalise pasted text so a multi-line paste cannot corrupt the editor.
       const pasted = sanitizePastedText(value);
-      // A pasted path to an image / PDF / DOCX becomes an attachment chip.
-      if (looksLikeAttachmentPath(pasted)) {
-        const chip = `${props.onAttach(stripQuotes(pasted.trim()))} `;
+      // Pasted paths to images / documents become attachment chips.
+      const attachmentPaths = extractAttachmentPaths(pasted);
+      if (attachmentPaths) {
+        const chip = `${attachmentPaths.map((path) => props.onAttach(path)).join(" ")} `;
         props.onChange(`${props.input.slice(0, safeCursor)}${chip}${props.input.slice(safeCursor)}`);
         setCursor(safeCursor + chip.length);
         return;
@@ -543,9 +638,11 @@ function ShellComposer(props: {
     if (props.isRunning && index === 0) {
       editorContent.push(
         <Box key="editor-run">
-          <Text color={props.ultramaxxRun ? "magenta" : "cyan"} bold>
-            {pulseGlyph(frame)}{" "}
-          </Text>
+          {props.ultramaxxRun ? <RainbowText text={`${pulseGlyph(frame)} `} frame={frame} bold /> : (
+            <Text color="cyan" bold>
+              {pulseGlyph(frame)}{" "}
+            </Text>
+          )}
           {props.ultramaxxRun ? (
             <RainbowText text={parts.verb} frame={frame} bold />
           ) : (
@@ -689,7 +786,7 @@ function ShellFooter(props: { agentMode: AgentMode; paletteOpen: boolean }): Rea
         <Text color="cyan">tab</Text> plan/build/bypass <Text color="gray">·</Text>{" "}
         <Text color="cyan">/</Text> palette <Text color="gray">·</Text>{" "}
         <Text color="cyan">↑↓</Text> {props.paletteOpen ? "pick" : "scroll"} <Text color="gray">·</Text>{" "}
-        <Text color="cyan">esc</Text> {props.paletteOpen ? "close" : "stop"} <Text color="gray">·</Text>{" "}
+        <Text color="cyan">esc</Text> {props.paletteOpen ? "close" : "step stop / double force"} <Text color="gray">·</Text>{" "}
         <Text color="gray">mode {props.agentMode}</Text>
       </Text>
     </Box>
