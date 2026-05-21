@@ -15,6 +15,7 @@ export type ExperimentalLayout = {
   composerHeight: number;
   approvalHeight: number;
   paletteHeight: number;
+  todoDockHeight: number;
   footerHeight: number;
 };
 
@@ -25,6 +26,18 @@ const FOOTER_HEIGHT = 1;
 const APPROVAL_HEIGHT = 8;
 const MIN_TRANSCRIPT_HEIGHT = 3;
 const MAX_PALETTE_ROWS = 8;
+const MAX_TODO_DOCK_ROWS = 6;
+
+/** Height of the todo dock panel for a given number of todos (0 = hidden). */
+export function todoDockHeightFor(todoCount: number): number {
+  const count = Math.max(0, Math.floor(todoCount));
+  if (count === 0) {
+    return 0;
+  }
+
+  // header row + up to MAX_TODO_DOCK_ROWS items + rounded border (2).
+  return Math.min(count, MAX_TODO_DOCK_ROWS) + 1 + 2;
+}
 
 export function computeExperimentalLayout(options: {
   rows: number;
@@ -32,6 +45,7 @@ export function computeExperimentalLayout(options: {
   composerInput: string;
   paletteItemCount: number;
   approvalActive: boolean;
+  todoCount?: number;
 }): ExperimentalLayout {
   const rootHeight = Math.max(MIN_ROWS, Math.floor(options.rows) || MIN_ROWS);
   const rootWidth = Math.max(MIN_COLUMNS, Math.floor(options.columns) || MIN_COLUMNS);
@@ -57,7 +71,9 @@ export function computeExperimentalLayout(options: {
   // palette: header row + items + preview block (3) + border.
   const paletteHeight = paletteRows > 0 ? paletteRows + 6 : 0;
 
-  const fixed = HEADER_HEIGHT + FOOTER_HEIGHT + composerHeight + approvalHeight + paletteHeight;
+  const todoDockHeight = todoDockHeightFor(options.todoCount ?? 0);
+
+  const fixed = HEADER_HEIGHT + FOOTER_HEIGHT + composerHeight + approvalHeight + paletteHeight + todoDockHeight;
   const transcriptHeight = Math.max(MIN_TRANSCRIPT_HEIGHT, rootHeight - fixed);
   const bodyHeight = rootHeight - HEADER_HEIGHT;
 
@@ -71,6 +87,7 @@ export function computeExperimentalLayout(options: {
     composerHeight,
     approvalHeight,
     paletteHeight,
+    todoDockHeight,
     footerHeight: FOOTER_HEIGHT,
   };
 }

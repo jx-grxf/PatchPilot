@@ -5,13 +5,15 @@ import type { CommandSuggestionItem } from "../components/CommandSuggestions.js"
 import { formatCost, formatSessionTokens, shortenMiddle } from "../format.js";
 import type { OllamaHostDetails } from "../hosts.js";
 import { computeComposerLayout } from "../layout.js";
-import { formatElapsed, formatRunStatus, spinnerFrameMs, spinnerGlyph } from "../runStatus.js";
+import { formatElapsed, pulseGlyph, runStatusParts, spinnerGlyph, waveFrameMs } from "../runStatus.js";
 import type { AgentMode, LogLine } from "../types.js";
+import { RainbowText, WaveText } from "./AnimatedText.js";
 import { ExperimentalBanner } from "./Banner.js";
 import { CommandPalette } from "./CommandPalette.js";
 import { computeExperimentalLayout, windowRows } from "./layout.js";
 import { symbols, workStateColor } from "./theme.js";
 import { buildShellRows, buildTodoDock, truncate } from "./transcriptRows.js";
+import { splitUltramaxxSegments } from "./ultramaxx.js";
 
 export type ExperimentalShellProps = {
   provider: ModelProvider;
@@ -25,6 +27,7 @@ export type ExperimentalShellProps = {
   workState: AgentWorkState;
   status: string;
   isRunning: boolean;
+  ultramaxxRun: boolean;
   telemetry: ModelTelemetry | null;
   sessionTelemetry: SessionTelemetry;
   draftTokens: number;
@@ -46,12 +49,12 @@ export type ExperimentalShellProps = {
 
 /**
  * Fullscreen experimental shell — a Claude-Code / Codex-CLI flavoured layout:
- * compact header, scrolling transcript, prominent approvals, a categorized
- * command palette, and a bottom-pinned multiline composer.
+ * compact header, scrolling transcript, a first-class todo dock, prominent
+ * approvals, a categorized command palette, and a bottom-pinned composer.
  *
- * This component is purely presentational. All keyboard routing (palette
- * navigation, approval keys, scrolling, mode toggle) stays in App's central
- * useInput; only the composer owns its own typing input.
+ * Purely presentational. Keyboard routing (palette navigation, approval keys,
+ * scrolling, mode toggle) stays in App's central useInput; only the composer
+ * owns its own typing input.
  */
 export function ExperimentalShell(props: ExperimentalShellProps): React.ReactElement {
   const approvalActive = Boolean(props.pendingApproval || props.bypassConfirmation);
@@ -61,6 +64,7 @@ export function ExperimentalShell(props: ExperimentalShellProps): React.ReactEle
     composerInput: props.input,
     paletteItemCount: props.paletteItems.length,
     approvalActive,
+    todoCount: props.todos.length,
   });
 
   return (
@@ -68,15 +72,15 @@ export function ExperimentalShell(props: ExperimentalShellProps): React.ReactEle
       <ShellHeader {...props} />
       <ShellTranscript
         lines={props.lines}
-        todos={props.todos}
-        todoFrame={props.todoFrame}
         isRunning={props.isRunning}
-        workState={props.workState}
-        status={props.status}
+        ultramaxxRun={props.ultramaxxRun}
         scrollOffset={props.transcriptScrollOffset}
         height={layout.transcriptHeight}
         width={layout.transcriptWidth}
       />
+      {layout.todoDockHeight > 0 ? (
+        <ShellTodoDock todos={props.todos} todoFrame={props.todoFrame} height={layout.todoDockHeight} width={layout.transcriptWidth} />
+      ) : null}
       {approvalActive ? (
         <ShellApproval request={props.pendingApproval} bypassConfirmation={props.bypassConfirmation} />
       ) : null}
@@ -86,6 +90,7 @@ export function ExperimentalShell(props: ExperimentalShellProps): React.ReactEle
       <ShellComposer
         input={props.input}
         isRunning={props.isRunning}
+        ultramaxxRun={props.ultramaxxRun}
         approvalActive={approvalActive}
         workState={props.workState}
         status={props.status}
@@ -110,16 +115,16 @@ function ShellHeader(props: ExperimentalShellProps): React.ReactElement {
   return (
     <Box borderStyle="round" borderColor={accent} flexDirection="column" paddingX={1}>
       <Box justifyContent="space-between">
-        <Text>
+        <Text wrap="truncate">
           <Text color="cyan" bold>
             {symbols.assistant} PatchPilot
           </Text>
-          <Text color="gray"> experimental · </Text>
-          <Text color="white">{props.provider}/{shortenMiddle(props.model, 28)}</Text>
+          <Text color="gray"> · </Text>
+          <Text color="white">{props.provider}/{shortenMiddle(props.model, 24)}</Text>
           <Text color="gray"> on </Text>
-          <Text color="white">{shortenMiddle(hostLabel, 18)}</Text>
+          <Text color="white">{shortenMiddle(hostLabel, 16)}</Text>
         </Text>
-        <Text>
+        <Text wrap="truncate">
           <Text color="gray">mode </Text>
           <Text color={modeColor} bold>
             {modeLabel}
@@ -128,13 +133,13 @@ function ShellHeader(props: ExperimentalShellProps): React.ReactElement {
       </Box>
       <Box justifyContent="space-between">
         <Text color="gray" wrap="truncate">
-          {symbols.bullet} {shortenMiddle(props.workspace, 40)}
+          {symbols.bullet} {shortenMiddle(props.workspace, 34)}
           <Text color="gray">  write </Text>
           <Text color={props.allowWrite ? "red" : "gray"}>{writeLabel}</Text>
           <Text color="gray">  shell </Text>
           <Text color={props.allowShell ? "red" : "gray"}>{shellLabel}</Text>
         </Text>
-        <Text color="gray">
+        <Text color="gray" wrap="truncate">
           {formatSessionTokens(props.sessionTelemetry)} · {formatCost(props.sessionTelemetry.estimatedCostUsd)}
         </Text>
       </Box>
@@ -144,33 +149,26 @@ function ShellHeader(props: ExperimentalShellProps): React.ReactElement {
 
 function ShellTranscript(props: {
   lines: LogLine[];
-  todos: AgentTodoItem[];
-  todoFrame: number;
   isRunning: boolean;
-  workState: AgentWorkState;
-  status: string;
+  ultramaxxRun: boolean;
   scrollOffset: number;
   height: number;
   width: number;
 }): React.ReactElement {
   const rows = buildShellRows(props.lines, props.width);
-  const todoDock = buildTodoDock(props.todos, props.width, props.todoFrame);
   const viewport = Math.max(1, props.height - 2);
-  const auxRows = Math.min(todoDock.length, Math.max(0, viewport - 1));
-  const contentViewport = Math.max(1, viewport - auxRows);
+  const overflow = rows.length > viewport;
+  // Reserve one row for the scroll indicator when content overflows.
+  const contentViewport = Math.max(1, overflow ? viewport - 1 : viewport);
   const window = windowRows(rows.length, contentViewport, props.scrollOffset);
   const visibleRows = rows.slice(window.start, window.end);
   const showBanner = props.lines.length === 0;
+  const borderColor = props.ultramaxxRun ? "magenta" : props.isRunning ? "yellow" : "cyan";
 
   return (
-    <Box
-      borderStyle="round"
-      borderColor={props.isRunning ? "yellow" : "cyan"}
-      flexDirection="column"
-      paddingX={1}
-      height={props.height}
-      overflowY="hidden"
-    >
+    <Box borderStyle="round" borderColor={borderColor} flexDirection="column" paddingX={1} height={props.height} overflowY="hidden">
+      {/* Content fills the scroll region: overflowing content fills it
+          completely, short output anchors to the top. */}
       <Box flexDirection="column" flexGrow={1} overflowY="hidden">
         {showBanner ? (
           <ExperimentalBanner width={props.width} height={props.height} />
@@ -179,18 +177,9 @@ function ShellTranscript(props: {
         )}
       </Box>
       {window.hasOverflow ? (
-        <Box>
-          <Text color="gray">
-            {symbols.todoActive} {window.start + 1}–{window.end}/{rows.length} · ↑↓ pgup/pgdn scroll
-          </Text>
-        </Box>
-      ) : null}
-      {todoDock.length > 0 ? (
-        <Box flexDirection="column">
-          {todoDock.slice(0, auxRows).map((row, index) => (
-            <ShellRowView key={`todo-${index}`} row={row} />
-          ))}
-        </Box>
+        <Text color="gray">
+          {symbols.todoActive} {window.start + 1}–{window.end}/{rows.length} · ↑↓ pgup/pgdn scroll
+        </Text>
       ) : null}
     </Box>
   );
@@ -216,6 +205,38 @@ function ShellRowView(props: { row: ReturnType<typeof buildShellRows>[number] })
   );
 }
 
+function ShellTodoDock(props: {
+  todos: AgentTodoItem[];
+  todoFrame: number;
+  height: number;
+  width: number;
+}): React.ReactElement {
+  const rows = buildTodoDock(props.todos, props.width, props.todoFrame);
+  const completed = props.todos.filter((todo) => todo.status === "completed").length;
+  const total = Math.max(1, props.todos.length);
+  const barWidth = 14;
+  const filled = Math.round((completed / total) * barWidth);
+  const bar = `${"▓".repeat(filled)}${"░".repeat(Math.max(0, barWidth - filled))}`;
+
+  return (
+    <Box borderStyle="round" borderColor="cyan" flexDirection="column" paddingX={1} height={props.height} overflowY="hidden">
+      <Box>
+        <Text color="cyan" bold>
+          {symbols.bullet} todos{" "}
+        </Text>
+        <Text color={completed === props.todos.length ? "green" : "yellow"}>{bar}</Text>
+        <Text color="gray">
+          {" "}
+          {completed}/{props.todos.length}
+        </Text>
+      </Box>
+      {rows.slice(1).map((row, index) => (
+        <ShellRowView key={`todo-${index}`} row={row} />
+      ))}
+    </Box>
+  );
+}
+
 function ShellApproval(props: { request: ApprovalRequest | null; bypassConfirmation: boolean }): React.ReactElement {
   if (props.bypassConfirmation) {
     return (
@@ -225,8 +246,19 @@ function ShellApproval(props: { request: ApprovalRequest | null; bypassConfirmat
         </Text>
         <Text color="white">Write and shell tools will run without per-tool prompts for this session.</Text>
         <Text color="gray">Path guards and destructive-shell guards still apply.</Text>
-        <Text color="cyan" bold>
-          [y] accept bypass   [n / esc / tab] stay approval-gated build
+        <Text>
+          <Text color="green" bold>
+            [y]
+          </Text>
+          <Text color="gray"> accept bypass   </Text>
+          <Text color="red" bold>
+            [n / esc]
+          </Text>
+          <Text color="gray"> stay build   </Text>
+          <Text color="cyan" bold>
+            [tab]
+          </Text>
+          <Text color="gray"> back to plan</Text>
         </Text>
       </Box>
     );
@@ -252,12 +284,26 @@ function ShellApproval(props: { request: ApprovalRequest | null; bypassConfirmat
         {symbols.arrow} {request.preview}
       </Text>
       {target ? (
-        <Text color="cyan" wrap="truncate">
-          {target.kind} {target.value}
-        </Text>
+        <Box paddingX={1}>
+          <Text color="gray">{target.kind === "command" || target.kind === "script" ? "$ " : ""}</Text>
+          <Text color="cyan" wrap="truncate">
+            {target.value}
+          </Text>
+        </Box>
       ) : null}
-      <Text color="cyan" bold>
-        [y] allow once   [a] allow session   [n / esc] deny
+      <Text>
+        <Text color="green" bold>
+          [y]
+        </Text>
+        <Text color="gray"> allow once   </Text>
+        <Text color="yellow" bold>
+          [a]
+        </Text>
+        <Text color="gray"> allow session   </Text>
+        <Text color="red" bold>
+          [n / esc]
+        </Text>
+        <Text color="gray"> deny</Text>
       </Text>
     </Box>
   );
@@ -266,6 +312,7 @@ function ShellApproval(props: { request: ApprovalRequest | null; bypassConfirmat
 function ShellComposer(props: {
   input: string;
   isRunning: boolean;
+  ultramaxxRun: boolean;
   approvalActive: boolean;
   workState: AgentWorkState;
   status: string;
@@ -294,7 +341,7 @@ function ShellComposer(props: {
     setRunningSince((current) => current ?? Date.now());
     const timer = setInterval(() => {
       setFrame((current) => current + 1);
-    }, spinnerFrameMs);
+    }, waveFrameMs);
 
     return () => {
       clearInterval(timer);
@@ -319,7 +366,8 @@ function ShellComposer(props: {
       }
 
       if (key.backspace || key.delete) {
-        props.onChange(props.input.slice(0, -1));
+        // Code-point-safe delete so emoji / CJK are not corrupted.
+        props.onChange([...props.input].slice(0, -1).join(""));
         return;
       }
 
@@ -346,18 +394,28 @@ function ShellComposer(props: {
   );
 
   const elapsedMs = runningSince ? Date.now() - runningSince : 0;
-  const accent = props.isRunning ? "yellow" : props.approvalActive ? "yellow" : "cyan";
+  const accent = props.isRunning ? (props.ultramaxxRun ? "magenta" : "yellow") : props.approvalActive ? "yellow" : "cyan";
   const placeholder = props.input.length === 0 ? "Ask PatchPilot, or press / for commands…" : "";
+  const parts = runStatusParts({ workState: props.workState, status: props.status, elapsedMs });
 
   return (
     <Box borderStyle="round" borderColor={accent} flexDirection="column" paddingX={1}>
       {props.isRunning ? (
         <Box>
-          <Text color="yellow">
-            <Text bold>{spinnerGlyph(frame)}</Text>{" "}
-            {formatRunStatus({ workState: props.workState, status: props.status, elapsedMs })}
+          <Text color={props.ultramaxxRun ? "magenta" : "cyan"} bold>
+            {pulseGlyph(frame)}{" "}
           </Text>
-          <Text color="gray">  {formatElapsed(elapsedMs)} · esc to stop</Text>
+          {props.ultramaxxRun ? (
+            <RainbowText text={parts.verb} frame={frame} bold />
+          ) : (
+            <WaveText text={parts.verb} frame={frame} bold />
+          )}
+          <Text color="gray">
+            {"  ·  "}
+            {parts.state}
+            {parts.detail ? ` · ${parts.detail}` : ""}
+          </Text>
+          <Text color="gray">  {formatElapsed(elapsedMs)}</Text>
         </Box>
       ) : props.approvalActive ? (
         <Box>
@@ -370,7 +428,7 @@ function ShellComposer(props: {
         <Box flexDirection="column">
           {layout.visibleRows.map((row, index) => {
             const isLast = index === layout.visibleRows.length - 1;
-            const text = row || (isLast ? placeholder : "");
+            const showPlaceholder = Boolean(placeholder) && isLast && row.length === 0;
             return (
               <Box key={`composer-${index}`}>
                 <Box width={2}>
@@ -378,8 +436,20 @@ function ShellComposer(props: {
                     {index === 0 ? symbols.user : " "}
                   </Text>
                 </Box>
-                <Text color={placeholder && isLast ? "gray" : "white"}>
-                  {text}
+                <Text>
+                  {showPlaceholder ? (
+                    <Text color="gray">{placeholder}</Text>
+                  ) : (
+                    splitUltramaxxSegments(row).map((segment, segmentIndex) =>
+                      segment.ultramaxx ? (
+                        <RainbowText key={`seg-${segmentIndex}`} text={segment.text} frame={index + segmentIndex} bold />
+                      ) : (
+                        <Text key={`seg-${segmentIndex}`} color="white">
+                          {segment.text}
+                        </Text>
+                      ),
+                    )
+                  )}
                   {isLast ? <Text color="cyan">{symbols.caret}</Text> : null}
                 </Text>
               </Box>
@@ -389,10 +459,12 @@ function ShellComposer(props: {
       )}
       <Text color="gray" wrap="truncate">
         {props.isRunning
-          ? "Run active — type /commands only, esc stops the run."
+          ? props.ultramaxxRun
+            ? "ULTRAMAXX run — escalated reasoning & step budget · esc stops the run."
+            : "Run active — type /commands only, esc stops the run."
           : props.approvalActive
             ? "Approval pending — y once · a session · n deny."
-            : `${props.draftTokens} tok draft${layout.hiddenRows > 0 ? ` · ${layout.hiddenRows} line${layout.hiddenRows === 1 ? "" : "s"} above` : ""} · ⏎ send · shift+⏎ newline`}
+            : `${props.draftTokens} tok draft${layout.hiddenRows > 0 ? ` · ${layout.hiddenRows} line${layout.hiddenRows === 1 ? "" : "s"} above` : ""} · ⏎ send · shift+⏎ newline · type ultramaxx to go hard`}
       </Text>
     </Box>
   );

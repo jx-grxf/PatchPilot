@@ -1,7 +1,7 @@
 import React from "react";
 import { Box, Text } from "ink";
 
-export type ExperimentalFlag = "terminalShell" | "fileAnalysis" | "memory" | "subagents";
+export type ExperimentalFlag = "fileAnalysis" | "memory" | "subagents";
 
 export type ExperimentalFlags = Record<ExperimentalFlag, boolean>;
 
@@ -10,11 +10,6 @@ const experimentalRows: Array<{
   label: string;
   description: string;
 }> = [
-  {
-    key: "terminalShell",
-    label: "Terminal Shell",
-    description: "Switch to the experimental fullscreen TUI: compact header, scrolling transcript, command palette, pinned composer."
-  },
   {
     key: "fileAnalysis",
     label: "File Analysis",

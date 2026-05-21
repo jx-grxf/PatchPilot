@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { Box, useApp, useInput, useStdout } from "ink";
+import { Box, Text, useApp, useInput, useStdout } from "ink";
 import { AgentRunner, type AgentRunnerOptions } from "../core/agent.js";
 import { cleanupPatchPilot, readCleanupTarget } from "../core/cleanup.js";
 import { defaultCodexModel, hasCodexCliOAuth } from "../core/codex.js";
@@ -35,6 +35,9 @@ import { CommandSuggestions, type CommandSuggestionItem } from "./components/Com
 import { Composer, FooterHints } from "./components/Composer.js";
 import { ExperimentalPanel, experimentalFlagAt, experimentalFlagCount, type ExperimentalFlags } from "./components/ExperimentalPanel.js";
 import { ExperimentalShell } from "./experimental/ExperimentalShell.js";
+import { ThemePicker } from "./experimental/ThemePicker.js";
+import { hasUltramaxx, stripUltramaxx } from "./experimental/ultramaxx.js";
+import { formatCompletionSummary } from "./runStatus.js";
 import { Header } from "./components/Header.js";
 import { OnboardingPanel, type ApiKeyProvider, type OnboardingState } from "./components/OnboardingPanel.js";
 import { Sidebar } from "./components/Sidebar.js";
@@ -56,6 +59,25 @@ type PaletteSuggestion = CommandSuggestionItem & {
   command: string;
   execute: boolean;
 };
+
+type UiTheme = "new" | "legacy";
+
+const themeOptions: Array<{ value: UiTheme; label: string; description: string }> = [
+  {
+    value: "new",
+    label: "New",
+    description: "Experimental fullscreen shell: compact header, scrolling transcript, command palette, animated run status."
+  },
+  {
+    value: "legacy",
+    label: "Legacy",
+    description: "Original PatchPilot TUI with the sidebar and split-pane layout."
+  }
+];
+
+function readUiTheme(): UiTheme {
+  return process.env.PATCHPILOT_UI_THEME?.trim().toLowerCase() === "legacy" ? "legacy" : "new";
+}
 
 const modelCacheTtlMs = 5 * 60_000;
 const modelCache = new Map<string, { models: string[]; descriptors: ModelDescriptor[]; expiresAt: number }>();
@@ -107,11 +129,14 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   const [experimentalOpen, setExperimentalOpen] = useState(false);
   const [experimentalIndex, setExperimentalIndex] = useState(0);
   const [experimentalFlags, setExperimentalFlags] = useState<ExperimentalFlags>({
-    terminalShell: readBooleanEnv(process.env.PATCHPILOT_EXPERIMENTAL_TERMINAL_SHELL, false),
     fileAnalysis: readBooleanEnv(process.env.PATCHPILOT_EXPERIMENTAL_FILE_ANALYSIS, false),
     memory: readBooleanEnv(process.env.PATCHPILOT_EXPERIMENTAL_MEMORY, false),
     subagents: props.subagents
   });
+  const [uiTheme, setUiTheme] = useState<UiTheme>(() => readUiTheme());
+  const [themePickerOpen, setThemePickerOpen] = useState(false);
+  const [themePickerIndex, setThemePickerIndex] = useState(0);
+  const [ultramaxxRun, setUltramaxxRun] = useState(false);
   const [onboardingIndex, setOnboardingIndex] = useState(0);
   const [onboardingInput, setOnboardingInput] = useState("");
   const [onboardingBusyMessage, setOnboardingBusyMessage] = useState<string | null>(null);
@@ -1138,9 +1163,24 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         return;
       }
 
+      // ultramaxx power mode: the keyword anywhere in the prompt escalates
+      // reasoning effort and the step budget for this run.
+      const ultramaxx = hasUltramaxx(task);
+      const effectiveTask = ultramaxx ? stripUltramaxx(task) : task;
+      if (ultramaxx && !effectiveTask) {
+        appendLine({
+          tone: "warning",
+          label: "ultramaxx",
+          text: "ultramaxx needs an actual task after the keyword."
+        });
+        return;
+      }
+
+      const runStartedAt = Date.now();
       setInput("");
       setTranscriptScrollOffset(0);
       setTodos([]);
+      setUltramaxxRun(ultramaxx);
       setIsRunning(true);
       appendLine({
         kind: "user",
@@ -1148,6 +1188,14 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         label: "you",
         text: task
       });
+      if (ultramaxx) {
+        appendLine({
+          tone: "accent",
+          label: "ultramaxx",
+          text: "✻ ULTRAMAXX engaged — xhigh reasoning, expanded step budget, advisor subagents on.",
+          detail: "The model is told to plan with todos first and verify before finishing."
+        });
+      }
 
       try {
         const runnableSettings = await resolveRunnableSettings(settings, modelOptions, appendLine, setModelOptions);
@@ -1160,6 +1208,10 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         const effectiveMode = overrides.mode ?? agentMode;
         const taskRunner = new AgentRunner({
           ...runnableSettings,
+          maxSteps: ultramaxx ? Math.max(runnableSettings.maxSteps, 40) : runnableSettings.maxSteps,
+          reasoningEffort: ultramaxx ? "xhigh" : runnableSettings.reasoningEffort,
+          thinkingMode: ultramaxx ? "adaptive" : runnableSettings.thinkingMode,
+          subagents: ultramaxx ? true : runnableSettings.subagents,
           allowExternalFileAnalysis: experimentalFlags.fileAnalysis,
           memoryEnabled: experimentalFlags.memory,
           mode: effectiveMode,
@@ -1205,7 +1257,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
               approvalResolverRef.current = resolve;
             })
         });
-        for await (const event of taskRunner.run(task)) {
+        for await (const event of taskRunner.run(effectiveTask)) {
           setWorkState(event.workState);
           if (event.type === "metrics") {
             if (runnableSettings.provider === "ollama") {
@@ -1258,6 +1310,14 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       } finally {
         abortControllerRef.current = null;
         setIsRunning(false);
+        setUltramaxxRun(false);
+        appendLine({
+          kind: "status",
+          tone: "muted",
+          label: "done",
+          text: `✻ ${formatCompletionSummary(Date.now() - runStartedAt, runStartedAt)}`,
+          workState: "done"
+        });
       }
     },
     [agentMode, appendLine, experimentalFlags, isRunning, modelOptions, resumeContext, settings]
@@ -1805,21 +1865,37 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           });
           setExperimentalFlags((currentFlags) => ({
             ...currentFlags,
-            ...(requestedFlag === "tui" || requestedFlag === "terminal-shell" || requestedFlag === "shell"
-              ? { terminalShell: enabled }
-              : requestedFlag === "file-analysis"
-                ? { fileAnalysis: enabled }
-                : requestedFlag === "memory"
-                  ? { memory: enabled }
-                  : requestedFlag === "subagents" || requestedFlag === "agents"
-                    ? { subagents: enabled }
-                    : {})
+            ...(requestedFlag === "file-analysis"
+              ? { fileAnalysis: enabled }
+              : requestedFlag === "memory"
+                ? { memory: enabled }
+                : requestedFlag === "subagents" || requestedFlag === "agents"
+                  ? { subagents: enabled }
+                  : {})
           }));
           appendLine({
             tone: "success",
             label: "experimental",
             text: `${requestedFlag} ${enabled ? "enabled" : "disabled"}`
           });
+          return;
+        }
+        case "theme": {
+          const requested = args[0]?.toLowerCase();
+          if (requested === "new" || requested === "legacy") {
+            setUiTheme(requested);
+            savePatchPilotEnvValues({ PATCHPILOT_UI_THEME: requested });
+            appendLine({
+              tone: "success",
+              label: "theme",
+              text: `switched to the ${requested} UI`
+            });
+            return;
+          }
+
+          setThemePickerOpen(true);
+          setThemePickerIndex(themeOptions.findIndex((option) => option.value === uiTheme));
+          setInput("");
           return;
         }
         case "init": {
@@ -2070,6 +2146,40 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   }, [hostOptions.length, input, isLoadingHosts, isLoadingModels, isRunning, loadHostSuggestions, loadProviderModels, modelOptions.length, onboarding, settings.provider]);
 
   useInput((inputValue, key) => {
+    if (themePickerOpen) {
+      if (key.upArrow) {
+        setThemePickerIndex((currentIndex) => (currentIndex - 1 + themeOptions.length) % themeOptions.length);
+        return;
+      }
+
+      if (key.downArrow) {
+        setThemePickerIndex((currentIndex) => (currentIndex + 1) % themeOptions.length);
+        return;
+      }
+
+      if (key.escape || key.leftArrow) {
+        setThemePickerOpen(false);
+        setInput("");
+        return;
+      }
+
+      if (key.return) {
+        const chosen = themeOptions[themePickerIndex]?.value ?? "new";
+        setUiTheme(chosen);
+        savePatchPilotEnvValues({ PATCHPILOT_UI_THEME: chosen });
+        setThemePickerOpen(false);
+        setInput("");
+        appendLine({
+          tone: "success",
+          label: "theme",
+          text: `switched to the ${chosen} UI`
+        });
+        return;
+      }
+
+      return;
+    }
+
     if (experimentalOpen) {
       if (key.upArrow) {
         setExperimentalIndex((currentIndex) => (currentIndex - 1 + experimentalFlagCount()) % experimentalFlagCount());
@@ -2095,7 +2205,6 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
             }));
           }
           savePatchPilotEnvValues({
-            PATCHPILOT_EXPERIMENTAL_TERMINAL_SHELL: nextFlags.terminalShell ? "1" : "0",
             PATCHPILOT_EXPERIMENTAL_FILE_ANALYSIS: nextFlags.fileAnalysis ? "1" : "0",
             PATCHPILOT_EXPERIMENTAL_MEMORY: nextFlags.memory ? "1" : "0",
             PATCHPILOT_EXPERIMENTAL_SUBAGENTS: nextFlags.subagents ? "1" : "0"
@@ -2116,8 +2225,11 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
 
     if (bypassConfirmation) {
       const normalizedInput = inputValue.toLowerCase();
+      // While the bypass confirmation is pending, tab continues the mode
+      // cycle straight back to plan — no need to confirm bypass first.
       if (key.tab) {
-        cancelBypassMode();
+        setInput("");
+        applyMode("plan");
         return;
       }
 
@@ -2254,10 +2366,6 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       toggleMode();
       return;
     }
-
-    if (!isRunning && input.length === 0 && inputValue === "q") {
-      void unloadUsedOllamaModels(usedOllamaModelsRef.current).finally(exit);
-    }
   });
 
   useEffect(() => {
@@ -2337,7 +2445,40 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
     };
   }, []);
 
-  if (experimentalFlags.terminalShell && !onboarding && !experimentalOpen) {
+  if (themePickerOpen) {
+    return (
+      <Box flexDirection="column" paddingX={1} height={rootHeight} overflowY="hidden">
+        <ThemePicker options={themeOptions} selectedIndex={themePickerIndex} currentValue={uiTheme} height={rootHeight - 2} />
+      </Box>
+    );
+  }
+
+  if (uiTheme === "new" && !experimentalOpen) {
+    if (onboarding) {
+      return (
+        <Box flexDirection="column" paddingX={1} height={rootHeight} overflowY="hidden">
+          <Box borderStyle="round" borderColor="cyan" paddingX={1}>
+            <Text color="cyan" bold>
+              ◆ PatchPilot
+            </Text>
+            <Text color="gray"> · guided setup · the new shell starts once setup is done</Text>
+          </Box>
+          <OnboardingPanel
+            state={onboarding}
+            height={rootHeight - 3}
+            selectedIndex={onboardingIndex}
+            input={onboardingInput}
+            busyMessage={onboardingBusyMessage}
+            notice={onboardingNotice}
+            formatModelLabel={formatModelLabel}
+            formatModelDescription={formatModelDescription}
+            onInputChange={setOnboardingInput}
+            onInputSubmit={(value) => void handleOnboardingSubmit(value)}
+          />
+        </Box>
+      );
+    }
+
     return (
       <ExperimentalShell
         provider={settings.provider}
@@ -2351,6 +2492,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         workState={workState}
         status={status}
         isRunning={isRunning}
+        ultramaxxRun={ultramaxxRun}
         telemetry={telemetry}
         sessionTelemetry={sessionTelemetry}
         draftTokens={draftTokens}

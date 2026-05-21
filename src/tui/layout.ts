@@ -68,8 +68,10 @@ export function wrapDraftRows(value: string, width: number): string[] {
 export function formatWorkingStatus(workState: AgentWorkState, verbIndex: number, status: string): string {
   const verb = workingVerbs[Math.abs(Math.trunc(verbIndex)) % workingVerbs.length] ?? "Working";
   const state = workState.replace(/_/g, " ");
-  const detail = status && status !== state ? `: ${status}` : "";
-  return `${verb} ${state}${detail}`;
+  // Separate the verb from the state with a spaced middle dot so they read as
+  // two distinct words instead of running together.
+  const detail = status && status !== state ? ` · ${status}` : "";
+  return `${verb}  ·  ${state}${detail}`;
 }
 
 const workingVerbs = [

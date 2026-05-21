@@ -196,6 +196,13 @@ export const slashCommands: SlashCommand[] = [
     detail: "Run /experimental to open the checkbox menu. Use space to toggle file-analysis, memory, and subagents."
   },
   {
+    name: "theme",
+    usage: "/theme [new|legacy]",
+    description: "Switch between the New experimental shell and the Legacy TUI.",
+    category: "utility",
+    detail: "Run /theme to open the picker, or /theme new / /theme legacy directly. New is the default fullscreen shell; Legacy is the original sidebar TUI. The choice is remembered."
+  },
+  {
     name: "init",
     usage: "/init",
     description: "Create PATCHPILOT.md workspace instructions.",
