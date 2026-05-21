@@ -52,7 +52,7 @@ import { filterSlashCommands, formatCommandDetail, formatCommandHelp } from "./c
 import { formatCost, formatSessionTokens, formatTokens, normalizeModelAlias, readToggle } from "./format.js";
 import { checkOllamaHost, discoverOllamaHosts, normalizeOllamaUrl, readOllamaHostDetails, startLocalOllamaAppAndWait, type OllamaHost, type OllamaHostDetails } from "./hosts.js";
 import { computeComposerLayout } from "./layout.js";
-import { initialAgentMode, modeDescription, modePermissionLabel, nextAgentMode, permissionsForMode } from "./modes.js";
+import { initialAgentMode, modeDescription, modePermissionLabel, nextAgentMode, permissionsForMode, shouldBypassApproval } from "./modes.js";
 import { selectableModels } from "./modelSelection.js";
 import { readGpuStats, readSystemStats, type GpuStats, type SystemStats } from "./systemStats.js";
 import { maxTranscriptLines, type AdvisorNote, type AgentMode, type LogLine, type LogLineInput, type ToolTelemetry } from "./types.js";
@@ -1475,7 +1475,14 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
                 return;
               }
 
-              if (effectiveMode === "bypass" && ((request.permission === "write" && runnableSettings.allowWrite) || (request.permission === "shell" && runnableSettings.allowShell))) {
+              if (
+                shouldBypassApproval({
+                  mode: effectiveMode,
+                  permission: request.permission,
+                  permissions: runnableSettings,
+                  allowExternalFileAnalysis: experimentalFlags.fileAnalysis
+                })
+              ) {
                 resolve("allow_session");
                 return;
               }
