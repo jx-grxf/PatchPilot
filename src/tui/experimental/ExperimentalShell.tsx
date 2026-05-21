@@ -5,7 +5,7 @@ import type { CommandSuggestionItem } from "../components/CommandSuggestions.js"
 import { formatCost, formatSessionTokens, shortenMiddle } from "../format.js";
 import type { OllamaHostDetails } from "../hosts.js";
 import { computeComposerLayout } from "../layout.js";
-import { formatElapsed, pulseGlyph, runStatusParts, spinnerGlyph, waveFrameMs } from "../runStatus.js";
+import { formatElapsed, pulseGlyph, runStatusParts, spinnerFrameMs, spinnerGlyph, waveFrameMs } from "../runStatus.js";
 import type { AgentMode, LogLine } from "../types.js";
 import { RainbowText, WaveText } from "./AnimatedText.js";
 import { ExperimentalBanner } from "./Banner.js";
@@ -38,6 +38,7 @@ export type ExperimentalShellProps = {
   pendingApproval: ApprovalRequest | null;
   bypassConfirmation: boolean;
   reauthActive: boolean;
+  reauthBusy: boolean;
   transcriptScrollOffset: number;
   input: string;
   paletteItems: CommandSuggestionItem[];
@@ -84,7 +85,7 @@ export function ExperimentalShell(props: ExperimentalShellProps): React.ReactEle
         <ShellTodoDock todos={props.todos} todoFrame={props.todoFrame} height={layout.todoDockHeight} width={layout.transcriptWidth} />
       ) : null}
       {props.reauthActive ? (
-        <ShellReauth />
+        <ShellReauth busy={props.reauthBusy} />
       ) : approvalActive ? (
         <ShellApproval request={props.pendingApproval} bypassConfirmation={props.bypassConfirmation} />
       ) : null}
@@ -313,24 +314,52 @@ function ShellApproval(props: { request: ApprovalRequest | null; bypassConfirmat
   );
 }
 
-function ShellReauth(): React.ReactElement {
+function ShellReauth(props: { busy: boolean }): React.ReactElement {
+  const [frame, setFrame] = useState(0);
+
+  useEffect(() => {
+    if (!props.busy) {
+      setFrame(0);
+      return;
+    }
+
+    const timer = setInterval(() => {
+      setFrame((current) => current + 1);
+    }, spinnerFrameMs);
+
+    return () => {
+      clearInterval(timer);
+    };
+  }, [props.busy]);
+
   return (
     <Box borderStyle="double" borderColor="yellow" flexDirection="column" paddingX={1}>
       <Text color="yellow" bold>
         {symbols.approval} GEMINI COOKIES EXPIRED
       </Text>
-      <Text color="white">Refresh the Gemini browser cookies and retry your last prompt automatically?</Text>
-      <Text color="gray">PatchPilot will re-import cookies from your signed-in browser. Secret values are not printed.</Text>
-      <Text>
-        <Text color="green" bold>
-          [y]
-        </Text>
-        <Text color="gray"> refresh & retry   </Text>
-        <Text color="red" bold>
-          [n / esc]
-        </Text>
-        <Text color="gray"> dismiss</Text>
-      </Text>
+      {props.busy ? (
+        <>
+          <Text color="cyan">
+            <Text bold>{spinnerGlyph(frame)}</Text> Refreshing Gemini browser cookies…
+          </Text>
+          <Text color="gray">Importing from your signed-in browser. The prompt retries automatically on success.</Text>
+        </>
+      ) : (
+        <>
+          <Text color="white">Refresh the Gemini browser cookies and retry your last prompt automatically?</Text>
+          <Text color="gray">PatchPilot re-imports cookies from your signed-in browser. Secret values are not printed.</Text>
+          <Text>
+            <Text color="green" bold>
+              [y]
+            </Text>
+            <Text color="gray"> refresh & retry   </Text>
+            <Text color="red" bold>
+              [n / esc]
+            </Text>
+            <Text color="gray"> dismiss</Text>
+          </Text>
+        </>
+      )}
     </Box>
   );
 }

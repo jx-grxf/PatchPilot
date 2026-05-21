@@ -148,6 +148,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   const [themePickerIndex, setThemePickerIndex] = useState(0);
   const [ultramaxxRun, setUltramaxxRun] = useState(false);
   const [reauthPrompt, setReauthPrompt] = useState<{ task: string } | null>(null);
+  const [reauthBusy, setReauthBusy] = useState(false);
   const [onboardingIndex, setOnboardingIndex] = useState(0);
   const [onboardingInput, setOnboardingInput] = useState("");
   const [onboardingBusyMessage, setOnboardingBusyMessage] = useState<string | null>(null);
@@ -1309,6 +1310,17 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
             finalMessage = event.message;
           }
 
+          // Expired Gemini-Wrapper cookies arrive as an error event (the run
+          // does not throw) — offer the y/n re-auth prompt here too.
+          if (
+            event.type === "error" &&
+            settings.provider === "gemini-wrapper" &&
+            isGeminiCookieError(event.message)
+          ) {
+            setReauthPrompt({ task });
+            setWorkState("waiting_approval");
+          }
+
           setStatus(eventToStatus(event));
           appendLine(eventToLine(event));
         }
@@ -1365,12 +1377,12 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   const resolveReauthPrompt = useCallback(
     async (accept: boolean): Promise<void> => {
       const pending = reauthPrompt;
-      if (!pending) {
+      if (!pending || reauthBusy) {
         return;
       }
 
-      setReauthPrompt(null);
       if (!accept) {
+        setReauthPrompt(null);
         setStatus("idle");
         setWorkState("idle");
         appendLine({
@@ -1382,11 +1394,9 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         return;
       }
 
-      appendLine({
-        tone: "muted",
-        label: "gemini",
-        text: "Refreshing Gemini browser cookies..."
-      });
+      // Keep the panel on screen and show the busy animation while the
+      // browser cookies are imported.
+      setReauthBusy(true);
       try {
         const result = await importGeminiWrapperBrowserCookies();
         process.env.PATCHPILOT_GEMINI_WRAPPER_MODE = "python";
@@ -1395,6 +1405,8 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           PATCHPILOT_GEMINI_WRAPPER_MODE: "python",
           PATCHPILOT_GEMINI_WRAPPER_COOKIES_JSON: result.cookiesPath
         });
+        setReauthBusy(false);
+        setReauthPrompt(null);
         appendLine({
           tone: "success",
           label: "gemini",
@@ -1402,17 +1414,19 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         });
         await runTask(pending.task);
       } catch (error) {
+        setReauthBusy(false);
+        setReauthPrompt(null);
         setStatus("idle");
         setWorkState("idle");
         appendLine({
           tone: "danger",
           label: "gemini",
           text: error instanceof Error ? error.message : String(error),
-          detail: "Cookie refresh failed. Sign in to Gemini in your browser, then retry."
+          detail: "Cookie refresh failed. Sign in to Gemini in your browser, then retry the prompt."
         });
       }
     },
-    [appendLine, reauthPrompt, runTask]
+    [appendLine, reauthBusy, reauthPrompt, runTask]
   );
 
   const handleSlashCommand = useCallback(
@@ -2335,6 +2349,10 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       }
     }
 
+    if (reauthBusy) {
+      return;
+    }
+
     if (reauthPrompt) {
       const normalizedInput = inputValue.toLowerCase();
       if (normalizedInput === "y") {
@@ -2607,7 +2625,8 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         todoFrame={todoFrame}
         pendingApproval={pendingApproval}
         bypassConfirmation={bypassConfirmation}
-        reauthActive={Boolean(reauthPrompt)}
+        reauthActive={Boolean(reauthPrompt) || reauthBusy}
+        reauthBusy={reauthBusy}
         transcriptScrollOffset={transcriptScrollOffset}
         input={input}
         paletteItems={paletteItems}
