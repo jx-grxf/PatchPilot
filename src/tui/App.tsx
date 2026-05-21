@@ -79,6 +79,13 @@ function readUiTheme(): UiTheme {
   return process.env.PATCHPILOT_UI_THEME?.trim().toLowerCase() === "legacy" ? "legacy" : "new";
 }
 
+/** Heuristic: does this Gemini-Wrapper error look like expired/invalid cookies? */
+function isGeminiCookieError(message: string): boolean {
+  return /cookie|secure_1psid|psidts|expired|sign[ -]?in|auth(?:enticat|oriz)|401|403|session.*(?:invalid|expired)/i.test(
+    message
+  );
+}
+
 const modelCacheTtlMs = 5 * 60_000;
 const modelCache = new Map<string, { models: string[]; descriptors: ModelDescriptor[]; expiresAt: number }>();
 const modelDescriptorIndex = new Map<string, ModelDescriptor>();
@@ -104,6 +111,9 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   const activeHostSyncInFlightRef = useRef(false);
   const autoLoadKeysRef = useRef(new Set<string>());
   const usedOllamaModelsRef = useRef(new Set<string>());
+  // Rolling session memory: short digests of earlier turns so a later prompt
+  // ("now do X") still knows what the user asked for and where.
+  const conversationTurnsRef = useRef<string[]>([]);
   const [lines, setLines] = useState<LogLine[]>([]);
   const [advisorNotes, setAdvisorNotes] = useState<AdvisorNote[]>([]);
   const [todos, setTodos] = useState<AgentTodoItem[]>([]);
@@ -137,6 +147,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   const [themePickerOpen, setThemePickerOpen] = useState(false);
   const [themePickerIndex, setThemePickerIndex] = useState(0);
   const [ultramaxxRun, setUltramaxxRun] = useState(false);
+  const [reauthPrompt, setReauthPrompt] = useState<{ task: string } | null>(null);
   const [onboardingIndex, setOnboardingIndex] = useState(0);
   const [onboardingInput, setOnboardingInput] = useState("");
   const [onboardingBusyMessage, setOnboardingBusyMessage] = useState<string | null>(null);
@@ -1197,6 +1208,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         });
       }
 
+      let finalMessage = "";
       try {
         const runnableSettings = await resolveRunnableSettings(settings, modelOptions, appendLine, setModelOptions);
         if (!runnableSettings) {
@@ -1206,6 +1218,14 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         const abortController = new AbortController();
         abortControllerRef.current = abortController;
         const effectiveMode = overrides.mode ?? agentMode;
+        // Carry earlier-turn context forward so a follow-up prompt still knows
+        // what the user was doing and where. Advisory only — it never changes
+        // the workspace root or restricts the agent.
+        const sessionMemory =
+          conversationTurnsRef.current.length > 0
+            ? `Earlier in this PatchPilot session (most recent last), for continuity only — the request below still takes priority and is not restricted to these paths:\n${conversationTurnsRef.current.join("\n")}`
+            : "";
+        const effectiveResumeContext = [resumeContext, sessionMemory].filter(Boolean).join("\n\n");
         const taskRunner = new AgentRunner({
           ...runnableSettings,
           maxSteps: ultramaxx ? Math.max(runnableSettings.maxSteps, 40) : runnableSettings.maxSteps,
@@ -1217,7 +1237,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           mode: effectiveMode,
           signal: abortController.signal,
           sessionStore: sessionStoreRef.current,
-          resumeContext,
+          resumeContext: effectiveResumeContext,
           approvalHandler: (request) =>
             new Promise<PermissionDecision>((resolve) => {
               if (effectiveMode === "plan") {
@@ -1285,6 +1305,10 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
             continue;
           }
 
+          if (event.type === "final") {
+            finalMessage = event.message;
+          }
+
           setStatus(eventToStatus(event));
           appendLine(eventToLine(event));
         }
@@ -1300,17 +1324,32 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           return;
         }
 
+        const message = error instanceof Error ? error.message : String(error);
         appendLine({
           kind: "error",
           tone: "danger",
           label: "error",
-          text: error instanceof Error ? error.message : String(error),
+          text: message,
           workState: "error"
         });
+        // Expired Gemini-Wrapper cookies: offer a one-key re-auth + retry
+        // instead of making the user restart and re-type the prompt.
+        if (settings.provider === "gemini-wrapper" && isGeminiCookieError(message)) {
+          setReauthPrompt({ task });
+          setStatus("gemini cookies expired");
+          setWorkState("waiting_approval");
+        }
       } finally {
         abortControllerRef.current = null;
         setIsRunning(false);
         setUltramaxxRun(false);
+        // Record a short digest of this turn for cross-run continuity.
+        conversationTurnsRef.current = [
+          ...conversationTurnsRef.current,
+          `- Asked: "${task.replace(/\s+/g, " ").trim().slice(0, 220)}"${
+            finalMessage ? ` → outcome: ${finalMessage.replace(/\s+/g, " ").trim().slice(0, 220)}` : ""
+          }`
+        ].slice(-6);
         appendLine({
           kind: "status",
           tone: "muted",
@@ -1321,6 +1360,59 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       }
     },
     [agentMode, appendLine, experimentalFlags, isRunning, modelOptions, resumeContext, settings]
+  );
+
+  const resolveReauthPrompt = useCallback(
+    async (accept: boolean): Promise<void> => {
+      const pending = reauthPrompt;
+      if (!pending) {
+        return;
+      }
+
+      setReauthPrompt(null);
+      if (!accept) {
+        setStatus("idle");
+        setWorkState("idle");
+        appendLine({
+          tone: "warning",
+          label: "gemini",
+          text: "Cookie refresh declined.",
+          detail: "Run /onboarding to re-authenticate Gemini-Wrapper when you are ready."
+        });
+        return;
+      }
+
+      appendLine({
+        tone: "muted",
+        label: "gemini",
+        text: "Refreshing Gemini browser cookies..."
+      });
+      try {
+        const result = await importGeminiWrapperBrowserCookies();
+        process.env.PATCHPILOT_GEMINI_WRAPPER_MODE = "python";
+        process.env.PATCHPILOT_GEMINI_WRAPPER_COOKIES_JSON = result.cookiesPath;
+        savePatchPilotEnvValues({
+          PATCHPILOT_GEMINI_WRAPPER_MODE: "python",
+          PATCHPILOT_GEMINI_WRAPPER_COOKIES_JSON: result.cookiesPath
+        });
+        appendLine({
+          tone: "success",
+          label: "gemini",
+          text: `Imported ${result.cookieCount} fresh cookies from ${result.source}. Retrying your task...`
+        });
+        await runTask(pending.task);
+      } catch (error) {
+        setStatus("idle");
+        setWorkState("idle");
+        appendLine({
+          tone: "danger",
+          label: "gemini",
+          text: error instanceof Error ? error.message : String(error),
+          detail: "Cookie refresh failed. Sign in to Gemini in your browser, then retry."
+        });
+      }
+    },
+    [appendLine, reauthPrompt, runTask]
   );
 
   const handleSlashCommand = useCallback(
@@ -1920,6 +2012,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           setSessionTelemetry(emptySessionTelemetry());
           setTranscriptScrollOffset(0);
           setSessionScrollOffset(0);
+          conversationTurnsRef.current = [];
           return;
         case "new":
           if (isRunning) {
@@ -1948,11 +2041,9 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           setSessionScrollOffset(0);
           setStatus("idle");
           setWorkState("idle");
-          appendLine({
-            tone: "success",
-            label: "new",
-            text: `started session ${sessionStoreRef.current.sessionId}`
-          });
+          conversationTurnsRef.current = [];
+          // Leave the transcript empty so the startup banner shows again,
+          // exactly like a fresh launch.
           return;
         case "exit":
         case "quit":
@@ -2244,6 +2335,21 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       }
     }
 
+    if (reauthPrompt) {
+      const normalizedInput = inputValue.toLowerCase();
+      if (normalizedInput === "y") {
+        void resolveReauthPrompt(true);
+        return;
+      }
+
+      if (normalizedInput === "n" || key.escape) {
+        void resolveReauthPrompt(false);
+        return;
+      }
+
+      return;
+    }
+
     if (pendingApproval) {
       const normalizedInput = inputValue.toLowerCase();
       if (normalizedInput === "y") {
@@ -2501,6 +2607,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         todoFrame={todoFrame}
         pendingApproval={pendingApproval}
         bypassConfirmation={bypassConfirmation}
+        reauthActive={Boolean(reauthPrompt)}
         transcriptScrollOffset={transcriptScrollOffset}
         input={input}
         paletteItems={paletteItems}

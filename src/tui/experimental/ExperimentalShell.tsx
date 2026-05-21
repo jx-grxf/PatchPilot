@@ -9,6 +9,7 @@ import { formatElapsed, pulseGlyph, runStatusParts, spinnerGlyph, waveFrameMs } 
 import type { AgentMode, LogLine } from "../types.js";
 import { RainbowText, WaveText } from "./AnimatedText.js";
 import { ExperimentalBanner } from "./Banner.js";
+import { composerView } from "./composer.js";
 import { CommandPalette } from "./CommandPalette.js";
 import { computeExperimentalLayout, windowRows } from "./layout.js";
 import { symbols, workStateColor } from "./theme.js";
@@ -36,6 +37,7 @@ export type ExperimentalShellProps = {
   todoFrame: number;
   pendingApproval: ApprovalRequest | null;
   bypassConfirmation: boolean;
+  reauthActive: boolean;
   transcriptScrollOffset: number;
   input: string;
   paletteItems: CommandSuggestionItem[];
@@ -57,7 +59,7 @@ export type ExperimentalShellProps = {
  * owns its own typing input.
  */
 export function ExperimentalShell(props: ExperimentalShellProps): React.ReactElement {
-  const approvalActive = Boolean(props.pendingApproval || props.bypassConfirmation);
+  const approvalActive = Boolean(props.pendingApproval || props.bypassConfirmation || props.reauthActive);
   const layout = computeExperimentalLayout({
     rows: props.rows,
     columns: props.columns,
@@ -81,7 +83,9 @@ export function ExperimentalShell(props: ExperimentalShellProps): React.ReactEle
       {layout.todoDockHeight > 0 ? (
         <ShellTodoDock todos={props.todos} todoFrame={props.todoFrame} height={layout.todoDockHeight} width={layout.transcriptWidth} />
       ) : null}
-      {approvalActive ? (
+      {props.reauthActive ? (
+        <ShellReauth />
+      ) : approvalActive ? (
         <ShellApproval request={props.pendingApproval} bypassConfirmation={props.bypassConfirmation} />
       ) : null}
       {props.paletteItems.length > 0 ? (
@@ -309,6 +313,28 @@ function ShellApproval(props: { request: ApprovalRequest | null; bypassConfirmat
   );
 }
 
+function ShellReauth(): React.ReactElement {
+  return (
+    <Box borderStyle="double" borderColor="yellow" flexDirection="column" paddingX={1}>
+      <Text color="yellow" bold>
+        {symbols.approval} GEMINI COOKIES EXPIRED
+      </Text>
+      <Text color="white">Refresh the Gemini browser cookies and retry your last prompt automatically?</Text>
+      <Text color="gray">PatchPilot will re-import cookies from your signed-in browser. Secret values are not printed.</Text>
+      <Text>
+        <Text color="green" bold>
+          [y]
+        </Text>
+        <Text color="gray"> refresh & retry   </Text>
+        <Text color="red" bold>
+          [n / esc]
+        </Text>
+        <Text color="gray"> dismiss</Text>
+      </Text>
+    </Box>
+  );
+}
+
 function ShellComposer(props: {
   input: string;
   isRunning: boolean;
@@ -323,6 +349,7 @@ function ShellComposer(props: {
 }): React.ReactElement {
   const [frame, setFrame] = useState(0);
   const [runningSince, setRunningSince] = useState<number | null>(null);
+  const [cursor, setCursor] = useState(props.input.length);
   const layout = computeComposerLayout({
     input: props.input,
     width: props.width,
@@ -348,6 +375,12 @@ function ShellComposer(props: {
     };
   }, [props.isRunning]);
 
+  // Keep the cursor valid when the draft is replaced from outside (submit,
+  // slash-command fill, /clear).
+  useEffect(() => {
+    setCursor((current) => Math.min(current, props.input.length));
+  }, [props.input]);
+
   const typingActive = !props.isRunning && !props.approvalActive;
   useInput(
     (value, key) => {
@@ -355,9 +388,12 @@ function ShellComposer(props: {
         return;
       }
 
+      const safeCursor = Math.max(0, Math.min(cursor, props.input.length));
+
       if (key.return) {
         if (key.shift || key.meta || key.super) {
-          props.onChange(`${props.input}\n`);
+          props.onChange(`${props.input.slice(0, safeCursor)}\n${props.input.slice(safeCursor)}`);
+          setCursor(safeCursor + 1);
           return;
         }
 
@@ -365,43 +401,59 @@ function ShellComposer(props: {
         return;
       }
 
+      if (key.leftArrow) {
+        setCursor(Math.max(0, safeCursor - 1));
+        return;
+      }
+
+      if (key.rightArrow) {
+        setCursor(Math.min(props.input.length, safeCursor + 1));
+        return;
+      }
+
+      if (key.home || (key.ctrl && value === "a")) {
+        setCursor(0);
+        return;
+      }
+
+      if (key.end || (key.ctrl && value === "e")) {
+        setCursor(props.input.length);
+        return;
+      }
+
       if (key.backspace || key.delete) {
-        // Code-point-safe delete so emoji / CJK are not corrupted.
-        props.onChange([...props.input].slice(0, -1).join(""));
+        if (safeCursor > 0) {
+          props.onChange(`${props.input.slice(0, safeCursor - 1)}${props.input.slice(safeCursor)}`);
+          setCursor(safeCursor - 1);
+        }
         return;
       }
 
-      if (
-        key.tab ||
-        key.escape ||
-        key.upArrow ||
-        key.downArrow ||
-        key.leftArrow ||
-        key.rightArrow ||
-        key.pageUp ||
-        key.pageDown ||
-        key.home ||
-        key.end ||
-        key.ctrl ||
-        value.length === 0
-      ) {
+      if (key.tab || key.escape || key.upArrow || key.downArrow || key.pageUp || key.pageDown || key.ctrl || value.length === 0) {
         return;
       }
 
-      props.onChange(`${props.input}${value}`);
+      props.onChange(`${props.input.slice(0, safeCursor)}${value}${props.input.slice(safeCursor)}`);
+      setCursor(safeCursor + value.length);
     },
     { isActive: typingActive },
   );
 
   const elapsedMs = runningSince ? Date.now() - runningSince : 0;
   const accent = props.isRunning ? (props.ultramaxxRun ? "magenta" : "yellow") : props.approvalActive ? "yellow" : "cyan";
-  const placeholder = props.input.length === 0 ? "Ask PatchPilot, or press / for commands…" : "";
   const parts = runStatusParts({ workState: props.workState, status: props.status, elapsedMs });
+  const safeCursor = Math.max(0, Math.min(cursor, props.input.length));
+  const editorRows = layout.editorRows;
+  const view = composerView(props.input, safeCursor, layout.inputWidth, editorRows);
+  const showPlaceholder = props.input.length === 0;
 
-  return (
-    <Box borderStyle="round" borderColor={accent} flexDirection="column" paddingX={1}>
-      {props.isRunning ? (
-        <Box>
+  // The editor area always renders exactly `editorRows` rows so the composer's
+  // real height matches the reserved layout height — no dead space anywhere.
+  const editorContent: React.ReactNode[] = [];
+  for (let index = 0; index < editorRows; index += 1) {
+    if (props.isRunning && index === 0) {
+      editorContent.push(
+        <Box key="editor-run">
           <Text color={props.ultramaxxRun ? "magenta" : "cyan"} bold>
             {pulseGlyph(frame)}{" "}
           </Text>
@@ -416,47 +468,65 @@ function ShellComposer(props: {
             {parts.detail ? ` · ${parts.detail}` : ""}
           </Text>
           <Text color="gray">  {formatElapsed(elapsedMs)}</Text>
-        </Box>
-      ) : props.approvalActive ? (
-        <Box>
+        </Box>,
+      );
+    } else if (!props.isRunning && props.approvalActive && index === 0) {
+      editorContent.push(
+        <Box key="editor-approval">
           <Text color="yellow" bold>
             {symbols.approval} approval waiting
           </Text>
           <Text color="gray"> — respond above before typing</Text>
-        </Box>
-      ) : (
-        <Box flexDirection="column">
-          {layout.visibleRows.map((row, index) => {
-            const isLast = index === layout.visibleRows.length - 1;
-            const showPlaceholder = Boolean(placeholder) && isLast && row.length === 0;
-            return (
-              <Box key={`composer-${index}`}>
-                <Box width={2}>
-                  <Text color="cyan" bold>
-                    {index === 0 ? symbols.user : " "}
+        </Box>,
+      );
+    } else if (!props.isRunning && !props.approvalActive && showPlaceholder && index === 0) {
+      editorContent.push(
+        <Box key="editor-placeholder">
+          <Box width={2}>
+            <Text color="cyan" bold>
+              {symbols.user}
+            </Text>
+          </Box>
+          <Text inverse> </Text>
+          <Text color="gray"> Ask PatchPilot, or press / for commands…</Text>
+        </Box>,
+      );
+    } else if (!props.isRunning && !props.approvalActive && !showPlaceholder && index < view.rows.length) {
+      const row = view.rows[index] ?? "";
+      editorContent.push(
+        <Box key={`editor-${index}`}>
+          <Box width={2}>
+            <Text color="cyan" bold>
+              {index === 0 && view.hiddenAbove === 0 ? symbols.user : " "}
+            </Text>
+          </Box>
+          {index === view.cursorRow ? (
+            <ComposerCursorRow text={row} cursorCol={view.cursorCol} />
+          ) : (
+            <Text>
+              {splitUltramaxxSegments(row).map((segment, segmentIndex) =>
+                segment.ultramaxx ? (
+                  <RainbowText key={`seg-${segmentIndex}`} text={segment.text} frame={index + segmentIndex} bold />
+                ) : (
+                  <Text key={`seg-${segmentIndex}`} color="white">
+                    {segment.text}
                   </Text>
-                </Box>
-                <Text>
-                  {showPlaceholder ? (
-                    <Text color="gray">{placeholder}</Text>
-                  ) : (
-                    splitUltramaxxSegments(row).map((segment, segmentIndex) =>
-                      segment.ultramaxx ? (
-                        <RainbowText key={`seg-${segmentIndex}`} text={segment.text} frame={index + segmentIndex} bold />
-                      ) : (
-                        <Text key={`seg-${segmentIndex}`} color="white">
-                          {segment.text}
-                        </Text>
-                      ),
-                    )
-                  )}
-                  {isLast ? <Text color="cyan">{symbols.caret}</Text> : null}
-                </Text>
-              </Box>
-            );
-          })}
-        </Box>
-      )}
+                ),
+              )}
+            </Text>
+          )}
+        </Box>,
+      );
+    } else {
+      editorContent.push(<Box key={`editor-pad-${index}`} height={1} />);
+    }
+  }
+
+  return (
+    <Box borderStyle="round" borderColor={accent} flexDirection="column" paddingX={1} height={layout.height + 2} overflowY="hidden">
+      <Box flexDirection="column" height={editorRows} overflowY="hidden">
+        {editorContent}
+      </Box>
       <Text color="gray" wrap="truncate">
         {props.isRunning
           ? props.ultramaxxRun
@@ -464,9 +534,24 @@ function ShellComposer(props: {
             : "Run active — type /commands only, esc stops the run."
           : props.approvalActive
             ? "Approval pending — y once · a session · n deny."
-            : `${props.draftTokens} tok draft${layout.hiddenRows > 0 ? ` · ${layout.hiddenRows} line${layout.hiddenRows === 1 ? "" : "s"} above` : ""} · ⏎ send · shift+⏎ newline · type ultramaxx to go hard`}
+            : `${props.draftTokens} tok draft${view.hiddenAbove > 0 ? ` · ${view.hiddenAbove} line${view.hiddenAbove === 1 ? "" : "s"} above` : ""} · ←→ move · ⏎ send · shift+⏎ newline · type ultramaxx to go hard`}
       </Text>
     </Box>
+  );
+}
+
+/** Render one composer row with the block cursor at the given column. */
+function ComposerCursorRow(props: { text: string; cursorCol: number }): React.ReactElement {
+  const col = Math.max(0, Math.min(props.cursorCol, props.text.length));
+  const before = props.text.slice(0, col);
+  const at = props.text.slice(col, col + 1) || " ";
+  const after = props.text.slice(col + 1);
+  return (
+    <Text>
+      <Text color="white">{before}</Text>
+      <Text inverse>{at}</Text>
+      <Text color="white">{after}</Text>
+    </Text>
   );
 }
 
