@@ -54,6 +54,15 @@ import { checkOllamaHost, discoverOllamaHosts, normalizeOllamaUrl, readOllamaHos
 import { computeComposerLayout } from "./layout.js";
 import { initialAgentMode, modeDescription, modePermissionLabel, nextAgentMode, permissionsForMode, shouldBypassApproval } from "./modes.js";
 import { selectableModels } from "./modelSelection.js";
+import {
+  cyclePreference,
+  defaultOnboardingPreferences,
+  modePermissions as preferencesModePermissions,
+  preferenceRows,
+  preferencesEnvValues,
+  readOnboardingPreferences,
+  type OnboardingPreferences
+} from "./onboardingPreferences.js";
 import { readGpuStats, readSystemStats, type GpuStats, type SystemStats } from "./systemStats.js";
 import { maxTranscriptLines, type AdvisorNote, type AgentMode, type LogLine, type LogLineInput, type ToolTelemetry } from "./types.js";
 
@@ -797,6 +806,15 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           hosts: hostOptions
         });
         return;
+      case "preferences":
+        if (onboarding.provider === "gemini-wrapper") {
+          setOnboarding({
+            step: "gemini-wrapper-model-mode"
+          });
+          return;
+        }
+        void openModelSelection(onboarding.provider, { currentModel: onboarding.model });
+        return;
       case "model":
         if (onboarding.provider === "ollama" && activeHost?.host.kind !== "local") {
           setOnboarding({
@@ -839,7 +857,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           step: "entry"
         });
     }
-  }, [activeHost?.host.kind, hostOptions, onboarding]);
+  }, [activeHost?.host.kind, hostOptions, onboarding, openModelSelection]);
 
   const handleOnboardingSubmit = useCallback(
     async (value: string): Promise<void> => {
@@ -1169,16 +1187,16 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           savePatchPilotEnvValues({
             PATCHPILOT_PROVIDER: "gemini-wrapper",
             PATCHPILOT_MODEL: curatedModel,
-            PATCHPILOT_GEMINI_WRAPPER_MODE: "python",
-            PATCHPILOT_ONBOARDING_COMPLETE: "1"
+            PATCHPILOT_GEMINI_WRAPPER_MODE: "python"
           });
-          process.env.PATCHPILOT_ONBOARDING_COMPLETE = "1";
-          appendLine({
-            tone: "success",
-            label: "onboarding",
-            text: `ready: gemini-wrapper using ${curatedModel}`
+          setOnboarding({
+            step: "preferences",
+            provider: "gemini-wrapper",
+            model: curatedModel,
+            preferences: readOnboardingPreferences()
           });
-          closeOnboarding();
+          setOnboardingInput("");
+          setOnboardingIndex(preferenceRows.length);
           return;
         }
 
@@ -1334,6 +1352,55 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         return;
       }
 
+      if (onboarding.step === "preferences") {
+        const confirmIndex = preferenceRows.length;
+        const selection = readIndexedSelection(value, onboardingIndex);
+        if (selection !== confirmIndex) {
+          return;
+        }
+
+        const prefs = onboarding.preferences;
+        const permissions = preferencesModePermissions(prefs.mode);
+        setTelemetry(null);
+        setAgentMode(prefs.mode);
+        grantedPermissionsRef.current = permissions;
+        setExperimentalFlags((currentFlags) => ({ ...currentFlags, subagents: prefs.subagents }));
+        setSettings((currentSettings) => ({
+          ...currentSettings,
+          provider: onboarding.provider,
+          model: onboarding.model,
+          allowWrite: permissions.allowWrite,
+          allowShell: permissions.allowShell,
+          thinkingMode: prefs.thinking,
+          reasoningEffort: prefs.reasoning,
+          subagents: prefs.subagents
+        }));
+        savePatchPilotEnvValues({
+          PATCHPILOT_PROVIDER: onboarding.provider,
+          PATCHPILOT_MODEL: onboarding.model,
+          PATCHPILOT_ONBOARDING_COMPLETE: "1",
+          ...preferencesEnvValues(prefs),
+          ...(onboarding.provider === "ollama" ? { PATCHPILOT_OLLAMA_URL: activeHost?.host.url ?? settings.ollamaUrl } : {})
+        });
+        process.env.PATCHPILOT_ONBOARDING_COMPLETE = "1";
+        appendLine({
+          tone: "success",
+          label: "onboarding",
+          text: `ready: ${onboarding.provider} using ${onboarding.model}`,
+          detail: `mode ${prefs.mode} · reasoning ${prefs.reasoning} · thinking ${prefs.thinking} · subagents ${prefs.subagents ? "on" : "off"}`
+        });
+        if (onboarding.provider === "openrouter" && isOpenRouterFreeModel(onboarding.model)) {
+          appendLine({
+            tone: "warning",
+            label: "openrouter",
+            text: "Free OpenRouter models are rate-limited.",
+            detail: "OpenRouter documents 20 requests/minute for :free models, plus daily limits depending on account credits."
+          });
+        }
+        closeOnboarding();
+        return;
+      }
+
       const visibleModels = selectableModels(onboardingInput, onboarding.models, formatModelLabel);
       const selectedModel = visibleModels[onboardingIndex] ?? selectModelFromInput(value, visibleModels, onboardingIndex, {
         allowManual: onboarding.provider !== "ollama" && onboarding.provider !== "gemini-wrapper"
@@ -1346,33 +1413,14 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         return;
       }
 
-      setTelemetry(null);
-      setSettings((currentSettings) => ({
-        ...currentSettings,
+      setOnboarding({
+        step: "preferences",
         provider: onboarding.provider,
-        model: selectedModel
-      }));
-      savePatchPilotEnvValues({
-        PATCHPILOT_PROVIDER: onboarding.provider,
-        PATCHPILOT_MODEL: selectedModel,
-        PATCHPILOT_ONBOARDING_COMPLETE: "1",
-        ...(onboarding.provider === "ollama" ? { PATCHPILOT_OLLAMA_URL: activeHost?.host.url ?? settings.ollamaUrl } : {})
+        model: selectedModel,
+        preferences: readOnboardingPreferences()
       });
-      process.env.PATCHPILOT_ONBOARDING_COMPLETE = "1";
-      appendLine({
-        tone: "success",
-        label: "onboarding",
-        text: `ready: ${onboarding.provider} using ${selectedModel}`
-      });
-      if (onboarding.provider === "openrouter" && isOpenRouterFreeModel(selectedModel)) {
-        appendLine({
-          tone: "warning",
-          label: "openrouter",
-          text: "Free OpenRouter models are rate-limited.",
-          detail: "OpenRouter documents 20 requests/minute for :free models, plus daily limits depending on account credits."
-        });
-      }
-      closeOnboarding();
+      setOnboardingInput("");
+      setOnboardingIndex(preferenceRows.length);
     },
     [activeHost?.host.url, appendLine, closeOnboarding, connectToHost, loadHostSuggestions, onboarding, onboardingBusyMessage, onboardingIndex, openModelSelection, settings.ollamaUrl]
   );
@@ -2878,12 +2926,36 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
     }
 
     if (onboarding) {
-      if (key.escape || key.leftArrow) {
+      if (key.escape) {
         goBackOnboarding();
         return;
       }
 
       if (onboardingBusyMessage) {
+        return;
+      }
+
+      // Preferences step: left/right cycle the selected row's value in place;
+      // left only goes back when no row is highlighted (the confirm row).
+      if (onboarding.step === "preferences") {
+        const confirmIndex = preferenceRows.length;
+        if ((key.leftArrow || key.rightArrow) && onboardingIndex < confirmIndex) {
+          const row = preferenceRows[onboardingIndex];
+          if (row) {
+            setOnboarding((current) =>
+              current && current.step === "preferences"
+                ? { ...current, preferences: cyclePreference(current.preferences, row.key, key.leftArrow ? -1 : 1) }
+                : current
+            );
+          }
+          return;
+        }
+        if (key.leftArrow) {
+          goBackOnboarding();
+          return;
+        }
+      } else if (key.leftArrow) {
+        goBackOnboarding();
         return;
       }
 
@@ -3535,6 +3607,8 @@ function getOnboardingOptionCount(onboarding: OnboardingState): number {
       return geminiWrapperShortcutModels.length + 1;
     case "model":
       return onboarding.models.length;
+    case "preferences":
+      return preferenceRows.length + 1;
     default:
       return 0;
   }

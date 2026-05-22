@@ -36,6 +36,12 @@ const defaultModel =
         ? defaultCodexModel
         : defaultOllamaModel);
 
+// Onboarding persists the chosen first-run agent mode; bypass implies the
+// always-allow write/shell defaults so the next launch starts where the user
+// left off. plan and build keep the per-action approval flow.
+const defaultMode = process.env.PATCHPILOT_DEFAULT_MODE?.trim().toLowerCase();
+const defaultBypass = defaultMode === "bypass";
+
 const program = new Command();
 program.enablePositionalOptions();
 

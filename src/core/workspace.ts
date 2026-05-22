@@ -555,7 +555,7 @@ export class WorkspaceTools {
     const clippedContent = clip(content, 20_000);
     return {
       ok: true,
-      summary: `read ${path.relative(this.root, absolutePath)}`,
+      summary: `read ${normalizeRelative(this.root, absolutePath)}`,
       content: clippedContent,
       tool: "read_file",
       category: toolSpecs.read_file.category,
@@ -590,12 +590,12 @@ export class WorkspaceTools {
     const numberedLines = selectedLines.map((line, index) => `${startLine + index}: ${line}`).join("\n");
     return {
       ok: true,
-      summary: `read ${path.relative(this.root, absolutePath)}:${startLine}-${Math.min(endLine, lines.length)}`,
+      summary: `read ${normalizeRelative(this.root, absolutePath)}:${startLine}-${Math.min(endLine, lines.length)}`,
       content: clip(numberedLines || "No lines in range.", 20_000),
       tool: "read_range",
       category: toolSpecs.read_range.category,
       metadata: {
-        path: path.relative(this.root, absolutePath),
+        path: normalizeRelative(this.root, absolutePath),
         startLine,
         endLine: Math.min(endLine, lines.length)
       }
@@ -613,7 +613,7 @@ export class WorkspaceTools {
 
     const absolutePath = await this.resolveReadPath(requestedPath);
     const fileStat = await stat(absolutePath);
-    const relativePath = path.relative(this.root, absolutePath);
+    const relativePath = normalizeRelative(this.root, absolutePath);
     return {
       ok: true,
       summary: `inspected ${relativePath}`,
@@ -716,10 +716,11 @@ export class WorkspaceTools {
 
   private async readTextDocument(absolutePath: string): Promise<ToolResult> {
     const content = await readFile(absolutePath, "utf8");
-    const relativePath = path.relative(this.root, absolutePath);
+    const rawRelativePath = path.relative(this.root, absolutePath);
+    const relativePath = normalizeRelative(this.root, absolutePath);
     return {
       ok: true,
-      summary: `inspected ${relativePath.startsWith("..") || path.isAbsolute(relativePath) ? absolutePath : relativePath}`,
+      summary: `inspected ${rawRelativePath.startsWith("..") || path.isAbsolute(rawRelativePath) ? absolutePath : relativePath}`,
       content: clip(content, 20_000),
       tool: "inspect_document",
       category: toolSpecs.inspect_document.category,
@@ -880,11 +881,11 @@ export class WorkspaceTools {
 
     return {
       ok: true,
-      summary: `wrote ${path.relative(this.root, absolutePath)}`,
+      summary: `wrote ${normalizeRelative(this.root, absolutePath)}`,
       content: `Wrote ${normalized.content.length} characters.${normalized.normalized ? " Normalized escaped newlines before writing." : ""}`,
       tool: "write_file",
       category: toolSpecs.write_file.category,
-      preview: `Write ${path.relative(this.root, absolutePath)}`,
+      preview: `Write ${normalizeRelative(this.root, absolutePath)}`,
       metadata: {
         normalizedEscapedContent: normalized.normalized
       }
@@ -909,11 +910,11 @@ export class WorkspaceTools {
 
     return {
       ok: true,
-      summary: `created PDF ${path.relative(this.root, absolutePath)}`,
+      summary: `created PDF ${normalizeRelative(this.root, absolutePath)}`,
       content: `Created ${pdf.length} byte PDF from ${content.length} characters.`,
       tool: "create_pdf",
       category: toolSpecs.create_pdf.category,
-      preview: `Create PDF ${path.relative(this.root, absolutePath)}`
+      preview: `Create PDF ${normalizeRelative(this.root, absolutePath)}`
     };
   }
 
@@ -935,11 +936,11 @@ export class WorkspaceTools {
 
     return {
       ok: true,
-      summary: `created DOCX ${path.relative(this.root, absolutePath)}`,
+      summary: `created DOCX ${normalizeRelative(this.root, absolutePath)}`,
       content: `Created ${docx.length} byte DOCX from ${content.length} characters.`,
       tool: "create_docx",
       category: toolSpecs.create_docx.category,
-      preview: `Create DOCX ${path.relative(this.root, absolutePath)}`
+      preview: `Create DOCX ${normalizeRelative(this.root, absolutePath)}`
     };
   }
 
@@ -1010,7 +1011,7 @@ export class WorkspaceTools {
         return denied(`edit_file find text must match exactly once; found ${matches} matches.`, "edit_file");
       }
       nextContent = originalContent.replace(findText, normalizedReplaceText);
-      editSummary = `replaced 1 match in ${path.relative(this.root, absolutePath)}`;
+      editSummary = `replaced 1 match in ${normalizeRelative(this.root, absolutePath)}`;
     } else {
       const lines = originalContent.split(/\r?\n/);
       if (endLine > lines.length) {
@@ -1023,7 +1024,7 @@ export class WorkspaceTools {
       }
       lines.splice(startLine - 1, endLine - startLine + 1, ...replacementLines);
       nextContent = lines.join("\n");
-      editSummary = `replaced lines ${startLine}-${endLine} in ${path.relative(this.root, absolutePath)}`;
+      editSummary = `replaced lines ${startLine}-${endLine} in ${normalizeRelative(this.root, absolutePath)}`;
     }
 
     if (nextContent === originalContent) {
@@ -1054,10 +1055,10 @@ export class WorkspaceTools {
     return {
       ok: true,
       summary: editSummary,
-      content: `Edited ${path.relative(this.root, absolutePath)}.`,
+      content: `Edited ${normalizeRelative(this.root, absolutePath)}.`,
       tool: "edit_file",
       category: toolSpecs.edit_file.category,
-      preview: `Edit ${path.relative(this.root, absolutePath)}`
+      preview: `Edit ${normalizeRelative(this.root, absolutePath)}`
     };
   }
 
