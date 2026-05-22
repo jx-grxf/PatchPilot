@@ -9,7 +9,7 @@
 [![CI](https://github.com/jx-grxf/PatchPilot/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/jx-grxf/PatchPilot/actions/workflows/ci.yml)
 [![npm](https://img.shields.io/npm/v/@jx-grxf/patchpilot?logo=npm&color=cb3837)](https://www.npmjs.com/package/@jx-grxf/patchpilot)
 [![npm downloads](https://img.shields.io/npm/dm/@jx-grxf/patchpilot?logo=npm&color=0ea5e9)](https://www.npmjs.com/package/@jx-grxf/patchpilot)
-![Status](https://img.shields.io/badge/status-v1.1.0-0ea5e9)
+![Status](https://img.shields.io/badge/status-v1.2.0-0ea5e9)
 ![TypeScript](https://img.shields.io/badge/TypeScript-6.0-3178C6?logo=typescript&logoColor=white)
 ![Node](https://img.shields.io/badge/Node.js-22%2B-339933?logo=node.js&logoColor=white)
 ![Ink](https://img.shields.io/badge/TUI-Ink-111827)
@@ -39,7 +39,7 @@
 PatchPilot is a terminal interface for running coding-agent tasks inside a repository. It shows what the agent is doing, keeps risky actions behind explicit permissions, and supports local Ollama, remote Ollama, Google Gemini, experimental Gemini Web wrapper routing, OpenRouter, NVIDIA NIM-compatible endpoints, and Codex CLI OAuth.
 
 > [!IMPORTANT]
-> PatchPilot v1.1.0 improves the stable CLI with safer file tools, Gemini-Wrapper document analysis, visible run todos, refreshed dependencies, and release-to-website automation.
+> PatchPilot v1.2.0 is the large agent-hardening release: default fullscreen shell, context compaction, composable ultra modes, safer shell approvals, first-run risk acceptance, Windows fixes, and refreshed npm dependencies.
 
 ---
 
@@ -66,18 +66,20 @@ PatchPilot is a terminal interface for running coding-agent tasks inside a repos
 | Feature | What it means |
 |---|---|
 | Local-first by default | Uses Ollama on your own machine unless you choose another route. |
-| Fullscreen experimental shell | A Claude-Code / Codex-CLI-style TUI: compact header, scrolling transcript, command palette, animated run status. `/theme` switches between the new shell and the legacy layout. |
+| Fullscreen shell | A Claude-Code / Codex-CLI-style TUI: compact header, scrolling transcript, command palette, animated run status, artifacts, and a bottom-pinned composer. `/theme` switches between the new shell and the legacy layout. |
 | Remote GPU workflow | Connect your laptop TUI to an Ollama host on a desktop, LAN, or Tailscale machine. |
 | Cloud provider routes | Gemini, Gemini-Wrapper, OpenRouter, NVIDIA, and Codex CLI OAuth are available from one TUI. |
-| Guided onboarding | First-run setup walks through local/remote mode, provider auth, host discovery, and model choice. |
+| Guided onboarding | First-run setup walks through local/remote mode, provider auth, host discovery, model choice, defaults, and risk acceptance. |
 | Observable agent loop | Transcript, tool calls, telemetry, token counts, provider cache hits, latency, and cost estimates are visible. |
 | Document attachments | Paste a path to an image, PDF, or DOCX and it becomes an attachment chip; an artifacts bar lists what you attached and what PatchPilot created. |
-| `ultramaxx` power mode | Type `ultramaxx` in a prompt to escalate the run — higher reasoning effort, a larger step budget, and advisor subagents. |
+| Composable ultra modes | Type `ultramaxx`, `ultrafast`, `ultracheap`, `ultrafocus:<path>`, or `ultraloop` in a prompt to tune effort, speed, scope, and self-review. |
+| Context compaction | `/context` and `/compact` keep long sessions usable by storing and summarizing workspace context. |
 | Saved-cost counter | The gemini-wrapper route is free; the header shows what the same tokens would have cost on the paid Gemini API. |
-| Explicit permissions | Risky tools show a sticky approval box unless trusted bypass is explicitly accepted. |
+| Explicit permissions | Risky tools show a sticky approval box unless trusted bypass is explicitly accepted; high-risk shell syntax still asks in bypass. |
 | Workspace boundary | File tools are constrained to the selected project root and block common secret files. |
 | Slash-command palette | Type `/` for browsable commands, provider switching, modes, models, diagnostics, and host selection. |
 | Advisor subagents | Explorer, planner, and reviewer advisor calls can brief the main agent before it edits. |
+| Windows-ready paths | Clipboard paste, attachments, Codex CLI resolution, and Gemini-Wrapper bootstrap paths handle Windows launchers and separators. |
 | Ollama eject | `/eject` unloads the active Ollama model; `/eject all` clears models PatchPilot used in the session. |
 | CI-ready TypeScript | Strict TypeScript, Vitest, GitHub Actions, and package verification are included. |
 
@@ -439,6 +441,7 @@ Release notes are kept in [docs/releases](docs/releases).
 
 | Version | Notes |
 |---|---|
+| `v1.2.0` | [Release notes](docs/releases/v1.2.0.md) |
 | `v1.1.0` | [Release notes](docs/releases/v1.1.0.md) |
 | `v1.0.1` | [Release notes](docs/releases/v1.0.1.md) |
 | `v1.0.0` | [Release notes](docs/releases/v1.0.0.md) |
