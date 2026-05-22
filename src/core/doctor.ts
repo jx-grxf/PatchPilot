@@ -1,12 +1,13 @@
 import { spawn } from "node:child_process";
 import { describeComputeTarget } from "./compute.js";
-import { codexOAuthModels, hasCodexCliOAuth } from "./codex.js";
+import { codexOAuthModels, hasCodexCliOAuth, resolveCodexExecutable } from "./codex.js";
 import { GeminiClient, readGeminiApiKey } from "./gemini.js";
 import {
   GeminiWrapperClient,
   ensureGeminiWebApiInstalled,
   geminiWebApiInstallCommand,
   geminiWrapperRequiresApiKey,
+  isGeminiBrowserCookieImportInstalled,
   isGeminiWebApiInstalled,
   readGeminiWrapperApiKey,
   readGeminiWrapperBaseUrl,
@@ -179,7 +180,7 @@ async function checkNvidia(model?: string): Promise<DoctorResult[]> {
 }
 
 async function checkCodex(model?: string): Promise<DoctorResult[]> {
-  const cli = await checkCommand("codex", ["--version"], "codex-cli", "Install Codex CLI, then run codex login.");
+  const cli = await checkCommand(resolveCodexExecutable(), ["--version"], "codex-cli", "Install Codex CLI, then run codex login.");
   const hasOAuth = hasCodexCliOAuth();
   const results: DoctorResult[] = [
     cli,
@@ -314,17 +315,18 @@ async function checkGeminiApiBridge(model?: string, options: { fix?: boolean } =
   const pythonCommand = readGeminiWrapperPythonCommand();
   const hasExplicitAuth = Boolean(readGeminiWrapperCookiesJson() || readGeminiWrapperSecure1psid());
   const isInstalledBefore = await isGeminiWebApiInstalled(pythonCommand);
-  const isInstalled = isInstalledBefore || (options.fix ? await ensureGeminiWebApiInstalled(pythonCommand) : false);
+  const hasCookieImportBefore = await isGeminiBrowserCookieImportInstalled(pythonCommand);
+  const isInstalled = (isInstalledBefore && hasCookieImportBefore) || (options.fix ? await ensureGeminiWebApiInstalled(pythonCommand) : false);
   const results: DoctorResult[] = [
     {
       name: "gemini-api-bridge",
       ok: isInstalled,
       details: isInstalled
-        ? `${isInstalledBefore ? "gemini_webapi import works" : "installed pinned gemini_webapi into PatchPilot managed venv"} through ${pythonCommand}`
+        ? `${isInstalledBefore && hasCookieImportBefore ? "gemini_webapi and browser-cookie3 imports work" : "installed pinned gemini_webapi and browser-cookie3 into PatchPilot managed venv"} through ${pythonCommand}`
         : options.fix
           ? `missing. PatchPilot tried the managed venv install. Manual fallback: ${geminiWebApiInstallCommand}`
           : `missing. Run /doctor fix or patchpilot doctor --fix to install the managed bridge. Manual fallback: ${geminiWebApiInstallCommand}`,
-      action: isInstalledBefore ? "check" : options.fix && isInstalled ? "fix" : "skipped"
+      action: isInstalledBefore && hasCookieImportBefore ? "check" : options.fix && isInstalled ? "fix" : "skipped"
     },
     {
       name: "gemini-api-auth",

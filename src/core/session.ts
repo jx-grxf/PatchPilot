@@ -1,6 +1,6 @@
 import { appendFile, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import path from "node:path";
+import { getPatchPilotConfigDir } from "./env.js";
 import type { ModelProvider, SessionEvent } from "./types.js";
 
 export type SessionSummary = {
@@ -29,7 +29,7 @@ export class SessionStore {
     this.sessionId = options.sessionId ?? createSessionId();
     this.sessionDir = path.join(this.workspace, ".patchpilot", "sessions");
     this.sessionPath = path.join(this.sessionDir, `${this.sessionId}.jsonl`);
-    this.indexPath = path.join(homedir(), ".patchpilot", "session-index.json");
+    this.indexPath = path.join(getPatchPilotConfigDir(), "session-index.json");
   }
 
   static workspaceSessionPath(workspace: string, sessionId: string): string {
@@ -111,7 +111,7 @@ export async function listWorkspaceSessions(workspace: string): Promise<SessionS
 }
 
 export async function listIndexedSessions(): Promise<SessionSummary[]> {
-  const index = await readIndex(path.join(homedir(), ".patchpilot", "session-index.json"));
+  const index = await readIndex(path.join(getPatchPilotConfigDir(), "session-index.json"));
   return index.sessions.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
 }
 
@@ -231,6 +231,10 @@ function formatEventForResume(event: SessionEvent): string {
       return `- assistant finished: ${clip(event.message, 500)}`;
     case "run.failed":
       return `- run failed: ${clip(event.message, 300)}`;
+    case "context.pinned":
+      return `- context ${event.pinned ? "pinned" : "unpinned"}: ${event.label ?? event.itemId}`;
+    case "context.compacted":
+      return `- context compacted into ${event.summaryId} from ${event.itemIds.length} items`;
     case "model.request":
       return "";
   }

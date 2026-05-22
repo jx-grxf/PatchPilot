@@ -1,7 +1,8 @@
 import { execFile, spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { access, lstat, mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
-import { platform, tmpdir } from "node:os";
+import { homedir, platform, tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { deflateRawSync, inflateRawSync } from "node:zlib";
@@ -33,6 +34,7 @@ const textFileExtensions = new Set([
   ".h",
   ".hpp",
   ".html",
+  ".svg",
   ".js",
   ".json",
   ".jsx",
@@ -44,6 +46,7 @@ const textFileExtensions = new Set([
   ".ts",
   ".tsx",
   ".txt",
+  ".jsonl",
   ".java",
   ".kt",
   ".go",
@@ -91,6 +94,7 @@ export type WorkspaceToolsOptions = {
   root: string;
   allowWrite: boolean;
   allowShell: boolean;
+  allowShellMetacharacters?: boolean;
   allowExternalFileAnalysis?: boolean;
   documentAnalyzer?: DocumentAnalyzer;
   memoryEnabled?: boolean;
@@ -115,6 +119,14 @@ export const toolSpecs: Record<AgentToolName, ToolSpec> = {
     sideEffects: "none",
     permission: "none",
     category: "read"
+  },
+  find_files: {
+    name: "find_files",
+    description: "Find workspace files by path/name substring.",
+    risk: "low",
+    sideEffects: "none",
+    permission: "none",
+    category: "search"
   },
   read_file: {
     name: "read_file",
@@ -188,6 +200,22 @@ export const toolSpecs: Record<AgentToolName, ToolSpec> = {
     permission: "none",
     category: "git"
   },
+  git_log: {
+    name: "git_log",
+    description: "Read recent Git commits.",
+    risk: "low",
+    sideEffects: "none",
+    permission: "none",
+    category: "git"
+  },
+  git_show: {
+    name: "git_show",
+    description: "Read a compact Git commit or revision summary.",
+    risk: "low",
+    sideEffects: "none",
+    permission: "none",
+    category: "git"
+  },
   list_changed_files: {
     name: "list_changed_files",
     description: "List changed files from Git porcelain status.",
@@ -199,6 +227,30 @@ export const toolSpecs: Record<AgentToolName, ToolSpec> = {
   list_scripts: {
     name: "list_scripts",
     description: "List package.json scripts.",
+    risk: "low",
+    sideEffects: "none",
+    permission: "none",
+    category: "read"
+  },
+  repo_overview: {
+    name: "repo_overview",
+    description: "Read a compact repository overview: package metadata, top-level files, and Git state.",
+    risk: "low",
+    sideEffects: "none",
+    permission: "none",
+    category: "read"
+  },
+  test_list: {
+    name: "test_list",
+    description: "List likely tests and test scripts without running them.",
+    risk: "low",
+    sideEffects: "none",
+    permission: "none",
+    category: "test"
+  },
+  dependency_tree: {
+    name: "dependency_tree",
+    description: "Read top-level package dependencies from package.json.",
     risk: "low",
     sideEffects: "none",
     permission: "none",
@@ -279,6 +331,7 @@ export class WorkspaceTools {
   private readonly rootRealPath: Promise<string>;
   private readonly allowWrite: boolean;
   private readonly allowShell: boolean;
+  private readonly allowShellMetacharacters: boolean;
   private readonly allowExternalFileAnalysis: boolean;
   private readonly memoryEnabled: boolean;
   private readonly documentAnalyzer?: DocumentAnalyzer;
@@ -292,6 +345,7 @@ export class WorkspaceTools {
     this.rootRealPath = realpath(this.root).catch(() => this.root);
     this.allowWrite = options.allowWrite;
     this.allowShell = options.allowShell;
+    this.allowShellMetacharacters = Boolean(options.allowShellMetacharacters);
     this.allowExternalFileAnalysis = Boolean(options.allowExternalFileAnalysis);
     this.documentAnalyzer = options.documentAnalyzer;
     this.memoryEnabled = Boolean(options.memoryEnabled);
@@ -307,6 +361,8 @@ export class WorkspaceTools {
           return this.updateTodo(call.arguments);
         case "list_files":
           return await this.listFiles(readString(call.arguments.path, "."));
+        case "find_files":
+          return await this.findFiles(readString(call.arguments.query, ""), readNumber(call.arguments.limit, 80));
         case "read_file":
           return await this.readFile(readString(call.arguments.path, ""));
         case "read_range":
@@ -329,10 +385,20 @@ export class WorkspaceTools {
           return await this.gitStatus();
         case "git_diff":
           return await this.gitDiff(readString(call.arguments.path, ""));
+        case "git_log":
+          return await this.gitLog(readNumber(call.arguments.limit, 8));
+        case "git_show":
+          return await this.gitShow(readString(call.arguments.revision, "HEAD"), readString(call.arguments.path, ""));
         case "list_changed_files":
           return await this.listChangedFiles();
         case "list_scripts":
           return await this.listScripts();
+        case "repo_overview":
+          return await this.repoOverview();
+        case "test_list":
+          return await this.testList();
+        case "dependency_tree":
+          return await this.dependencyTree();
         case "write_file":
           return await this.writeFile(readString(call.arguments.path, ""), readString(call.arguments.content, ""));
         case "edit_file":
@@ -434,6 +500,40 @@ export class WorkspaceTools {
     };
   }
 
+  private async findFiles(query: string, limit: number): Promise<ToolResult> {
+    const normalizedQuery = query.trim().replaceAll("\\", "/").toLowerCase();
+    if (!normalizedQuery) {
+      return denied("find_files requires a non-empty query.", "find_files");
+    }
+
+    if (isPlaceholderPath(normalizedQuery)) {
+      return denied(`find_files denied placeholder query: ${query}`, "find_files");
+    }
+
+    if (isSensitivePath(normalizedQuery)) {
+      return denied(`find_files denied sensitive query: ${query}`, "find_files");
+    }
+
+    const normalizedLimit = Math.max(1, Math.min(200, Math.floor(limit || 80)));
+    const files = await walkFiles(this.root, this.root, await this.rootRealPath, 10, 1200);
+    const matches = files
+      .filter((filePath) => filePath.toLowerCase().includes(normalizedQuery))
+      .slice(0, normalizedLimit);
+
+    return {
+      ok: true,
+      summary: `found ${matches.length} file match${matches.length === 1 ? "" : "es"}`,
+      content: matches.join("\n") || "No matching files.",
+      tool: "find_files",
+      category: toolSpecs.find_files.category,
+      metadata: {
+        query: normalizedQuery,
+        limit: normalizedLimit,
+        truncated: matches.length >= normalizedLimit
+      }
+    };
+  }
+
   private async readFile(requestedPath: string): Promise<ToolResult> {
     if (!requestedPath) {
       return denied("read_file requires a path.");
@@ -458,7 +558,7 @@ export class WorkspaceTools {
     const clippedContent = clip(content, 20_000);
     return {
       ok: true,
-      summary: `read ${path.relative(this.root, absolutePath)}`,
+      summary: `read ${normalizeRelative(this.root, absolutePath)}`,
       content: clippedContent,
       tool: "read_file",
       category: toolSpecs.read_file.category,
@@ -493,12 +593,12 @@ export class WorkspaceTools {
     const numberedLines = selectedLines.map((line, index) => `${startLine + index}: ${line}`).join("\n");
     return {
       ok: true,
-      summary: `read ${path.relative(this.root, absolutePath)}:${startLine}-${Math.min(endLine, lines.length)}`,
+      summary: `read ${normalizeRelative(this.root, absolutePath)}:${startLine}-${Math.min(endLine, lines.length)}`,
       content: clip(numberedLines || "No lines in range.", 20_000),
       tool: "read_range",
       category: toolSpecs.read_range.category,
       metadata: {
-        path: path.relative(this.root, absolutePath),
+        path: normalizeRelative(this.root, absolutePath),
         startLine,
         endLine: Math.min(endLine, lines.length)
       }
@@ -516,7 +616,7 @@ export class WorkspaceTools {
 
     const absolutePath = await this.resolveReadPath(requestedPath);
     const fileStat = await stat(absolutePath);
-    const relativePath = path.relative(this.root, absolutePath);
+    const relativePath = normalizeRelative(this.root, absolutePath);
     return {
       ok: true,
       summary: `inspected ${relativePath}`,
@@ -597,6 +697,19 @@ export class WorkspaceTools {
       return mergeFallbackDocumentResult(providerResult, docxFallback);
     }
 
+    if (extension === ".doc") {
+      const docFallback = await extractLegacyDocText(absolutePath, this.timeoutMs, this.signal);
+      if (wantsLocalOnly || !this.documentAnalyzer || hasUsefulExtractedText(docFallback)) {
+        return docFallback;
+      }
+
+      const providerResult = await this.analyzeDocumentWithProvider(absolutePath, "Analyze this Word document for PatchPilot. Extract the relevant text, headings, and document structure.");
+      if (providerResult.ok) {
+        return providerResult;
+      }
+      return mergeFallbackDocumentResult(providerResult, docFallback);
+    }
+
     if (isImageFile(absolutePath)) {
       return await inspectImageFile(absolutePath, wantsLocalOnly ? undefined : this.documentAnalyzer, this.signal, normalizedMode, this.providerAnalysisTimeoutMs());
     }
@@ -606,10 +719,11 @@ export class WorkspaceTools {
 
   private async readTextDocument(absolutePath: string): Promise<ToolResult> {
     const content = await readFile(absolutePath, "utf8");
-    const relativePath = path.relative(this.root, absolutePath);
+    const rawRelativePath = path.relative(this.root, absolutePath);
+    const relativePath = normalizeRelative(this.root, absolutePath);
     return {
       ok: true,
-      summary: `inspected ${relativePath.startsWith("..") || path.isAbsolute(relativePath) ? absolutePath : relativePath}`,
+      summary: `inspected ${rawRelativePath.startsWith("..") || path.isAbsolute(rawRelativePath) ? absolutePath : relativePath}`,
       content: clip(content, 20_000),
       tool: "inspect_document",
       category: toolSpecs.inspect_document.category,
@@ -770,11 +884,11 @@ export class WorkspaceTools {
 
     return {
       ok: true,
-      summary: `wrote ${path.relative(this.root, absolutePath)}`,
+      summary: `wrote ${normalizeRelative(this.root, absolutePath)}`,
       content: `Wrote ${normalized.content.length} characters.${normalized.normalized ? " Normalized escaped newlines before writing." : ""}`,
       tool: "write_file",
       category: toolSpecs.write_file.category,
-      preview: `Write ${path.relative(this.root, absolutePath)}`,
+      preview: `Write ${normalizeRelative(this.root, absolutePath)}`,
       metadata: {
         normalizedEscapedContent: normalized.normalized
       }
@@ -799,11 +913,11 @@ export class WorkspaceTools {
 
     return {
       ok: true,
-      summary: `created PDF ${path.relative(this.root, absolutePath)}`,
+      summary: `created PDF ${normalizeRelative(this.root, absolutePath)}`,
       content: `Created ${pdf.length} byte PDF from ${content.length} characters.`,
       tool: "create_pdf",
       category: toolSpecs.create_pdf.category,
-      preview: `Create PDF ${path.relative(this.root, absolutePath)}`
+      preview: `Create PDF ${normalizeRelative(this.root, absolutePath)}`
     };
   }
 
@@ -825,11 +939,11 @@ export class WorkspaceTools {
 
     return {
       ok: true,
-      summary: `created DOCX ${path.relative(this.root, absolutePath)}`,
+      summary: `created DOCX ${normalizeRelative(this.root, absolutePath)}`,
       content: `Created ${docx.length} byte DOCX from ${content.length} characters.`,
       tool: "create_docx",
       category: toolSpecs.create_docx.category,
-      preview: `Create DOCX ${path.relative(this.root, absolutePath)}`
+      preview: `Create DOCX ${normalizeRelative(this.root, absolutePath)}`
     };
   }
 
@@ -900,7 +1014,7 @@ export class WorkspaceTools {
         return denied(`edit_file find text must match exactly once; found ${matches} matches.`, "edit_file");
       }
       nextContent = originalContent.replace(findText, normalizedReplaceText);
-      editSummary = `replaced 1 match in ${path.relative(this.root, absolutePath)}`;
+      editSummary = `replaced 1 match in ${normalizeRelative(this.root, absolutePath)}`;
     } else {
       const lines = originalContent.split(/\r?\n/);
       if (endLine > lines.length) {
@@ -913,7 +1027,7 @@ export class WorkspaceTools {
       }
       lines.splice(startLine - 1, endLine - startLine + 1, ...replacementLines);
       nextContent = lines.join("\n");
-      editSummary = `replaced lines ${startLine}-${endLine} in ${path.relative(this.root, absolutePath)}`;
+      editSummary = `replaced lines ${startLine}-${endLine} in ${normalizeRelative(this.root, absolutePath)}`;
     }
 
     if (nextContent === originalContent) {
@@ -944,10 +1058,10 @@ export class WorkspaceTools {
     return {
       ok: true,
       summary: editSummary,
-      content: `Edited ${path.relative(this.root, absolutePath)}.`,
+      content: `Edited ${normalizeRelative(this.root, absolutePath)}.`,
       tool: "edit_file",
       category: toolSpecs.edit_file.category,
-      preview: `Edit ${path.relative(this.root, absolutePath)}`
+      preview: `Edit ${normalizeRelative(this.root, absolutePath)}`
     };
   }
 
@@ -993,6 +1107,54 @@ export class WorkspaceTools {
     };
   }
 
+  private async gitLog(limit: number): Promise<ToolResult> {
+    const normalizedLimit = Math.max(1, Math.min(50, Math.floor(limit || 8)));
+    const { stdout } = await execFileAsync("git", ["log", "--oneline", "--decorate", `--max-count=${normalizedLimit}`], {
+      cwd: this.root,
+      timeout: Math.min(this.timeoutMs, 8000),
+      maxBuffer: 200_000,
+      signal: this.signal,
+      windowsHide: true
+    });
+
+    return {
+      ok: true,
+      summary: `read ${normalizedLimit} git commit${normalizedLimit === 1 ? "" : "s"}`,
+      content: stdout.trim() || "No commits found.",
+      tool: "git_log",
+      category: toolSpecs.git_log.category
+    };
+  }
+
+  private async gitShow(revision: string, requestedPath: string): Promise<ToolResult> {
+    const normalizedRevision = revision.trim() || "HEAD";
+    if (!/^[A-Za-z0-9_./:@{}^~+-]+$/.test(normalizedRevision)) {
+      return denied("git_show revision contains unsupported characters.", "git_show");
+    }
+
+    const args = ["show", "--stat", "--oneline", "--decorate", "--no-ext-diff", normalizedRevision, "--"];
+    if (requestedPath.trim()) {
+      const absolutePath = this.resolveInsideWorkspace(requestedPath);
+      args.push(path.relative(this.root, absolutePath));
+    }
+
+    const { stdout } = await execFileAsync("git", args, {
+      cwd: this.root,
+      timeout: Math.min(this.timeoutMs, 8000),
+      maxBuffer: 500_000,
+      signal: this.signal,
+      windowsHide: true
+    });
+
+    return {
+      ok: true,
+      summary: `read git revision ${normalizedRevision}`,
+      content: clip(stdout.trim() || "No revision output.", 20_000),
+      tool: "git_show",
+      category: toolSpecs.git_show.category
+    };
+  }
+
   private async listChangedFiles(): Promise<ToolResult> {
     const { stdout } = await execFileAsync("git", ["status", "--porcelain"], {
       cwd: this.root,
@@ -1032,6 +1194,89 @@ export class WorkspaceTools {
     };
   }
 
+  private async repoOverview(): Promise<ToolResult> {
+    const packageJson: Record<string, unknown> = await this.readPackageJsonObject().catch(() => ({}));
+    const rootRealPath = await this.rootRealPath;
+    const files = await walkFiles(this.root, this.root, rootRealPath, 1, 80).catch(() => []);
+    const gitStatus = await execFileAsync("git", ["status", "--short", "--branch"], {
+      cwd: this.root,
+      timeout: Math.min(this.timeoutMs, 5000),
+      maxBuffer: 100_000,
+      signal: this.signal,
+      windowsHide: true
+    }).then((result) => result.stdout.trim()).catch(() => "No git repository detected.");
+    const scripts = Object.keys(readStringRecord(packageJson.scripts)).sort();
+    const dependencies = Object.keys(readStringRecord(packageJson.dependencies)).length;
+    const devDependencies = Object.keys(readStringRecord(packageJson.devDependencies)).length;
+
+    return {
+      ok: true,
+      summary: "read repository overview",
+      content: [
+        `name: ${typeof packageJson.name === "string" ? packageJson.name : path.basename(this.root)}`,
+        `version: ${typeof packageJson.version === "string" ? packageJson.version : "unknown"}`,
+        `description: ${typeof packageJson.description === "string" ? packageJson.description : "none"}`,
+        `scripts: ${scripts.join(", ") || "none"}`,
+        `dependencies: ${dependencies} runtime, ${devDependencies} dev`,
+        "",
+        "git:",
+        gitStatus || "clean",
+        "",
+        "top-level files:",
+        files.join("\n") || "No files found."
+      ].join("\n"),
+      tool: "repo_overview",
+      category: toolSpecs.repo_overview.category
+    };
+  }
+
+  private async testList(): Promise<ToolResult> {
+    const packageJson: Record<string, unknown> = await this.readPackageJsonObject().catch(() => ({}));
+    const scripts = Object.entries(readStringRecord(packageJson.scripts))
+      .filter(([name, command]) => /test|spec|vitest|jest|playwright|check/i.test(`${name} ${command}`))
+      .sort(([left], [right]) => left.localeCompare(right));
+    const files = await walkFiles(this.root, this.root, await this.rootRealPath, 8, 500).catch(() => []);
+    const testFiles = files.filter((filePath) => /(^|\/)(__tests__|tests?|specs?)\/|[.-](test|spec)\.[cm]?[jt]sx?$|\.test\./i.test(filePath));
+
+    return {
+      ok: true,
+      summary: `listed ${testFiles.length} likely test file${testFiles.length === 1 ? "" : "s"}`,
+      content: [
+        "test scripts:",
+        scripts.map(([name, command]) => `${name}: ${command}`).join("\n") || "No test-related scripts found.",
+        "",
+        "test files:",
+        testFiles.slice(0, 120).join("\n") || "No likely test files found."
+      ].join("\n"),
+      tool: "test_list",
+      category: toolSpecs.test_list.category
+    };
+  }
+
+  private async dependencyTree(): Promise<ToolResult> {
+    const packageJson = await this.readPackageJsonObject();
+    const sections: Array<[string, Record<string, string>]> = [
+      ["dependencies", readStringRecord(packageJson.dependencies)],
+      ["devDependencies", readStringRecord(packageJson.devDependencies)],
+      ["peerDependencies", readStringRecord(packageJson.peerDependencies)],
+      ["optionalDependencies", readStringRecord(packageJson.optionalDependencies)]
+    ];
+    const content = sections
+      .map(([sectionName, dependencies]) => {
+        const entries = Object.entries(dependencies).sort(([left], [right]) => left.localeCompare(right));
+        return [`${sectionName}:`, entries.map(([name, version]) => `- ${name}@${version}`).join("\n") || "- none"].join("\n");
+      })
+      .join("\n\n");
+
+    return {
+      ok: true,
+      summary: "read dependency tree",
+      content,
+      tool: "dependency_tree",
+      category: toolSpecs.dependency_tree.category
+    };
+  }
+
   private async applyPatch(patchContent: string): Promise<ToolResult> {
     if (!patchContent.trim()) {
       return denied("apply_patch requires a unified patch.", "apply_patch");
@@ -1047,7 +1292,8 @@ export class WorkspaceTools {
         "apply_patch",
         "write",
         {
-          patch: clip(patchContent, 1200)
+          patch: clip(patchContent, 1200),
+          patchHash: stableHash(patchContent)
         },
         previewPatch(patchContent)
       );
@@ -1068,29 +1314,43 @@ export class WorkspaceTools {
   }
 
   private async runScript(scriptName: string): Promise<ToolResult> {
+    return await this.runPackageScript("run_script", scriptName);
+  }
+
+  private async runTests(): Promise<ToolResult> {
+    return await this.runPackageScript("run_tests", "test");
+  }
+
+  private async runPackageScript(tool: "run_script" | "run_tests", scriptName: string): Promise<ToolResult> {
     const normalizedScript = scriptName.trim();
     if (!/^[\w:.-]+$/.test(normalizedScript)) {
-      return denied("run_script requires a package script name such as test or build.", "run_script");
+      return denied(`${tool} requires a package script name such as test or build.`, tool);
     }
 
     const scripts = await this.readPackageScripts();
     if (!scripts[normalizedScript]) {
-      return denied(`package script not found: ${normalizedScript}`, "run_script");
+      return denied(`package script not found: ${normalizedScript}`, tool);
     }
 
-    const scriptCommand = scripts[normalizedScript];
+    const scriptCommands = collectPackageScriptCommands(scripts, normalizedScript);
+    const scriptSafetyError = validatePackageScriptCommands(scriptCommands, this.root);
+    if (scriptSafetyError) {
+      return denied(`${tool} denied package script before approval. ${scriptSafetyError}`, tool);
+    }
+    const approvalCommand = scriptCommands.map((entry) => `${entry.name}: ${entry.command}`).join("\n");
+
     if (!this.allowShell) {
       const approval = await this.requestApproval(
-        "run_script",
+        tool,
         "shell",
         {
           script: normalizedScript,
-          command: scriptCommand
+          command: approvalCommand
         },
-        previewPackageScript(normalizedScript, scriptCommand, this.root)
+        previewPackageScriptSequence(normalizedScript, scriptCommands, this.root)
       );
       if (approval.decision === "deny") {
-        return denied("run_script denied by permission policy.", "run_script", approval);
+        return denied(`${tool} denied by permission policy.`, tool, approval);
       }
     }
 
@@ -1099,24 +1359,9 @@ export class WorkspaceTools {
       ok: output.exitCode === 0,
       summary: `npm run ${normalizedScript} exited ${output.exitCode}`,
       content: clip(output.output, 20_000),
-      tool: "run_script",
-      category: toolSpecs.run_script.category,
-      preview: previewPackageScript(normalizedScript, scriptCommand, this.root)
-    };
-  }
-
-  private async runTests(): Promise<ToolResult> {
-    const scripts = await this.readPackageScripts();
-    if (!scripts.test) {
-      return denied("No package test script found.", "run_tests");
-    }
-
-    const result = await this.runScript("test");
-    return {
-      ...result,
-      tool: "run_tests",
-      category: toolSpecs.run_tests.category,
-      preview: "npm test"
+      tool,
+      category: toolSpecs[tool].category,
+      preview: previewPackageScriptSequence(normalizedScript, scriptCommands, this.root)
     };
   }
 
@@ -1125,19 +1370,32 @@ export class WorkspaceTools {
       return denied("run_shell requires a command.");
     }
 
-    const shellSafetyError = validateShellCommand(command, this.root);
-    if (shellSafetyError) {
-      return denied(`run_shell denied. ${shellSafetyError}`);
+    const shellSafety = validateShellCommand(command, this.root, {
+      allowMetacharacters: this.allowShellMetacharacters
+    });
+    if (shellSafety.error) {
+      return denied(`run_shell denied. ${shellSafety.error}`);
     }
 
-    if (!this.allowShell) {
+    const shellPathError = await this.validateShellPathArguments(command);
+    if (shellPathError) {
+      return denied(`run_shell denied. ${shellPathError}`);
+    }
+
+    if (!this.allowShell || shellSafety.requiresApprovalReason) {
       const approval = await this.requestApproval(
         "run_shell",
         "shell",
         {
-          command
+          command,
+          ...(shellSafety.requiresApprovalReason ? { approvalReason: shellSafety.requiresApprovalReason } : {})
         },
-        `Run shell command: ${command}`
+        shellSafety.requiresApprovalReason
+          ? `High-risk shell command (${shellSafety.requiresApprovalReason}): ${command}`
+          : `Run shell command: ${command}`,
+        {
+          bypassable: !shellSafety.requiresApprovalReason
+        }
       );
       if (approval.decision === "deny") {
         return denied("run_shell denied by permission policy.", "run_shell", approval);
@@ -1156,16 +1414,21 @@ export class WorkspaceTools {
   }
 
   private async readPackageScripts(): Promise<Record<string, string>> {
-    const packageJsonPath = await this.resolveReadPath("package.json");
-    const packageJson = JSON.parse(await readFile(packageJsonPath, "utf8")) as { scripts?: Record<string, unknown> };
+    const packageJson = await this.readPackageJsonObject();
     return Object.fromEntries(Object.entries(packageJson.scripts ?? {}).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
+  }
+
+  private async readPackageJsonObject(): Promise<Record<string, unknown> & { scripts?: Record<string, unknown> }> {
+    const packageJsonPath = await this.resolveReadPath("package.json");
+    return JSON.parse(await readFile(packageJsonPath, "utf8")) as Record<string, unknown> & { scripts?: Record<string, unknown> };
   }
 
   private async requestApproval(
     tool: AgentToolName,
     permission: Exclude<ToolPermission, "none">,
     args: Record<string, unknown>,
-    preview: string
+    preview: string,
+    options: { bypassable?: boolean } = {}
   ): Promise<{ request: ApprovalRequest; decision: PermissionDecision }> {
     const spec = getToolSpec(tool);
     const request: ApprovalRequest = {
@@ -1174,10 +1437,11 @@ export class WorkspaceTools {
       permission,
       risk: spec.risk,
       preview,
-      arguments: args
+      arguments: args,
+      bypassable: options.bypassable
     };
 
-    const approvalKey = `${permission}:${tool}`;
+    const approvalKey = approvalScopeKey(tool, permission, args);
     if (this.sessionApprovals.has(approvalKey)) {
       return {
         request,
@@ -1238,7 +1502,7 @@ export class WorkspaceTools {
     }
 
     const extension = path.extname(trimmedPath).toLowerCase();
-    if (!isLikelyTextFile(trimmedPath) && extension !== ".pdf" && extension !== ".docx" && !isImageFile(trimmedPath)) {
+    if (!isLikelyTextFile(trimmedPath) && extension !== ".pdf" && extension !== ".docx" && extension !== ".doc" && !isImageFile(trimmedPath)) {
       throw new Error(`external file analysis does not support ${extension || "this file type"} yet.`);
     }
 
@@ -1281,6 +1545,10 @@ export class WorkspaceTools {
   }
 
   private async validatePatchTargets(patchContent: string): Promise<string | null> {
+    if (patchCreatesSymlink(patchContent)) {
+      return "apply_patch denied symlink patches.";
+    }
+
     for (const targetPath of extractPatchTargetPaths(patchContent)) {
       if (isPlaceholderPath(targetPath)) {
         return `apply_patch denied placeholder path: ${targetPath}`;
@@ -1302,6 +1570,33 @@ export class WorkspaceTools {
         }
       } catch (error) {
         return error instanceof Error ? error.message : String(error);
+      }
+    }
+
+    return null;
+  }
+
+  private async validateShellPathArguments(command: string): Promise<string | null> {
+    const tokens = tokenizeShellCommand(command);
+    for (const segment of splitPipeline(tokens)) {
+      for (const token of segment.slice(1)) {
+        const normalizedToken = stripQuotes(token);
+        if (!normalizedToken || shellOperatorTokens.has(normalizedToken) || normalizedToken.startsWith("-")) {
+          continue;
+        }
+
+        const absolutePath = toAbsoluteShellPath(normalizedToken) ?? path.resolve(this.root, normalizedToken);
+        const existingPath = await lstat(absolutePath).catch(() => null);
+        if (!existingPath) {
+          continue;
+        }
+
+        try {
+          const resolvedPath = await realpath(absolutePath);
+          await this.assertSafeResolvedWorkspacePath(resolvedPath, normalizedToken);
+        } catch (error) {
+          return error instanceof Error ? error.message : String(error);
+        }
       }
     }
 
@@ -1705,7 +2000,7 @@ function isPlaceholderPath(value: string): boolean {
   return ["relative/path", "path/to/file", "file/path", "<path>", "<file>", "filename"].includes(normalizedValue);
 }
 
-function isSensitivePath(value: string): boolean {
+export function isSensitivePath(value: string): boolean {
   const normalizedPath = value.trim().replaceAll("\\", "/");
   return normalizedPath
     .split("/")
@@ -1986,6 +2281,23 @@ async function extractDocxText(filePath: string): Promise<ToolResult> {
   }
 }
 
+async function extractLegacyDocText(filePath: string, timeoutMs: number, signal?: AbortSignal): Promise<ToolResult> {
+  try {
+    const { stdout } = await execFileAsync("textutil", ["-convert", "txt", "-stdout", filePath], {
+      timeout: timeoutMs,
+      signal,
+      maxBuffer: 2_000_000
+    });
+    return {
+      ok: true,
+      summary: `extracted text from ${path.basename(filePath)}`,
+      content: clip(stdout || "No extractable DOC text found.", 20_000)
+    };
+  } catch (error) {
+    return denied(`DOC text extraction needs macOS textutil and a valid .doc file. ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
 function createSimplePdf(content: string, title: string): Buffer {
   const lines = wrapPdfText(`${title ? `${title}\n\n` : ""}${content}`, 92).slice(0, 44);
   const escapedLines = lines.map((line) => `(${escapePdfString(line)}) Tj`).join("\n0 -14 Td\n");
@@ -2225,7 +2537,7 @@ function extractPatchTargetPaths(patchContent: string): string[] {
       continue;
     }
 
-    const rawPath = line.slice(4).trim().split(/\s+/)[0] ?? "";
+    const rawPath = normalizePatchHeaderPath(line.slice(4));
     const normalizedPath = rawPath.replace(/^a\//, "").replace(/^b\//, "");
     if (normalizedPath && normalizedPath !== "/dev/null") {
       paths.push(normalizedPath);
@@ -2235,29 +2547,126 @@ function extractPatchTargetPaths(patchContent: string): string[] {
   return [...new Set(paths)];
 }
 
-function validateShellCommand(command: string, workspaceRoot: string): string | null {
-  const trimmedCommand = command.trim();
-  if (/[;&<>`$\n\r]/.test(trimmedCommand)) {
-    return "dangerous shell metacharacters are blocked; pipes are allowed, but command separators, redirects, expansion, and multiline commands are not.";
+function patchCreatesSymlink(patchContent: string): boolean {
+  return /^new file mode 120000$/m.test(patchContent) || /^new mode 120000$/m.test(patchContent);
+}
+
+function normalizePatchHeaderPath(value: string): string {
+  const trimmedValue = value.trim();
+  if (!trimmedValue || trimmedValue === "/dev/null") {
+    return trimmedValue;
   }
 
-  if (/(^|\s)\|\|(\s|$)/.test(trimmedCommand)) {
-    return "shell command separators are blocked; use a single pipeline.";
-  }
-
-  const tokens = trimmedCommand.match(/"[^"]*"|'[^']*'|\S+/g) ?? [];
-  if (tokens.length === 0) {
-    return "command is empty.";
-  }
-
-  for (const segment of splitPipeline(tokens)) {
-    const segmentError = validateShellSegment(segment);
-    if (segmentError) {
-      return segmentError;
+  if (trimmedValue.startsWith("\"")) {
+    try {
+      return JSON.parse(trimmedValue) as string;
+    } catch {
+      return trimmedValue.slice(1).split("\"")[0] ?? trimmedValue;
     }
   }
 
-  for (const token of tokens.filter((value) => value !== "|")) {
+  return trimmedValue;
+}
+
+function validateShellCommand(command: string, workspaceRoot: string, options: { allowMetacharacters: boolean }): { error: string | null; requiresApprovalReason?: string } {
+  const trimmedCommand = command.trim();
+  const syntax = analyzeShellSyntax(trimmedCommand);
+  if (!options.allowMetacharacters) {
+    if (syntax.hasShellChains || syntax.highRiskReasons.length > 0) {
+      return {
+        error:
+          "shell metacharacters beyond pipes require /experimental shell-metacharacters; redirects, expansion, background jobs, OR chains, and multiline commands stay approval-gated."
+      };
+    }
+  }
+
+  const tokens = syntax.tokens;
+  if (tokens.length === 0) {
+    return { error: "command is empty." };
+  }
+
+  for (const segment of splitShellCommandSegments(tokens)) {
+    const segmentError = validateShellSegment(segment);
+    if (segmentError) {
+      return { error: segmentError };
+    }
+  }
+
+  for (const token of tokens.filter((value) => !shellOperatorTokens.has(value))) {
+    const normalizedToken = stripQuotes(token);
+    if (isSensitivePath(normalizedToken)) {
+      return { error: "sensitive path arguments are blocked." };
+    }
+
+    if (/(^|[\\/])\.\.([\\/]|$)/.test(normalizedToken)) {
+      return { error: "parent directory traversal is blocked." };
+    }
+
+    const absolutePath = toAbsoluteShellPath(normalizedToken);
+    if (absolutePath) {
+      const relativePath = path.relative(workspaceRoot, absolutePath);
+      if (relativePath.startsWith("..") || path.isAbsolute(relativePath)) {
+        return { error: "absolute path arguments outside the workspace are blocked. Use inspect_document with /experimental file-analysis for external files." };
+      }
+    }
+  }
+
+  return {
+    error: null,
+    requiresApprovalReason: syntax.highRiskReasons[0]
+  };
+}
+
+type PackageScriptCommand = {
+  name: string;
+  command: string;
+};
+
+function collectPackageScriptCommands(scripts: Record<string, string>, scriptName: string): PackageScriptCommand[] {
+  return [`pre${scriptName}`, scriptName, `post${scriptName}`]
+    .filter((name) => typeof scripts[name] === "string")
+    .map((name) => ({
+      name,
+      command: scripts[name] ?? ""
+    }));
+}
+
+function validatePackageScriptCommands(commands: PackageScriptCommand[], workspaceRoot: string): string | null {
+  for (const entry of commands) {
+    const error = validatePackageScriptCommand(entry.command, workspaceRoot);
+    if (error) {
+      return `${entry.name}: ${error}`;
+    }
+  }
+
+  return null;
+}
+
+function validatePackageScriptCommand(command: string, workspaceRoot: string): string | null {
+  const trimmedCommand = command.trim();
+  if (!trimmedCommand) {
+    return "package script is empty.";
+  }
+
+  if (/[;<>`$\n\r]/.test(trimmedCommand)) {
+    return "dangerous shell metacharacters are blocked in package scripts before approval.";
+  }
+
+  if (/(^|\s)&($|\s)/.test(trimmedCommand)) {
+    return "background shell execution is blocked in package scripts.";
+  }
+
+  const tokens = tokenizeShellCommand(trimmedCommand);
+  for (const commandTokens of splitPackageCommandTokens(tokens)) {
+    for (const segment of splitPipeline(commandTokens)) {
+      const segmentError = validatePackageScriptSegment(segment);
+      if (segmentError) {
+        return segmentError;
+      }
+    }
+  }
+
+  for (const token of tokens.filter((value) => value !== "|" && value !== "&&" && value !== "||")) {
     const normalizedToken = stripQuotes(token);
     if (isSensitivePath(normalizedToken)) {
       return "sensitive path arguments are blocked.";
@@ -2271,9 +2680,177 @@ function validateShellCommand(command: string, workspaceRoot: string): string | 
     if (absolutePath) {
       const relativePath = path.relative(workspaceRoot, absolutePath);
       if (relativePath.startsWith("..") || path.isAbsolute(relativePath)) {
-        return "absolute path arguments outside the workspace are blocked. Use inspect_document with /experimental file-analysis for external files.";
+        return "absolute path arguments outside the workspace are blocked.";
       }
     }
+  }
+
+  return null;
+}
+
+function splitPackageCommandTokens(tokens: string[]): string[][] {
+  const commands: string[][] = [[]];
+  for (const token of tokens) {
+    if (token === "&&" || token === "||") {
+      commands.push([]);
+      continue;
+    }
+
+    commands.at(-1)?.push(token);
+  }
+
+  return commands;
+}
+
+const shellOperatorTokens = new Set(["|", "&&", "||", ";", "&", "<", "<<", ">", ">>"]);
+
+function analyzeShellSyntax(command: string): { tokens: string[]; hasShellChains: boolean; highRiskReasons: string[] } {
+  const tokens: string[] = [];
+  const highRiskReasons = new Set<string>();
+  let current = "";
+  let quote: "'" | "\"" | null = null;
+  let escaping = false;
+  let hasShellChains = false;
+
+  const pushCurrent = () => {
+    if (current) {
+      tokens.push(current);
+      current = "";
+    }
+  };
+  const pushOperator = (operator: string) => {
+    pushCurrent();
+    tokens.push(operator);
+  };
+
+  for (let index = 0; index < command.length; index += 1) {
+    const char = command[index] ?? "";
+    const next = command[index + 1] ?? "";
+
+    if (escaping) {
+      current += char;
+      escaping = false;
+      continue;
+    }
+
+    if (char === "\\") {
+      current += char;
+      escaping = true;
+      continue;
+    }
+
+    if (quote) {
+      current += char;
+      if (quote === "\"" && (char === "$" || char === "`")) {
+        highRiskReasons.add("shell expansion");
+      }
+      if (char === quote) {
+        quote = null;
+      }
+      continue;
+    }
+
+    if (char === "'" || char === "\"") {
+      current += char;
+      quote = char;
+      continue;
+    }
+
+    if (char === "\n" || char === "\r") {
+      pushCurrent();
+      highRiskReasons.add("multiline command");
+      continue;
+    }
+
+    if (/\s/.test(char)) {
+      pushCurrent();
+      continue;
+    }
+
+    if (char === "|") {
+      if (next === "|") {
+        pushOperator("||");
+        highRiskReasons.add("OR chain");
+        index += 1;
+      } else {
+        pushOperator("|");
+      }
+      continue;
+    }
+
+    if (char === "&") {
+      if (next === "&") {
+        pushOperator("&&");
+        hasShellChains = true;
+        index += 1;
+      } else {
+        pushOperator("&");
+        highRiskReasons.add("background execution");
+      }
+      continue;
+    }
+
+    if (char === ";") {
+      pushOperator(";");
+      hasShellChains = true;
+      continue;
+    }
+
+    if (char === "<" || char === ">") {
+      const operator = next === char ? `${char}${next}` : char;
+      pushOperator(operator);
+      highRiskReasons.add("redirection");
+      if (next === char) {
+        index += 1;
+      }
+      continue;
+    }
+
+    if (char === "$" || char === "`") {
+      highRiskReasons.add("shell expansion");
+    }
+
+    if (char === "*" || char === "?" || char === "[") {
+      highRiskReasons.add("glob expansion");
+    }
+
+    current += char;
+  }
+
+  pushCurrent();
+
+  return {
+    tokens,
+    hasShellChains,
+    highRiskReasons: [...highRiskReasons]
+  };
+}
+
+function tokenizeShellCommand(command: string): string[] {
+  return analyzeShellSyntax(command).tokens;
+}
+
+function validatePackageScriptSegment(tokens: string[]): string | null {
+  if (tokens.length === 0) {
+    return "empty shell pipeline segment.";
+  }
+
+  const executable = stripQuotes(tokens[0] ?? "").toLowerCase();
+  const subcommand = findCommandSubcommand(executable, tokens.slice(1));
+  if (["bash", "sh", "zsh", "fish", "pwsh", "powershell", "powershell.exe"].includes(executable)) {
+    return `executable "${executable}" is blocked in package scripts.`;
+  }
+
+  if (["rm", "rmdir", "mv", "cp"].includes(executable) && tokens.some((token) => /^-.*[fRr]/.test(stripQuotes(token)))) {
+    return `destructive ${executable} flags are blocked.`;
+  }
+
+  if (executable === "git" && subcommand && ["clean", "reset", "push", "checkout", "switch", "branch", "tag"].includes(subcommand)) {
+    return `git ${subcommand} is blocked in package scripts.`;
+  }
+
+  if (executable === "npm" && subcommand && ["publish", "unpublish", "dist-tag"].includes(subcommand)) {
+    return `npm ${subcommand} is blocked in package scripts.`;
   }
 
   return null;
@@ -2303,6 +2880,20 @@ function validateShellSegment(tokens: string[]): string | null {
   }
 
   return null;
+}
+
+function splitShellCommandSegments(tokens: string[]): string[][] {
+  const segments: string[][] = [[]];
+  for (const token of tokens) {
+    if (["|", "&&", "||", ";", "&"].includes(token)) {
+      segments.push([]);
+      continue;
+    }
+
+    segments.at(-1)?.push(token);
+  }
+
+  return segments;
 }
 
 function splitPipeline(tokens: string[]): string[][] {
@@ -2356,16 +2947,70 @@ function toAbsoluteShellPath(value: string): string | null {
   }
 
   if (value === "~" || value.startsWith("~/")) {
-    return path.resolve(process.env.HOME ?? "", value === "~" ? "." : value.slice(2));
+    return path.resolve(homedir(), value === "~" ? "." : value.slice(2));
   }
 
   return null;
 }
 
-function previewPackageScript(name: string, command: string, workspaceRoot: string): string {
-  const risk = validateShellCommand(command, workspaceRoot);
+function previewPackageScriptSequence(name: string, commands: PackageScriptCommand[], workspaceRoot: string): string {
+  const commandSummary = commands.map((entry) => `${entry.name}: ${entry.command}`).join(" && ");
+  const risk = validatePackageScriptCommands(commands, workspaceRoot);
   const prefix = risk ? `Risky package script (${risk})` : "Run package script";
-  return `${prefix}: npm run ${name} -> ${clip(command, 220)}`;
+  return `${prefix}: npm run ${name} -> ${clip(commandSummary, 220)}`;
+}
+
+function approvalScopeKey(tool: AgentToolName, permission: Exclude<ToolPermission, "none">, args: Record<string, unknown>): string {
+  const target = approvalScopeTarget(tool, args);
+  return `${permission}:${tool}:${target}`;
+}
+
+function approvalScopeTarget(tool: AgentToolName, args: Record<string, unknown>): string {
+  switch (tool) {
+    case "write_file":
+    case "edit_file":
+    case "create_pdf":
+    case "create_docx":
+      return `path:${normalizeScopeValue(readString(args.path, ""))}`;
+    case "apply_patch":
+      return `patch:${readString(args.patchHash, "") || stableHash(readString(args.patch, ""))}`;
+    case "run_script":
+    case "run_tests": {
+      const script = normalizeScopeValue(readString(args.script, tool === "run_tests" ? "test" : ""));
+      const command = normalizeCommandForScope(readString(args.command, ""));
+      return `script:${script}:${stableHash(command)}`;
+    }
+    case "run_shell":
+      return `command:${stableHash(normalizeCommandForScope(readString(args.command, "")))}`;
+    case "inspect_document":
+      return `external:${normalizeScopeValue(readString(args.path, ""))}`;
+    case "memory_remember":
+      return `memory:${stableHash(readString(args.content, ""))}`;
+    default:
+      return stableHash(JSON.stringify(args));
+  }
+}
+
+function normalizeScopeValue(value: string): string {
+  return value.trim().replaceAll("\\", "/").replace(/\/+/g, "/").replace(/^\.\//, "") || ".";
+}
+
+function normalizeCommandForScope(value: string): string {
+  return value.trim().replace(/\s+/g, " ");
+}
+
+function stableHash(value: string): string {
+  return createHash("sha256").update(value).digest("hex").slice(0, 16);
+}
+
+function readStringRecord(value: unknown): Record<string, string> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {};
+  }
+
+  return Object.fromEntries(
+    Object.entries(value).filter((entry): entry is [string, string] => typeof entry[1] === "string")
+  );
 }
 
 function stripQuotes(value: string): string {

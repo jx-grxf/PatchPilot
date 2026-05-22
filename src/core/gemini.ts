@@ -95,10 +95,14 @@ export class GeminiClient {
       throw new Error(`Gemini chat failed for model "${options.model}": HTTP ${response.status}.${reason}`);
     }
 
+    const finishReason = payload.candidates?.[0]?.finishReason;
+    if (isTruncatedFinishReason(finishReason)) {
+      throw new Error(`Gemini response for model "${options.model}" was truncated by maxOutputTokens (${this.runtimeOptions.maxOutputTokens}).`);
+    }
+
     const content = payload.candidates?.[0]?.content?.parts?.map((part) => part.text ?? "").join("").trim() ?? "";
     if (!content) {
       const blockReason = payload.promptFeedback?.blockReason;
-      const finishReason = payload.candidates?.[0]?.finishReason;
       const reason = blockReason ? ` Prompt blocked: ${blockReason}.` : finishReason ? ` Finish reason: ${finishReason}.` : "";
       throw new Error(`Gemini returned an empty response.${reason}`);
     }
@@ -142,7 +146,7 @@ export class GeminiClient {
     try {
       return await fetchWithTimeout(`${this.baseUrl}/${path}`, init, {
         timeoutMs: init?.method === "POST" ? 90_000 : 8000,
-        retries: init?.method === "POST" ? 0 : 1,
+        retries: init?.method === "POST" ? 2 : 1,
         label: `Gemini ${path}`
       });
     } catch (error) {
@@ -164,9 +168,13 @@ export function readGeminiApiKey(env: NodeJS.ProcessEnv = process.env): string {
 
 export function readGeminiRuntimeOptions(env: NodeJS.ProcessEnv = process.env): GeminiRuntimeOptions {
   return {
-    maxOutputTokens: readPositiveInteger(env.PATCHPILOT_NUM_PREDICT, 1024),
+    maxOutputTokens: readPositiveInteger(env.PATCHPILOT_NUM_PREDICT, 8192),
     temperature: readTemperature(env.PATCHPILOT_TEMPERATURE, 0.1)
   };
+}
+
+function isTruncatedFinishReason(value: string | undefined): boolean {
+  return typeof value === "string" && /length|max_?tokens/i.test(value);
 }
 
 function toGenerateContentRequest(
@@ -272,5 +280,5 @@ function readPositiveInteger(value: string | undefined, fallback: number): numbe
 
 function readTemperature(value: string | undefined, fallback: number): number {
   const parsedValue = Number.parseFloat(value ?? "");
-  return Number.isFinite(parsedValue) && parsedValue >= 0 ? parsedValue : fallback;
+  return Number.isFinite(parsedValue) && parsedValue >= 0 && parsedValue <= 2 ? parsedValue : fallback;
 }

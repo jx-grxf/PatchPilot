@@ -1,29 +1,7 @@
 import { z } from "zod";
-import type { AgentResponse } from "./types.js";
+import { AGENT_TOOL_NAMES, MAX_TOOL_CALLS_PER_RESPONSE, type AgentResponse } from "./types.js";
 
-const toolNameSchema = z.enum([
-  "update_todo",
-  "list_files",
-  "read_file",
-  "read_range",
-  "file_info",
-  "search_text",
-  "inspect_document",
-  "memory_remember",
-  "memory_search",
-  "git_status",
-  "git_diff",
-  "list_changed_files",
-  "list_scripts",
-  "write_file",
-  "edit_file",
-  "create_pdf",
-  "create_docx",
-  "apply_patch",
-  "run_script",
-  "run_tests",
-  "run_shell"
-]);
+const toolNameSchema = z.enum(AGENT_TOOL_NAMES);
 
 const toolCallSchema = z.object({
   name: toolNameSchema,
@@ -34,7 +12,7 @@ const agentResponseSchema = z.discriminatedUnion("action", [
   z.object({
     action: z.literal("tools"),
     message: z.string().default(""),
-    tool_calls: z.array(toolCallSchema).min(1)
+    tool_calls: z.array(toolCallSchema).min(1).max(MAX_TOOL_CALLS_PER_RESPONSE)
   }),
   z.object({
     action: z.literal("final"),
@@ -169,6 +147,11 @@ function normalizeModelJson(parsed: unknown): unknown {
   }
 
   if (isRecord(parsed)) {
+    const normalizedTools = normalizeToolCallBatch(parsed);
+    if (normalizedTools) {
+      return normalizedTools;
+    }
+
     if (!("action" in parsed) && "tool_calls" in parsed) {
       return {
         action: "tools",
@@ -186,6 +169,19 @@ function normalizeModelJson(parsed: unknown): unknown {
   }
 
   return parsed;
+}
+
+function normalizeToolCallBatch(parsed: Record<string, unknown>): unknown {
+  if (!Array.isArray(parsed.tool_calls) || parsed.tool_calls.length <= MAX_TOOL_CALLS_PER_RESPONSE) {
+    return null;
+  }
+
+  const message = readString(parsed.message, "Requesting tools.");
+  return {
+    ...parsed,
+    message: `${message} Truncated to the first ${MAX_TOOL_CALLS_PER_RESPONSE} tool calls.`,
+    tool_calls: parsed.tool_calls.slice(0, MAX_TOOL_CALLS_PER_RESPONSE)
+  };
 }
 
 function isToolCallLike(value: unknown): boolean {

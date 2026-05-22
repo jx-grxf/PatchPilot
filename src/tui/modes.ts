@@ -1,3 +1,4 @@
+import type { ToolPermission } from "../core/types.js";
 import type { AgentMode } from "./types.js";
 
 export type ModePermissions = {
@@ -46,6 +47,27 @@ export function modePermissionLabel(mode: AgentMode, permission: "write" | "shel
   }
 
   return permission === "write" ? "on" : "on";
+}
+
+export function shouldBypassApproval(options: {
+  mode: AgentMode;
+  permission: Exclude<ToolPermission, "none">;
+  permissions: ModePermissions;
+  allowExternalFileAnalysis: boolean;
+}): boolean {
+  if (options.mode !== "bypass") {
+    return false;
+  }
+
+  if (options.permission === "write") {
+    return options.permissions.allowWrite;
+  }
+
+  if (options.permission === "shell") {
+    return options.permissions.allowShell;
+  }
+
+  return options.permission === "external_file" && options.allowExternalFileAnalysis;
 }
 
 export function modeDescription(mode: AgentMode): string {

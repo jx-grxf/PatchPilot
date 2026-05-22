@@ -67,6 +67,54 @@ export const slashCommands: SlashCommand[] = [
     detail: "Clears the visible transcript, telemetry, advisor notes, approvals, and starts a new session file. Provider, model, mode, and permissions stay unchanged."
   },
   {
+    name: "context",
+    usage: "/context show|files|pins|clear|export",
+    description: "Inspect and manage saved session context.",
+    category: "session",
+    aliases: ["ctx"],
+    detail: "Use /context show for the dashboard, /context files for path-backed context, /context pins for pinned items, /context clear to drop unpinned context, or /context export to print the snapshot path and JSON."
+  },
+  {
+    name: "context show",
+    usage: "/context show",
+    description: "Show saved session context counts, pins, tokens, and recent items.",
+    category: "session",
+    aliases: ["ctx show"],
+    detail: "Reads the current session ContextStore snapshot and prints the dashboard used for context-aware follow-up runs."
+  },
+  {
+    name: "context files",
+    usage: "/context files",
+    description: "List active context entries that point at files, artifacts, or attachments.",
+    category: "session",
+    aliases: ["ctx files"],
+    detail: "Shows active path-backed context so you can see which files or artifacts are still part of the current session memory."
+  },
+  {
+    name: "context pins",
+    usage: "/context pins",
+    description: "List pinned context items that compaction must keep.",
+    category: "session",
+    aliases: ["ctx pins", "context pinned"],
+    detail: "Pinned context is preserved by /context clear and /compact now. Use this to audit what will remain sticky."
+  },
+  {
+    name: "context clear",
+    usage: "/context clear",
+    description: "Drop unpinned saved context for the current session.",
+    category: "session",
+    aliases: ["ctx clear"],
+    detail: "Clears unpinned ContextStore items for this session. Pinned files and other pinned items stay active."
+  },
+  {
+    name: "context export",
+    usage: "/context export",
+    description: "Print the current context snapshot path and JSON.",
+    category: "session",
+    aliases: ["ctx export"],
+    detail: "Writes or refreshes the current .patchpilot/context snapshot, then prints the path and snapshot JSON for inspection."
+  },
+  {
     name: "write",
     usage: "/write on|off",
     description: "Enable or disable workspace writes.",
@@ -141,8 +189,47 @@ export const slashCommands: SlashCommand[] = [
   {
     name: "status",
     usage: "/status",
-    description: "Show active model, host, permissions, and token telemetry.",
+    description: "Operational dock: provider/model, permissions, compute target, session, advisors, tool counters.",
     category: "session"
+  },
+  {
+    name: "usage",
+    usage: "/usage",
+    description: "Show detailed token, tool-call, cache, and cost counters.",
+    category: "session",
+    detail: "Shows current-session request counts, input/output/cache tokens, tool counters by name, and estimated cost/savings. If exact model pricing is unavailable, PatchPilot marks the figure as fallback-priced."
+  },
+  {
+    name: "compact",
+    usage: "/compact now|auto|reset",
+    description: "Run or configure session-context compaction.",
+    category: "session",
+    aliases: ["compress"],
+    detail: "Use /compact now to compact eligible unpinned context, /compact auto [on|off] to toggle automatic compaction, or /compact reset to drop generated summaries and turn auto-compaction off."
+  },
+  {
+    name: "compact now",
+    usage: "/compact now",
+    description: "Compact eligible unpinned context immediately.",
+    category: "session",
+    aliases: ["compress now"],
+    detail: "Pinned context and exact referenced file/artifact paths are kept. Secret-like context is dropped rather than summarized."
+  },
+  {
+    name: "compact auto",
+    usage: "/compact auto [on|off]",
+    description: "Toggle automatic ContextStore compaction.",
+    category: "session",
+    aliases: ["compress auto"],
+    detail: "Without on/off, /compact auto enables automatic compaction. Use /compact auto off to disable it."
+  },
+  {
+    name: "compact reset",
+    usage: "/compact reset",
+    description: "Drop generated context summaries and disable automatic compaction.",
+    category: "session",
+    aliases: ["compress reset"],
+    detail: "Leaves regular and pinned context items in place, but marks generated summary items as dropped and turns automatic compaction off."
   },
   {
     name: "sessions",
@@ -190,10 +277,17 @@ export const slashCommands: SlashCommand[] = [
   },
   {
     name: "experimental",
-    usage: "/experimental [file-analysis|memory|subagents] [on|off]",
+    usage: "/experimental [file-analysis|memory|subagents|shell-metacharacters] [on|off]",
     description: "Open or update experimental feature toggles.",
     category: "utility",
-    detail: "Run /experimental to open the checkbox menu. Use space to toggle file-analysis, memory, and subagents."
+    detail: "Run /experimental to open the checkbox menu. Use space to toggle file-analysis, memory, subagents, and shell-metacharacters."
+  },
+  {
+    name: "theme",
+    usage: "/theme [new|legacy]",
+    description: "Switch between the New experimental shell and the Legacy TUI.",
+    category: "utility",
+    detail: "Run /theme to open the picker, or /theme new / /theme legacy directly. New is the default fullscreen shell; Legacy is the original sidebar TUI. The choice is remembered."
   },
   {
     name: "init",
@@ -222,9 +316,20 @@ export function filterSlashCommands(input: string): SlashCommand[] {
     return [];
   }
 
-  const commandPart = input.slice(1).trimStart().split(/\s+/)[0]?.toLowerCase() ?? "";
+  const normalizedInput = input.slice(1).trimStart().replace(/\s+/g, " ").toLowerCase();
+  const commandPart = normalizedInput.split(/\s+/)[0] ?? "";
   if (!commandPart) {
     return slashCommands;
+  }
+
+  const fullPrefixMatches = slashCommands.filter((command) => command.name.startsWith(normalizedInput));
+  const fullAliasPrefixMatches = slashCommands.filter((command) => command.aliases?.some((alias) => alias.startsWith(normalizedInput)));
+  if (fullPrefixMatches.length > 0) {
+    return [...fullPrefixMatches, ...fullAliasPrefixMatches.filter((command) => !fullPrefixMatches.includes(command))];
+  }
+
+  if (fullAliasPrefixMatches.length > 0) {
+    return fullAliasPrefixMatches;
   }
 
   const prefixMatches = slashCommands.filter((command) => command.name.startsWith(commandPart));

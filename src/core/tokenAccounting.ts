@@ -50,6 +50,19 @@ const codexApiTokenRates: Record<string, TokenCostRate> = {
   }
 };
 
+const fallbackCloudRates: TokenCostRate = {
+  inputPerMillion: 0.5,
+  cachedInputPerMillion: 0.05,
+  outputPerMillion: 2
+};
+
+const geminiApiTokenRates: Array<{ pattern: RegExp; rate: TokenCostRate }> = [
+  { pattern: /(gemini-?3|3\.\d).*pro|gemini-?3-pro/i, rate: { inputPerMillion: 2, cachedInputPerMillion: 0.2, outputPerMillion: 12 } },
+  { pattern: /2[._-]?5.*pro|gemini-pro|^pro$/i, rate: { inputPerMillion: 1.25, cachedInputPerMillion: 0.125, outputPerMillion: 10 } },
+  { pattern: /flash[-_ ]?lite/i, rate: { inputPerMillion: 0.1, cachedInputPerMillion: 0.025, outputPerMillion: 0.4 } },
+  { pattern: /flash/i, rate: { inputPerMillion: 0.3, cachedInputPerMillion: 0.075, outputPerMillion: 2.5 } }
+];
+
 export function estimateTokens(value: string): number {
   const normalizedValue = value.trim();
   return normalizedValue ? Math.ceil(normalizedValue.length / 4) : 0;
@@ -106,28 +119,30 @@ export function attachTokenCost(
     };
   }
 
-  const rates = provider === "codex" ? codexApiTokenRates[model] : undefined;
-  if (!rates) {
+  if (provider === "gemini-wrapper") {
     return {
       ...telemetry,
-      estimatedCostUsd: null,
-      costSource: "unknown"
+      cachedPromptTokens: Math.min(telemetry.cachedPromptTokens, telemetry.promptTokens),
+      estimatedCostUsd: 0,
+      costSource: "free-route"
     };
   }
 
+  const rates = provider === "codex" ? codexApiTokenRates[model] : provider === "gemini" ? readGeminiRates(model) : undefined;
+  const effectiveRates = rates ?? fallbackCloudRates;
   const cachedPromptTokens = Math.min(telemetry.cachedPromptTokens, telemetry.promptTokens);
   const uncachedPromptTokens = Math.max(0, telemetry.promptTokens - cachedPromptTokens);
   const estimatedCostUsd =
-    (uncachedPromptTokens * rates.inputPerMillion +
-      cachedPromptTokens * rates.cachedInputPerMillion +
-      telemetry.responseTokens * rates.outputPerMillion) /
+    (uncachedPromptTokens * effectiveRates.inputPerMillion +
+      cachedPromptTokens * effectiveRates.cachedInputPerMillion +
+      telemetry.responseTokens * effectiveRates.outputPerMillion) /
     1_000_000;
 
   return {
     ...telemetry,
     cachedPromptTokens,
     estimatedCostUsd,
-    costSource: "api-pricing"
+    costSource: rates ? "api-pricing" : "fallback-pricing"
   };
 }
 
@@ -139,7 +154,8 @@ export function emptySessionTelemetry(): SessionTelemetry {
     cacheWriteTokens: 0,
     responseTokens: 0,
     totalTokens: 0,
-    estimatedCostUsd: null
+    estimatedCostUsd: null,
+    costSource: "unknown"
   };
 }
 
@@ -147,9 +163,11 @@ export function addTelemetryToSession(session: SessionTelemetry, telemetry: Mode
   const estimatedCostUsd =
     session.requests === 0
       ? telemetry.estimatedCostUsd
-      : session.estimatedCostUsd === null || telemetry.estimatedCostUsd === null
-      ? null
-      : session.estimatedCostUsd + telemetry.estimatedCostUsd;
+      : session.estimatedCostUsd === null
+        ? telemetry.estimatedCostUsd
+        : telemetry.estimatedCostUsd === null
+          ? session.estimatedCostUsd
+          : session.estimatedCostUsd + telemetry.estimatedCostUsd;
 
   return {
     requests: session.requests + 1,
@@ -158,6 +176,64 @@ export function addTelemetryToSession(session: SessionTelemetry, telemetry: Mode
     cacheWriteTokens: session.cacheWriteTokens + telemetry.cacheWriteTokens,
     responseTokens: session.responseTokens + telemetry.responseTokens,
     totalTokens: session.totalTokens + telemetry.totalTokens,
-    estimatedCostUsd
+    estimatedCostUsd,
+    costSource: mergeCostSource(session.costSource, telemetry.costSource, session.requests)
   };
+}
+
+export function estimateComparableApiCost(provider: ModelProvider, model: string, promptTokens: number, responseTokens: number, cachedPromptTokens = 0): {
+  costUsd: number | null;
+  source: "api-pricing" | "fallback-pricing" | "unknown";
+} {
+  if (provider === "gemini-wrapper" || provider === "gemini") {
+    const rates = readGeminiRates(model);
+    if (!rates) {
+      return {
+        costUsd: estimateCost(promptTokens, responseTokens, cachedPromptTokens, fallbackCloudRates),
+        source: "fallback-pricing"
+      };
+    }
+
+    return {
+      costUsd: estimateCost(promptTokens, responseTokens, cachedPromptTokens, rates),
+      source: "api-pricing"
+    };
+  }
+
+  if (provider === "ollama") {
+    return {
+      costUsd: estimateCost(promptTokens, responseTokens, cachedPromptTokens, fallbackCloudRates),
+      source: "fallback-pricing"
+    };
+  }
+
+  if (provider === "codex" || provider === "openrouter" || provider === "nvidia") {
+    return {
+      costUsd: 0,
+      source: "api-pricing"
+    };
+  }
+
+  return {
+    costUsd: null,
+    source: "unknown"
+  };
+}
+
+function readGeminiRates(model: string): TokenCostRate | undefined {
+  return geminiApiTokenRates.find((entry) => entry.pattern.test(model))?.rate;
+}
+
+function estimateCost(promptTokens: number, responseTokens: number, cachedPromptTokens: number, rates: TokenCostRate): number {
+  const safeCachedTokens = Math.min(cachedPromptTokens, promptTokens);
+  const uncachedTokens = Math.max(0, promptTokens - safeCachedTokens);
+  return (uncachedTokens * rates.inputPerMillion + safeCachedTokens * rates.cachedInputPerMillion + responseTokens * rates.outputPerMillion) / 1_000_000;
+}
+
+function mergeCostSource(currentSource: SessionTelemetry["costSource"], nextSource: ModelTelemetry["costSource"], previousRequests: number): SessionTelemetry["costSource"] {
+  if (previousRequests === 0) {
+    return nextSource;
+  }
+
+  return currentSource === nextSource ? currentSource : "mixed";
 }

@@ -1,16 +1,24 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { buildSessionResumeContext, listWorkspaceSessions, readSessionEvents, SessionStore } from "../src/core/session.js";
+import { buildSessionResumeContext, listIndexedSessions, listWorkspaceSessions, readSessionEvents, SessionStore } from "../src/core/session.js";
 
 let tempRoot = "";
+let previousConfigDir: string | undefined;
 
 beforeEach(async () => {
   tempRoot = await mkdtemp(path.join(tmpdir(), "patchpilot-session-"));
+  previousConfigDir = process.env.PATCHPILOT_CONFIG_DIR;
+  process.env.PATCHPILOT_CONFIG_DIR = path.join(tempRoot, "config");
 });
 
 afterEach(async () => {
+  if (previousConfigDir === undefined) {
+    delete process.env.PATCHPILOT_CONFIG_DIR;
+  } else {
+    process.env.PATCHPILOT_CONFIG_DIR = previousConfigDir;
+  }
   await rm(tempRoot, {
     recursive: true,
     force: true
@@ -90,5 +98,17 @@ describe("SessionStore", () => {
 
     await expect(buildSessionResumeContext(tempRoot, "resume-me")).resolves.toContain("fix the broken game");
     await expect(buildSessionResumeContext(tempRoot, "resume-me")).resolves.toContain("changed index.html");
+  });
+
+  it("stores the global session index in PATCHPILOT_CONFIG_DIR", async () => {
+    const store = new SessionStore({
+      workspace: tempRoot,
+      sessionId: "indexed"
+    });
+    await store.create();
+
+    const indexPath = path.join(process.env.PATCHPILOT_CONFIG_DIR ?? "", "session-index.json");
+    await expect(readFile(indexPath, "utf8")).resolves.toContain("indexed");
+    await expect(listIndexedSessions()).resolves.toEqual(expect.arrayContaining([expect.objectContaining({ sessionId: "indexed" })]));
   });
 });

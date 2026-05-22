@@ -12,6 +12,7 @@ type OllamaChatResponse = {
     content?: string;
   };
   error?: string;
+  done_reason?: string;
   total_duration?: number;
   load_duration?: number;
   prompt_eval_count?: number;
@@ -97,6 +98,9 @@ export class OllamaClient {
     }
 
     const content = payload.message?.content?.trim() ?? "";
+    if (isTruncatedDoneReason(payload.done_reason)) {
+      throw new Error(`Ollama response for model "${options.model}" was truncated by num_predict (${this.runtimeOptions.numPredict}).`);
+    }
     if (!content) {
       throw new Error(`Ollama returned an empty response for model "${options.model}".`);
     }
@@ -169,7 +173,7 @@ export class OllamaClient {
     try {
       return await fetchWithTimeout(`${this.baseUrl}${path}`, init, {
         timeoutMs: init?.method === "POST" ? 120_000 : 3000,
-        retries: init?.method === "POST" ? 0 : 1,
+        retries: init?.method === "POST" ? 2 : 1,
         label: `Ollama ${path} at ${this.baseUrl}`
       });
     } catch (error) {
@@ -219,9 +223,13 @@ export function readOllamaRuntimeOptions(env: NodeJS.ProcessEnv = process.env): 
   return {
     keepAlive: env.PATCHPILOT_KEEP_ALIVE?.trim() || "15m",
     numCtx: readPositiveInteger(env.PATCHPILOT_NUM_CTX, 8192),
-    numPredict: readPositiveInteger(env.PATCHPILOT_NUM_PREDICT, 1024),
+    numPredict: readPositiveInteger(env.PATCHPILOT_NUM_PREDICT, 8192),
     temperature: readTemperature(env.PATCHPILOT_TEMPERATURE, 0.1)
   };
+}
+
+function isTruncatedDoneReason(value: string | undefined): boolean {
+  return typeof value === "string" && /length|max_?tokens|num_predict/i.test(value);
 }
 
 function readPositiveInteger(value: string | undefined, fallback: number): number {

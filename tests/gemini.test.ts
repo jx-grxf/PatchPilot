@@ -90,9 +90,9 @@ describe("GeminiClient", () => {
       promptDurationMs: 0,
       responseDurationMs: 500,
       totalDurationMs: 500,
-      estimatedCostUsd: null,
+      estimatedCostUsd: 0.0000205,
       tokenSource: "provider",
-      costSource: "unknown"
+      costSource: "api-pricing"
     });
   });
 
@@ -157,6 +157,12 @@ describe("GeminiClient", () => {
     ).toEqual({
       maxOutputTokens: 256,
       temperature: 0
+    });
+    expect(readGeminiRuntimeOptions({})).toMatchObject({
+      maxOutputTokens: 8192
+    });
+    expect(readGeminiRuntimeOptions({ PATCHPILOT_TEMPERATURE: "2.1" })).toMatchObject({
+      temperature: 0.1
     });
   });
 

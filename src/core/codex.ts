@@ -11,6 +11,33 @@ const execFileAsync = promisify(execFile);
 
 export const defaultCodexModel = "gpt-5.5";
 
+/**
+ * Resolve the Codex CLI executable. On Windows an npm-global CLI is installed
+ * as `codex.cmd`/`codex.exe` rather than a bare `codex`, and Node's
+ * spawn/execFile (without a shell) will not find a bare name with a PATHEXT
+ * extension — so we scan PATH for the first matching launcher. Falls back to
+ * the bare name (POSIX, or if nothing is found).
+ */
+export function resolveCodexExecutable(): string {
+  if (process.platform !== "win32") {
+    return "codex";
+  }
+  const pathDirs = (process.env.PATH ?? "").split(path.delimiter).filter(Boolean);
+  const extensions = (process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD")
+    .split(";")
+    .map((ext) => ext.trim().toLowerCase())
+    .filter(Boolean);
+  for (const dir of pathDirs) {
+    for (const ext of extensions) {
+      const candidate = path.join(dir, `codex${ext}`);
+      if (existsSync(candidate)) {
+        return candidate;
+      }
+    }
+  }
+  return "codex";
+}
+
 export const codexOAuthModels = [
   "gpt-5.5",
   "gpt-5.4",
@@ -74,7 +101,7 @@ export class CodexCliClient {
 
 export async function listCodexModels(): Promise<string[]> {
   try {
-    const { stdout } = await execFileAsync("codex", ["debug", "models", "--bundled"], {
+    const { stdout } = await execFileAsync(resolveCodexExecutable(), ["debug", "models", "--bundled"], {
       timeout: 2500,
       maxBuffer: 4_000_000,
       windowsHide: true
@@ -123,7 +150,7 @@ function runCodexExec(options: {
 }): Promise<CodexUsage | null> {
   return new Promise((resolve, reject) => {
     const child = spawn(
-      "codex",
+      resolveCodexExecutable(),
       [
         "exec",
         "--json",

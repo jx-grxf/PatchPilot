@@ -45,6 +45,7 @@ export type ModelClient = {
   chat(options: ModelChatOptions): Promise<ModelChatResult>;
   listModels(): Promise<string[]>;
   listModelDescriptors?(): Promise<ModelDescriptor[]>;
+  supportsFileAnalysis?(): boolean;
   analyzeFile?(options: ModelFileAnalysisOptions): Promise<ModelChatResult>;
 };
 
@@ -59,28 +60,39 @@ export type AgentWorkState =
   | "done"
   | "error";
 
-export type AgentToolName =
-  | "update_todo"
-  | "list_files"
-  | "read_file"
-  | "read_range"
-  | "file_info"
-  | "search_text"
-  | "inspect_document"
-  | "memory_remember"
-  | "memory_search"
-  | "git_status"
-  | "git_diff"
-  | "list_changed_files"
-  | "list_scripts"
-  | "write_file"
-  | "edit_file"
-  | "create_pdf"
-  | "create_docx"
-  | "apply_patch"
-  | "run_script"
-  | "run_tests"
-  | "run_shell";
+export const AGENT_TOOL_NAMES = [
+  "update_todo",
+  "list_files",
+  "find_files",
+  "read_file",
+  "read_range",
+  "file_info",
+  "search_text",
+  "inspect_document",
+  "memory_remember",
+  "memory_search",
+  "git_status",
+  "git_diff",
+  "git_log",
+  "git_show",
+  "list_changed_files",
+  "list_scripts",
+  "repo_overview",
+  "test_list",
+  "dependency_tree",
+  "write_file",
+  "edit_file",
+  "create_pdf",
+  "create_docx",
+  "apply_patch",
+  "run_script",
+  "run_tests",
+  "run_shell"
+] as const;
+
+export const MAX_TOOL_CALLS_PER_RESPONSE = 12;
+
+export type AgentToolName = (typeof AGENT_TOOL_NAMES)[number];
 
 export type AgentToolCall = {
   name: AgentToolName;
@@ -113,6 +125,7 @@ export type ApprovalRequest = {
   risk: ToolRisk;
   preview: string;
   arguments: Record<string, unknown>;
+  bypassable?: boolean;
 };
 
 export type AgentResponse =
@@ -282,6 +295,21 @@ export type SessionEvent =
       runId: string;
       message: string;
       failedAt: string;
+    }
+  | {
+      type: "context.pinned";
+      runId?: string;
+      itemId: string;
+      pinned: boolean;
+      label?: string;
+      createdAt: string;
+    }
+  | {
+      type: "context.compacted";
+      runId?: string;
+      summaryId: string;
+      itemIds: string[];
+      createdAt: string;
     };
 
 export type ModelTelemetry = {
@@ -296,7 +324,7 @@ export type ModelTelemetry = {
   totalDurationMs: number;
   estimatedCostUsd: number | null;
   tokenSource: "provider" | "estimated";
-  costSource: "api-pricing" | "local" | "unknown";
+  costSource: "api-pricing" | "local" | "unknown" | "fallback-pricing" | "free-route";
 };
 
 export type SessionTelemetry = {
@@ -307,4 +335,5 @@ export type SessionTelemetry = {
   responseTokens: number;
   totalTokens: number;
   estimatedCostUsd: number | null;
+  costSource: "api-pricing" | "local" | "unknown" | "fallback-pricing" | "free-route" | "mixed";
 };

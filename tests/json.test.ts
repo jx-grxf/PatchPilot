@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { parseAgentResponse } from "../src/core/json.js";
+import { toolSpecs } from "../src/core/workspace.js";
 
 describe("parseAgentResponse", () => {
   it("parses final responses", () => {
@@ -83,6 +84,44 @@ describe("parseAgentResponse", () => {
         '{"action":"tools","message":"plan","tool_calls":[{"name":"update_todo","arguments":{"items":[{"id":"inspect","content":"Inspect files","status":"in_progress"}]}}]}'
       ).tool_calls[0]?.name
     ).toBe("update_todo");
+  });
+
+  it("accepts every registered workspace tool name", () => {
+    for (const name of Object.keys(toolSpecs)) {
+      expect(
+        parseAgentResponse(JSON.stringify({
+          action: "tools",
+          message: "call",
+          tool_calls: [
+            {
+              name,
+              arguments: {}
+            }
+          ]
+        })).tool_calls[0]?.name
+      ).toBe(name);
+    }
+  });
+
+  it("truncates overlong tool batches to the protocol maximum", () => {
+    const response = parseAgentResponse(
+      JSON.stringify({
+        action: "tools",
+        message: "many",
+        tool_calls: Array.from({ length: 20 }, () => ({
+          name: "list_files",
+          arguments: {
+            path: "."
+          }
+        }))
+      })
+    );
+
+    expect(response.action).toBe("tools");
+    if (response.action === "tools") {
+      expect(response.tool_calls).toHaveLength(12);
+      expect(response.message).toContain("Truncated to the first 12 tool calls");
+    }
   });
 
   it("repairs raw control characters inside JSON strings", () => {

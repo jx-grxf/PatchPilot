@@ -36,6 +36,12 @@ const defaultModel =
         ? defaultCodexModel
         : defaultOllamaModel);
 
+// Onboarding persists the chosen first-run agent mode; bypass implies the
+// always-allow write/shell defaults so the next launch starts where the user
+// left off. plan and build keep the per-action approval flow.
+const defaultMode = process.env.PATCHPILOT_DEFAULT_MODE?.trim().toLowerCase();
+const defaultBypass = defaultMode === "bypass";
+
 const program = new Command();
 program.enablePositionalOptions();
 
@@ -179,6 +185,19 @@ program
   .option("--allow-shell", "Allow shell commands inside the workspace.", false)
   .option("--subagents", "Enable planner and reviewer subagents.", readBooleanEnv(process.env.PATCHPILOT_SUBAGENTS, false))
   .option("--no-subagents", "Disable planner and reviewer subagents for faster local runs.")
+  .addHelpText(
+    "after",
+    [
+      "",
+      "Examples:",
+      "  $ patchpilot",
+      "  $ patchpilot \"summarize this repo and list the safest next fixes\"",
+      "  $ patchpilot --provider codex --model gpt-5.5 --workspace .",
+      "  $ patchpilot --provider gemini-wrapper --model auto",
+      "",
+      "First-run setup opens automatically. Reopen it anytime with /onboarding."
+    ].join("\n")
+  )
   .action((taskParts: string[], options: Record<string, unknown>) => {
     const workspace = path.resolve(String(options.workspace));
     const maxSteps = Number.parseInt(String(options.steps), 10);
@@ -190,6 +209,7 @@ program
         model={String(options.model)}
         ollamaUrl={String(options.ollamaUrl)}
         workspace={workspace}
+        packageVersion={readPackageVersion()}
         allowWrite={Boolean(options.apply)}
         allowShell={Boolean(options.allowShell)}
         maxSteps={Number.isFinite(maxSteps) ? maxSteps : 8}

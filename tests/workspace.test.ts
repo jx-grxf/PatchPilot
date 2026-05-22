@@ -54,6 +54,50 @@ describe("WorkspaceTools", () => {
     expect(result.content).toContain("src/index.ts");
   });
 
+  it("finds workspace files by path substring without exposing ignored sensitive paths", async () => {
+    await mkdir(path.join(tempRoot, "src", "core"), { recursive: true });
+    await mkdir(path.join(tempRoot, ".patchpilot", "sessions"), { recursive: true });
+    await writeFile(path.join(tempRoot, "src", "core", "agent.ts"), "export const ok = true;\n");
+    await writeFile(path.join(tempRoot, ".patchpilot", "sessions", "agent-secret.jsonl"), "secret\n");
+    await writeFile(path.join(tempRoot, ".env"), "AGENT_TOKEN=secret\n");
+    const tools = new WorkspaceTools({
+      root: tempRoot,
+      allowWrite: false,
+      allowShell: false
+    });
+
+    const result = await tools.execute({
+      name: "find_files",
+      arguments: {
+        query: "agent",
+        limit: 10
+      }
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.content).toContain("src/core/agent.ts");
+    expect(result.content).not.toContain(".patchpilot");
+    expect(result.content).not.toContain(".env");
+  });
+
+  it("rejects sensitive file search queries", async () => {
+    const tools = new WorkspaceTools({
+      root: tempRoot,
+      allowWrite: false,
+      allowShell: false
+    });
+
+    const result = await tools.execute({
+      name: "find_files",
+      arguments: {
+        query: ".env"
+      }
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.summary).toContain("sensitive");
+  });
+
   it("treats workspace-prefixed paths as relative to the root", async () => {
     const workspaceName = path.basename(tempRoot);
     const tools = new WorkspaceTools({
@@ -545,6 +589,24 @@ describe("WorkspaceTools", () => {
     expect(result.summary).toContain("sensitive");
   });
 
+  it("rejects patches that create symlinks", async () => {
+    const tools = new WorkspaceTools({
+      root: tempRoot,
+      allowWrite: true,
+      allowShell: false
+    });
+
+    const result = await tools.execute({
+      name: "apply_patch",
+      arguments: {
+        patch: ["diff --git a/leak.txt b/leak.txt", "new file mode 120000", "index 0000000..c7d76fa", "--- /dev/null", "+++ b/leak.txt", "@@ -0,0 +1 @@", "+/Users/x/.ssh/id_ed25519"].join("\n")
+      }
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.summary).toContain("symlink");
+  });
+
   it("accepts update_todo as a side-effect-free state tool", async () => {
     const tools = new WorkspaceTools({
       root: tempRoot,
@@ -696,6 +758,167 @@ describe("WorkspaceTools", () => {
     expect(approvals).toEqual(["run_script", "run_shell"]);
   });
 
+  it("scopes allow-session write approvals to the concrete path", async () => {
+    const approvals: string[] = [];
+    const tools = new WorkspaceTools({
+      root: tempRoot,
+      allowWrite: false,
+      allowShell: false,
+      approvalHandler: async (request) => {
+        approvals.push(String(request.arguments.path));
+        return request.arguments.path === "a.txt" ? "allow_session" : "deny";
+      }
+    });
+
+    await expect(tools.execute({ name: "write_file", arguments: { path: "a.txt", content: "one" } })).resolves.toMatchObject({ ok: true });
+    await expect(tools.execute({ name: "write_file", arguments: { path: "a.txt", content: "two" } })).resolves.toMatchObject({ ok: true });
+    const otherFile = await tools.execute({ name: "write_file", arguments: { path: "b.txt", content: "three" } });
+
+    expect(otherFile.ok).toBe(false);
+    expect(approvals).toEqual(["a.txt", "b.txt"]);
+  });
+
+  it("scopes allow-session script approvals to the script body", async () => {
+    await writeFile(
+      path.join(tempRoot, "package.json"),
+      JSON.stringify({
+        scripts: {
+          echo: "node -e \"console.log('ok')\"",
+          build: "node -e \"console.log('build')\""
+        }
+      })
+    );
+    const approvals: string[] = [];
+    const tools = new WorkspaceTools({
+      root: tempRoot,
+      allowWrite: false,
+      allowShell: false,
+      approvalHandler: async (request) => {
+        approvals.push(`${request.arguments.script}:${request.arguments.command}`);
+        return request.arguments.script === "echo" ? "allow_session" : "deny";
+      }
+    });
+
+    await expect(tools.execute({ name: "run_script", arguments: { script: "echo" } })).resolves.toMatchObject({ ok: true });
+    await expect(tools.execute({ name: "run_script", arguments: { script: "echo" } })).resolves.toMatchObject({ ok: true });
+    const build = await tools.execute({ name: "run_script", arguments: { script: "build" } });
+
+    expect(build.ok).toBe(false);
+    expect(approvals).toEqual([
+      "echo:echo: node -e \"console.log('ok')\"",
+      "build:build: node -e \"console.log('build')\""
+    ]);
+  });
+
+  it("blocks dangerous package script content before requesting approval", async () => {
+    await writeFile(
+      path.join(tempRoot, "package.json"),
+      JSON.stringify({
+        scripts: {
+          bad: "git reset --hard"
+        }
+      })
+    );
+    let approvals = 0;
+    const tools = new WorkspaceTools({
+      root: tempRoot,
+      allowWrite: false,
+      allowShell: false,
+      approvalHandler: async () => {
+        approvals += 1;
+        return "allow_once";
+      }
+    });
+
+    const result = await tools.execute({ name: "run_script", arguments: { script: "bad" } });
+
+    expect(result.ok).toBe(false);
+    expect(result.summary).toContain("before approval");
+    expect(approvals).toBe(0);
+  });
+
+  it("blocks dangerous npm lifecycle scripts before requesting approval", async () => {
+    await writeFile(
+      path.join(tempRoot, "package.json"),
+      JSON.stringify({
+        scripts: {
+          pretest: "git reset --hard",
+          test: "vitest run"
+        }
+      })
+    );
+    let approvals = 0;
+    const tools = new WorkspaceTools({
+      root: tempRoot,
+      allowWrite: false,
+      allowShell: false,
+      approvalHandler: async () => {
+        approvals += 1;
+        return "allow_once";
+      }
+    });
+
+    const result = await tools.execute({ name: "run_tests", arguments: {} });
+
+    expect(result.ok).toBe(false);
+    expect(result.summary).toContain("pretest");
+    expect(result.summary).toContain("before approval");
+    expect(approvals).toBe(0);
+  });
+
+  it("includes npm lifecycle scripts in approval scope and preview", async () => {
+    await writeFile(
+      path.join(tempRoot, "package.json"),
+      JSON.stringify({
+        scripts: {
+          prebuild: "node -e \"console.log('pre')\"",
+          build: "node -e \"console.log('build')\""
+        }
+      })
+    );
+    const approvals: string[] = [];
+    const tools = new WorkspaceTools({
+      root: tempRoot,
+      allowWrite: false,
+      allowShell: false,
+      approvalHandler: async (request) => {
+        approvals.push(String(request.arguments.command));
+        return "allow_once";
+      }
+    });
+
+    const result = await tools.execute({ name: "run_script", arguments: { script: "build" } });
+
+    expect(result.ok).toBe(true);
+    expect(result.preview).toContain("prebuild");
+    expect(approvals[0]).toContain("prebuild");
+    expect(approvals[0]).toContain("build");
+  });
+
+  it("rejects patches that target sensitive paths containing spaces", async () => {
+    const tools = new WorkspaceTools({
+      root: tempRoot,
+      allowWrite: true,
+      allowShell: false
+    });
+
+    const result = await tools.execute({
+      name: "apply_patch",
+      arguments: {
+        patch: [
+          "diff --git a/Library/Application Support/Google/Chrome/Default/Login Data b/Library/Application Support/Google/Chrome/Default/Login Data",
+          "--- /dev/null",
+          "+++ b/Library/Application Support/Google/Chrome/Default/Login Data",
+          "@@ -0,0 +1 @@",
+          "+secret"
+        ].join("\n")
+      }
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.summary).toContain("sensitive");
+  });
+
   it("reads git status without enabling shell", async () => {
     await execFileAsync("git", ["init"], {
       cwd: tempRoot
@@ -713,6 +936,58 @@ describe("WorkspaceTools", () => {
 
     expect(result.ok).toBe(true);
     expect(result.content).toContain("##");
+  });
+
+  it("reads repo overview, git history, tests, and dependencies without enabling shell", async () => {
+    await execFileAsync("git", ["init"], {
+      cwd: tempRoot
+    });
+    await writeFile(
+      path.join(tempRoot, "package.json"),
+      JSON.stringify({
+        name: "sample",
+        version: "1.0.0",
+        scripts: {
+          test: "vitest run",
+          build: "tsc"
+        },
+        dependencies: {
+          ink: "^7.0.0"
+        },
+        devDependencies: {
+          vitest: "^4.0.0"
+        }
+      })
+    );
+    await mkdir(path.join(tempRoot, "tests"));
+    await writeFile(path.join(tempRoot, "tests", "sample.test.ts"), "import { it } from 'vitest';\n");
+    await execFileAsync("git", ["add", "."], {
+      cwd: tempRoot
+    });
+    await execFileAsync("git", ["-c", "commit.gpgsign=false", "commit", "-m", "init"], {
+      cwd: tempRoot,
+      env: {
+        ...process.env,
+        GIT_AUTHOR_NAME: "PatchPilot",
+        GIT_AUTHOR_EMAIL: "patchpilot@example.com",
+        GIT_COMMITTER_NAME: "PatchPilot",
+        GIT_COMMITTER_EMAIL: "patchpilot@example.com"
+      }
+    });
+    const tools = new WorkspaceTools({
+      root: tempRoot,
+      allowWrite: false,
+      allowShell: false
+    });
+
+    await expect(tools.execute({ name: "repo_overview", arguments: {} })).resolves.toMatchObject({ ok: true, tool: "repo_overview" });
+    await expect(tools.execute({ name: "git_log", arguments: { limit: 1 } })).resolves.toMatchObject({ ok: true, tool: "git_log" });
+    await expect(tools.execute({ name: "git_show", arguments: { revision: "HEAD" } })).resolves.toMatchObject({ ok: true, tool: "git_show" });
+    const tests = await tools.execute({ name: "test_list", arguments: {} });
+    const dependencies = await tools.execute({ name: "dependency_tree", arguments: {} });
+
+    expect(tests.content).toContain("tests/sample.test.ts");
+    expect(dependencies.content).toContain("ink@^7.0.0");
   });
 
   it("reads a bounded line range", async () => {
@@ -821,7 +1096,7 @@ describe("WorkspaceTools", () => {
     });
 
     expect(result.ok).toBe(false);
-    expect(result.approval?.request.tool).toBe("run_script");
+    expect(result.approval?.request.tool).toBe("run_tests");
     expect(result.approval?.request.preview).toContain("npm run test");
     expect(result.approval?.request.arguments.command).toContain("node -e");
     expect(result.approval?.decision).toBe("deny");
@@ -993,6 +1268,108 @@ describe("WorkspaceTools", () => {
     expect(result.summary).toContain("command exited");
   });
 
+  it("blocks shell chains until experimental shell metacharacters are enabled", async () => {
+    let approvals = 0;
+    const tools = new WorkspaceTools({
+      root: tempRoot,
+      allowWrite: false,
+      allowShell: false,
+      approvalHandler: async () => {
+        approvals += 1;
+        return "allow_once";
+      }
+    });
+
+    const result = await tools.execute({
+      name: "run_shell",
+      arguments: {
+        command: "printf hello && printf world"
+      }
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.summary).toContain("shell metacharacters");
+    expect(approvals).toBe(0);
+  });
+
+  it("allows approved shell chains when experimental shell metacharacters are enabled", async () => {
+    let approvals = 0;
+    const tools = new WorkspaceTools({
+      root: tempRoot,
+      allowWrite: false,
+      allowShell: false,
+      allowShellMetacharacters: true,
+      approvalHandler: async () => {
+        approvals += 1;
+        return "allow_once";
+      }
+    });
+
+    const result = await tools.execute({
+      name: "run_shell",
+      arguments: {
+        command: "printf hello && printf world"
+      }
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.content).toContain("helloworld");
+    expect(approvals).toBe(1);
+  });
+
+  it("forces approval for high-risk shell syntax even when shell bypass is enabled", async () => {
+    let approvals = 0;
+    const tools = new WorkspaceTools({
+      root: tempRoot,
+      allowWrite: true,
+      allowShell: true,
+      allowShellMetacharacters: true,
+      approvalHandler: async () => {
+        approvals += 1;
+        return "deny";
+      }
+    });
+
+    const result = await tools.execute({
+      name: "run_shell",
+      arguments: {
+        command: "printf secret > out.txt"
+      }
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.approval?.request.bypassable).toBe(false);
+    expect(result.approval?.request.preview).toContain("redirection");
+    expect(approvals).toBe(1);
+    await expect(readFile(path.join(tempRoot, "out.txt"), "utf8")).rejects.toThrow();
+  });
+
+  it("blocks unapproved shell glob expansion before bypass execution", async () => {
+    await writeFile(path.join(tempRoot, "secret.txt"), "secret");
+    let approvals = 0;
+    const tools = new WorkspaceTools({
+      root: tempRoot,
+      allowWrite: true,
+      allowShell: true,
+      allowShellMetacharacters: true,
+      approvalHandler: async () => {
+        approvals += 1;
+        return "deny";
+      }
+    });
+
+    const result = await tools.execute({
+      name: "run_shell",
+      arguments: {
+        command: "cat *.txt"
+      }
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.approval?.request.preview).toContain("glob expansion");
+    expect(approvals).toBe(1);
+  });
+
   it("blocks absolute shell path arguments outside the workspace before approval", async () => {
     let approvals = 0;
     const tools = new WorkspaceTools({
@@ -1066,6 +1443,39 @@ describe("WorkspaceTools", () => {
     expect(result.ok).toBe(false);
     expect(result.summary).toContain("sensitive path");
     expect(approvals).toBe(0);
+  });
+
+  it("blocks shell reads through symlinks before approval", async () => {
+    const outsideRoot = await mkdtemp(path.join(tmpdir(), "patchpilot-outside-"));
+    await writeFile(path.join(outsideRoot, "secret.txt"), "classified\n");
+    await symlink(path.join(outsideRoot, "secret.txt"), path.join(tempRoot, "leak.txt"));
+
+    let approvals = 0;
+    const tools = new WorkspaceTools({
+      root: tempRoot,
+      allowWrite: false,
+      allowShell: false,
+      approvalHandler: async () => {
+        approvals += 1;
+        return "allow_once";
+      }
+    });
+
+    const result = await tools.execute({
+      name: "run_shell",
+      arguments: {
+        command: "cat leak.txt"
+      }
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.summary).toContain("escapes workspace");
+    expect(approvals).toBe(0);
+
+    await rm(outsideRoot, {
+      recursive: true,
+      force: true
+    });
   });
 
   it("rejects writing through a symlinked directory outside the workspace", async () => {

@@ -1,0 +1,28 @@
+import { describe, expect, it } from "vitest";
+import { computeComposerLayout, wrapDraftRows } from "../src/tui/layout.js";
+
+describe("TUI layout helpers", () => {
+  it.each([80, 120, 207])("keeps long prompts visible at %i columns", (width) => {
+    const input = `${"please inspect the repository and then explain the most important architecture risks before writing a small patch ".repeat(14)}THE_VISIBLE_END`;
+    const layout = computeComposerLayout({ input, width, promptWidth: "patch > ".length });
+
+    expect(layout.height).toBeGreaterThanOrEqual(2);
+    expect(layout.height).toBeLessThanOrEqual(6);
+    expect(layout.visibleRows.length).toBe(layout.editorRows);
+    expect(layout.visibleRows.at(-1)).toContain("THE_VISIBLE_END");
+    expect(layout.hiddenRows).toBeGreaterThan(0);
+  });
+
+  it("uses the newest multiline draft rows when older rows overflow", () => {
+    const input = ["first line", "second line", "third line", "fourth line", "fifth line", "sixth line", "seventh line"].join("\n");
+    const layout = computeComposerLayout({ input, width: 80, promptWidth: "patch > ".length });
+
+    expect(layout.height).toBe(6);
+    expect(layout.visibleRows[0]).toBe("third line");
+    expect(layout.visibleRows.at(-1)).toBe("seventh line");
+  });
+
+  it("preserves empty lines while wrapping drafts", () => {
+    expect(wrapDraftRows("alpha\n\nbeta", 20)).toEqual(["alpha", "", "beta"]);
+  });
+});

@@ -9,7 +9,7 @@
 [![CI](https://github.com/jx-grxf/PatchPilot/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/jx-grxf/PatchPilot/actions/workflows/ci.yml)
 [![npm](https://img.shields.io/npm/v/@jx-grxf/patchpilot?logo=npm&color=cb3837)](https://www.npmjs.com/package/@jx-grxf/patchpilot)
 [![npm downloads](https://img.shields.io/npm/dm/@jx-grxf/patchpilot?logo=npm&color=0ea5e9)](https://www.npmjs.com/package/@jx-grxf/patchpilot)
-![Status](https://img.shields.io/badge/status-v1.1.0-0ea5e9)
+![Status](https://img.shields.io/badge/status-v1.2.0-0ea5e9)
 ![TypeScript](https://img.shields.io/badge/TypeScript-6.0-3178C6?logo=typescript&logoColor=white)
 ![Node](https://img.shields.io/badge/Node.js-22%2B-339933?logo=node.js&logoColor=white)
 ![Ink](https://img.shields.io/badge/TUI-Ink-111827)
@@ -39,7 +39,7 @@
 PatchPilot is a terminal interface for running coding-agent tasks inside a repository. It shows what the agent is doing, keeps risky actions behind explicit permissions, and supports local Ollama, remote Ollama, Google Gemini, experimental Gemini Web wrapper routing, OpenRouter, NVIDIA NIM-compatible endpoints, and Codex CLI OAuth.
 
 > [!IMPORTANT]
-> PatchPilot v1.1.0 improves the stable CLI with safer file tools, Gemini-Wrapper document analysis, visible run todos, refreshed dependencies, and release-to-website automation.
+> PatchPilot v1.2.0 is the large agent-hardening release: default fullscreen shell, context compaction, composable ultra modes, safer shell approvals, first-run risk acceptance, Windows fixes, and refreshed npm dependencies.
 
 ---
 
@@ -66,16 +66,35 @@ PatchPilot is a terminal interface for running coding-agent tasks inside a repos
 | Feature | What it means |
 |---|---|
 | Local-first by default | Uses Ollama on your own machine unless you choose another route. |
+| Fullscreen shell | A Claude-Code / Codex-CLI-style TUI: compact header, scrolling transcript, command palette, animated run status, artifacts, and a bottom-pinned composer. `/theme` switches between the new shell and the legacy layout. |
 | Remote GPU workflow | Connect your laptop TUI to an Ollama host on a desktop, LAN, or Tailscale machine. |
 | Cloud provider routes | Gemini, Gemini-Wrapper, OpenRouter, NVIDIA, and Codex CLI OAuth are available from one TUI. |
-| Guided onboarding | First-run setup walks through local/remote mode, provider auth, host discovery, and model choice. |
+| Guided onboarding | First-run setup walks through local/remote mode, provider auth, host discovery, model choice, defaults, and risk acceptance. |
 | Observable agent loop | Transcript, tool calls, telemetry, token counts, provider cache hits, latency, and cost estimates are visible. |
-| Explicit permissions | Risky tools show a sticky approval box unless trusted bypass is explicitly accepted. |
+| Document attachments | Paste a path to an image, PDF, or DOCX and it becomes an attachment chip; an artifacts bar lists what you attached and what PatchPilot created. |
+| Composable ultra modes | Type `ultramaxx`, `ultrafast`, `ultracheap`, `ultrafocus:<path>`, or `ultraloop` in a prompt to tune effort, speed, scope, and self-review. |
+| Context compaction | `/context` and `/compact` keep long sessions usable by storing and summarizing workspace context. |
+| Saved-cost counter | The gemini-wrapper route is free; the header shows what the same tokens would have cost on the paid Gemini API. |
+| Explicit permissions | Risky tools show a sticky approval box unless trusted bypass is explicitly accepted; high-risk shell syntax still asks in bypass. |
 | Workspace boundary | File tools are constrained to the selected project root and block common secret files. |
 | Slash-command palette | Type `/` for browsable commands, provider switching, modes, models, diagnostics, and host selection. |
 | Advisor subagents | Explorer, planner, and reviewer advisor calls can brief the main agent before it edits. |
+| Windows-ready paths | Clipboard paste, attachments, Codex CLI resolution, and Gemini-Wrapper bootstrap paths handle Windows launchers and separators. |
 | Ollama eject | `/eject` unloads the active Ollama model; `/eject all` clears models PatchPilot used in the session. |
 | CI-ready TypeScript | Strict TypeScript, Vitest, GitHub Actions, and package verification are included. |
+
+## Interface
+
+PatchPilot ships two interfaces. The **experimental shell** is the default: a
+fullscreen layout with a compact header, a real scrolling transcript, a
+bottom-pinned multiline composer, a categorized command palette, and animated
+run status. The **legacy** layout keeps the original sidebar split-pane TUI.
+Switch any time with `/theme` (or `/theme new` / `/theme legacy`) — the choice
+is remembered.
+
+Useful keys: `tab` cycles plan → build → build+bypass, `/` opens the command
+palette, `←/→` move the cursor inside the composer, `shift+enter` inserts a
+newline, and `esc` stops a running task.
 
 ## Why This Exists
 
@@ -163,7 +182,7 @@ patchpilot "add tests for the parser" --apply --allow-shell
 
 API keys are stored by onboarding in `~/.patchpilot/.env`.
 
-On first launch, PatchPilot opens guided setup for provider choice, API-key storage, host discovery, and model selection. Press Escape to leave setup, or run `/onboarding` later to reopen it.
+On first launch, PatchPilot opens guided setup for provider choice, API-key storage, host discovery, and model selection. Setup includes a discreet use-at-your-own-risk acceptance step. Press Escape to leave setup, or run `/onboarding` later to reopen it.
 
 ## Usage
 
@@ -194,7 +213,7 @@ Useful slash commands inside the TUI:
 |---|---|
 | `/help` | Show available commands. |
 | `/help <command>` | Explain one command, for example `/help think` or `/help model`. |
-| `/onboarding` | Open guided provider/auth/model setup. |
+| `/onboarding` | Open guided local/remote provider, auth, and model setup. |
 | `/mode plan` | Read-only planning mode. |
 | `/mode build` | Implementation mode; writes, scripts, tests, and shell require per-tool approval. |
 | `/think fixed\|adaptive` | Switch between fixed and adaptive step budgets. |
@@ -212,7 +231,7 @@ Useful slash commands inside the TUI:
 | `/doctor` | Run provider diagnostics from inside the TUI. |
 | `/doctor fix` | Apply safe doctor repairs, such as installing the managed Gemini-API bridge. |
 | `/cleanup cache\|sessions\|temp\|all` | Clean PatchPilot workspace state. |
-| `/experimental` | Open the experimental checkbox menu; use Space to toggle file-analysis, memory, and subagents. |
+| `/experimental` | Open the experimental checkbox menu; use Space to toggle file-analysis, memory, subagents, and shell-metacharacters. |
 | `/init` | Ask the selected model to inspect the repository and create or update `PATCHPILOT.md`. |
 | `/new` | Start a fresh session and clear current context. |
 | `/sessions` | List recent sessions for the current workspace. |
@@ -227,7 +246,7 @@ The transcript and sidebar have internal scroll areas. With an empty prompt, use
 
 The TUI also keeps a live todo panel in the lower transcript area. Providers can update it through the provider-neutral `update_todo` tool, so longer runs show the current task, pending work, and completed checkpoints without hiding the chat transcript.
 
-Experimental file analysis allows `inspect_document` to read supported files outside the workspace after per-path approval when the user provides an absolute path. With Gemini-Wrapper's managed Python bridge, PatchPilot sends PNG/JPEG/WebP/GIF/HEIC images to Gemini Web as file inputs for visual analysis and text extraction. PDFs and DOCX files use local text extraction first, then fall back to Gemini-Wrapper only when local extraction cannot produce useful text. Image OCR remains explicit through `mode:"ocr"`/`mode:"local"`. Experimental memory stores durable workspace notes in `~/.patchpilot/memory.sqlite`; `memory_remember` requires write approval and `memory_search` is read-only.
+Experimental file analysis allows `inspect_document` to read supported files outside the workspace after per-path approval when the user provides an absolute path. With Gemini-Wrapper's managed Python bridge, PatchPilot sends PNG/JPEG/WebP/GIF/HEIC images to Gemini Web as file inputs for visual analysis and text extraction. PDFs and DOCX files use local text extraction first, then fall back to Gemini-Wrapper only when local extraction cannot produce useful text. Image OCR remains explicit through `mode:"ocr"`/`mode:"local"`. Experimental memory stores durable workspace notes in `~/.patchpilot/memory.sqlite`; `memory_remember` requires write approval and `memory_search` is read-only. Experimental shell-metacharacters allow `run_shell` to use pipes, `&&`, and `;`; redirects, shell expansion, background jobs, OR chains, and multiline commands still require explicit approval even in build+bypass.
 
 ## Providers
 
@@ -307,6 +326,8 @@ OpenRouter `:free` models are rate-limited by OpenRouter. PatchPilot warns when 
 
 PatchPilot can run the TUI and workspace tools on one machine while sending model requests to Ollama on another machine. This is useful when your desktop has the GPU and your laptop is where you edit code.
 
+The guided setup can choose between `This Device` and `Remote Host`. Remote host setup checks LAN and Tailscale candidates first, then fetches the selected host's models before prompting for a model.
+
 Inside PatchPilot:
 
 ```text
@@ -315,6 +336,8 @@ Inside PatchPilot:
 /connect http://192.168.1.50:11434
 /connect local
 ```
+
+If both machines are on the same Tailscale tailnet, PatchPilot also checks Tailscale peers and MagicDNS names during `/connect` and the startup host flow. A host can be selected by Tailscale IP, MagicDNS name, or full URL.
 
 From the shell:
 
@@ -329,7 +352,7 @@ On a Windows desktop or remote host, expose Ollama on your private network:
 3. Start Ollama again.
 4. Allow inbound TCP traffic on port `11434` only on trusted private networks.
 
-PatchPilot verifies candidates with Ollama's `/api/version` endpoint before listing them. It does not move file reads, writes, Git, or test commands to the remote host; only model requests are routed there.
+PatchPilot verifies candidates with Ollama's `/api/version` endpoint before listing them. When connected, the header/sidebar switch to the selected host's device name, route, version, and model inventory instead of showing the client machine as the compute target. It does not move file reads, writes, Git, or test commands to the remote host; only model requests are routed there.
 
 For smaller local machines, reduce the request budget before starting PatchPilot:
 
@@ -345,7 +368,7 @@ PatchPilot is designed to keep powerful actions boring and reviewable:
 - Secret-like files such as `.env`, `.envrc`, `.npmrc`, `.netrc`, SSH keys, PEM/key/cert bundles, and credential files are blocked from normal file tools.
 - Writes are blocked by default; in the TUI, risky write tools request approval, and `--apply` keeps the legacy always-allow write path.
 - Shell commands are blocked by default; dedicated script/test tools request approval and show the package script body before running. `--allow-shell` keeps the legacy always-allow shell path.
-- Shell execution uses a restricted single-command runner.
+- Shell execution uses a restricted runner. Pipes are supported; `&&` and `;` require `/experimental shell-metacharacters`, and higher-risk shell syntax remains approval-gated even in build+bypass.
 - Provider config is stored in `~/.patchpilot/.env`, not in the current repository by default.
 - Session logs are stored as append-only JSONL in `.patchpilot/sessions/`; that folder is gitignored. A global index in `~/.patchpilot/session-index.json` powers `patchpilot sessions` and `/resume`.
 - Tool output is shown in the transcript and fed back into the agent in clipped form.
@@ -418,6 +441,7 @@ Release notes are kept in [docs/releases](docs/releases).
 
 | Version | Notes |
 |---|---|
+| `v1.2.0` | [Release notes](docs/releases/v1.2.0.md) |
 | `v1.1.0` | [Release notes](docs/releases/v1.1.0.md) |
 | `v1.0.1` | [Release notes](docs/releases/v1.0.1.md) |
 | `v1.0.0` | [Release notes](docs/releases/v1.0.0.md) |
@@ -430,7 +454,7 @@ Release notes are kept in [docs/releases](docs/releases).
 
 ## Security and Legal
 
-PatchPilot can read files, write files, and run shell commands when you enable those capabilities. Use it only in repositories and environments you trust.
+PatchPilot can read files, write files, and run shell commands when you enable those capabilities. Use it only in repositories and environments you trust. You use PatchPilot at your own risk; the maintainer accepts no liability for actions you approve, bypass, or run from generated output.
 
 - Security policy: see [SECURITY.md](SECURITY.md).
 - Security reports: please use GitHub Security Advisories or contact the maintainer privately with reproduction steps and impact.

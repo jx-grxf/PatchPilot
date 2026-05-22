@@ -1,9 +1,11 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { Box, useApp, useInput, useStdout } from "ink";
+import { statSync } from "node:fs";
+import { Box, Text, useApp, useInput, useStdout } from "ink";
 import { AgentRunner, type AgentRunnerOptions } from "../core/agent.js";
 import { cleanupPatchPilot, readCleanupTarget } from "../core/cleanup.js";
 import { defaultCodexModel, hasCodexCliOAuth } from "../core/codex.js";
 import { describeComputeTarget } from "../core/compute.js";
+import { ContextStore } from "../core/contextStore.js";
 import { runDoctor } from "../core/doctor.js";
 import { savePatchPilotEnvValues } from "../core/env.js";
 import { defaultGeminiModel, readGeminiApiKey } from "../core/gemini.js";
@@ -25,15 +27,23 @@ import { defaultNvidiaModel, readNvidiaApiKey } from "../core/nvidia.js";
 import { defaultOllamaModel, OllamaClient } from "../core/ollama.js";
 import { defaultOpenRouterModel, isOpenRouterFreeModel, readOpenRouterApiKey } from "../core/openrouter.js";
 import { ensurePatchPilotGitignore, patchPilotInitPrompt } from "../core/projectInit.js";
-import { formatReasoningSupport } from "../core/reasoning.js";
+import { formatReasoningSupport, type ReasoningSetting } from "../core/reasoning.js";
 import { buildSessionResumeContext, listWorkspaceSessions, loadSessionSummary, SessionStore } from "../core/session.js";
-import { addTelemetryToSession, emptySessionTelemetry, estimateTokens } from "../core/tokenAccounting.js";
+import { addTelemetryToSession, emptySessionTelemetry, estimateComparableApiCost, estimateTokens } from "../core/tokenAccounting.js";
 import type { AgentEvent, AgentTodoItem, AgentToolName, AgentWorkState, ApprovalRequest, ModelDescriptor, ModelProvider, ModelTelemetry, PermissionDecision, SessionTelemetry } from "../core/types.js";
+import { checkForPatchPilotUpdate, installPatchPilotUpdate, type UpdateCheckResult } from "../core/updateCheck.js";
 import { getToolSpec, WorkspaceTools } from "../core/workspace.js";
 import { ApprovalPanel } from "./components/ApprovalPanel.js";
+import { clipboardHasImage, clipboardImageHint, readClipboardImage } from "../core/clipboard.js";
 import { CommandSuggestions, type CommandSuggestionItem } from "./components/CommandSuggestions.js";
 import { Composer, FooterHints } from "./components/Composer.js";
-import { ExperimentalPanel, experimentalFlagAt, experimentalFlagCount, type ExperimentalFlags } from "./components/ExperimentalPanel.js";
+import { ExperimentalPanel, experimentalFlagAt, experimentalFlagCount, type ExperimentalFlag, type ExperimentalFlags } from "./components/ExperimentalPanel.js";
+import { runContextSlashCommand } from "./contextCommands.js";
+import { ExperimentalShell } from "./experimental/ExperimentalShell.js";
+import { ThemePicker } from "./experimental/ThemePicker.js";
+import { type Artifact, attachmentKindForPath, attachmentLabel, attachmentTypeForPath, formatSessionArtifactContext } from "./experimental/attachments.js";
+import { describeUltraModes, parseUltraModes } from "./experimental/ultraModes.js";
+import { formatCompletionSummary } from "./runStatus.js";
 import { Header } from "./components/Header.js";
 import { OnboardingPanel, type ApiKeyProvider, type OnboardingState } from "./components/OnboardingPanel.js";
 import { Sidebar } from "./components/Sidebar.js";
@@ -41,19 +51,58 @@ import { Transcript } from "./components/Transcript.js";
 import { filterSlashCommands, formatCommandDetail, formatCommandHelp } from "./commands.js";
 import { formatCost, formatSessionTokens, formatTokens, normalizeModelAlias, readToggle } from "./format.js";
 import { checkOllamaHost, discoverOllamaHosts, normalizeOllamaUrl, readOllamaHostDetails, startLocalOllamaAppAndWait, type OllamaHost, type OllamaHostDetails } from "./hosts.js";
-import { initialAgentMode, modeDescription, modePermissionLabel, nextAgentMode, permissionsForMode } from "./modes.js";
+import { computeComposerLayout } from "./layout.js";
+import { initialAgentMode, modeDescription, modePermissionLabel, nextAgentMode, permissionsForMode, shouldBypassApproval } from "./modes.js";
 import { selectableModels } from "./modelSelection.js";
+import {
+  cyclePreference,
+  defaultOnboardingPreferences,
+  modePermissions as preferencesModePermissions,
+  preferenceRows,
+  preferencesEnvValues,
+  readOnboardingPreferences,
+  type OnboardingPreferences
+} from "./onboardingPreferences.js";
 import { readGpuStats, readSystemStats, type GpuStats, type SystemStats } from "./systemStats.js";
-import { maxTranscriptLines, type AdvisorNote, type AgentMode, type LogLine, type LogLineInput } from "./types.js";
+import { maxTranscriptLines, type AdvisorNote, type AgentMode, type LogLine, type LogLineInput, type ToolTelemetry } from "./types.js";
 
 export type PatchPilotAppProps = AgentRunnerOptions & {
   initialTask?: string;
+  packageVersion?: string;
 };
 
 type PaletteSuggestion = CommandSuggestionItem & {
   command: string;
   execute: boolean;
 };
+
+type UiTheme = "new" | "legacy";
+
+type UpdatePromptState = Extract<UpdateCheckResult, { available: true }>;
+
+const themeOptions: Array<{ value: UiTheme; label: string; description: string }> = [
+  {
+    value: "new",
+    label: "New",
+    description: "Experimental fullscreen shell: compact header, scrolling transcript, command palette, animated run status."
+  },
+  {
+    value: "legacy",
+    label: "Legacy",
+    description: "Original PatchPilot TUI with the sidebar and split-pane layout."
+  }
+];
+
+function readUiTheme(): UiTheme {
+  return process.env.PATCHPILOT_UI_THEME?.trim().toLowerCase() === "legacy" ? "legacy" : "new";
+}
+
+/** Heuristic: does this Gemini-Wrapper error look like expired/invalid cookies? */
+function isGeminiCookieError(message: string): boolean {
+  return /cookie|secure_1psid|psidts|expired|sign[ -]?in|auth(?:enticat|oriz)|401|403|session.*(?:invalid|expired)/i.test(
+    message
+  );
+}
 
 const modelCacheTtlMs = 5 * 60_000;
 const modelCache = new Map<string, { models: string[]; descriptors: ModelDescriptor[]; expiresAt: number }>();
@@ -65,8 +114,13 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   const [input, setInput] = useState(props.initialTask ?? "");
   const didRunInitialTask = useRef(false);
   const didOpenDefaultOnboarding = useRef(false);
+  const didCheckForUpdates = useRef(false);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const softStopRequestedRef = useRef(false);
+  const lastEscapeStopAtRef = useRef(0);
+  const lastAttachmentWarningRef = useRef("");
   const sessionStoreRef = useRef(new SessionStore({ workspace: props.workspace }));
+  const contextStoreRef = useRef(new ContextStore({ workspace: props.workspace, sessionId: sessionStoreRef.current.sessionId }));
   const approvalResolverRef = useRef<((decision: PermissionDecision) => void) | null>(null);
   const runtimeStateRef = useRef({
     isRunning: false,
@@ -80,16 +134,23 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   const activeHostSyncInFlightRef = useRef(false);
   const autoLoadKeysRef = useRef(new Set<string>());
   const usedOllamaModelsRef = useRef(new Set<string>());
+  // Rolling session memory: short digests of earlier turns so a later prompt
+  // ("now do X") still knows what the user asked for and where.
+  const conversationTurnsRef = useRef<string[]>([]);
   const [lines, setLines] = useState<LogLine[]>([]);
   const [advisorNotes, setAdvisorNotes] = useState<AdvisorNote[]>([]);
   const [todos, setTodos] = useState<AgentTodoItem[]>([]);
   const [todoFrame, setTodoFrame] = useState(0);
+  const [verbTick, setVerbTick] = useState(0);
   const [isRunning, setIsRunning] = useState(false);
   const [status, setStatus] = useState("idle");
   const [workState, setWorkState] = useState<AgentWorkState>("idle");
   const [pendingApproval, setPendingApproval] = useState<ApprovalRequest | null>(null);
+  const [updatePrompt, setUpdatePrompt] = useState<UpdatePromptState | null>(null);
+  const [updateBusy, setUpdateBusy] = useState(false);
   const [telemetry, setTelemetry] = useState<ModelTelemetry | null>(null);
   const [sessionTelemetry, setSessionTelemetry] = useState<SessionTelemetry>(() => emptySessionTelemetry());
+  const [toolTelemetry, setToolTelemetry] = useState<ToolTelemetry>(() => emptyToolTelemetry());
   const [resumeContext, setResumeContext] = useState("");
   const [systemStats, setSystemStats] = useState<SystemStats>(() => readSystemStats().stats);
   const [gpuStats, setGpuStats] = useState<GpuStats | null>(null);
@@ -106,8 +167,21 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   const [experimentalFlags, setExperimentalFlags] = useState<ExperimentalFlags>({
     fileAnalysis: readBooleanEnv(process.env.PATCHPILOT_EXPERIMENTAL_FILE_ANALYSIS, false),
     memory: readBooleanEnv(process.env.PATCHPILOT_EXPERIMENTAL_MEMORY, false),
-    subagents: props.subagents
+    subagents: props.subagents,
+    shellMetacharacters: readBooleanEnv(process.env.PATCHPILOT_EXPERIMENTAL_SHELL_METACHARACTERS, false)
   });
+  const [uiTheme, setUiTheme] = useState<UiTheme>(() => readUiTheme());
+  const [themePickerOpen, setThemePickerOpen] = useState(false);
+  const [themePickerIndex, setThemePickerIndex] = useState(0);
+  const [ultramaxxRun, setUltramaxxRun] = useState(false);
+  const [reauthPrompt, setReauthPrompt] = useState<{ task: string } | null>(null);
+  const [reauthBusy, setReauthBusy] = useState(false);
+  const [artifacts, setArtifacts] = useState<Artifact[]>([]);
+  const artifactsRef = useRef<Artifact[]>([]);
+  const pendingAttachmentsRef = useRef<string[]>([]);
+  // Tracks whether the "image in clipboard" hint was already shown for the
+  // current clipboard contents, so the poll does not repeat it every tick.
+  const clipboardHintShownRef = useRef(false);
   const [onboardingIndex, setOnboardingIndex] = useState(0);
   const [onboardingInput, setOnboardingInput] = useState("");
   const [onboardingBusyMessage, setOnboardingBusyMessage] = useState<string | null>(null);
@@ -135,8 +209,12 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   const draftTokens = estimateTokens(input);
   const terminalRows = stdout.rows ?? 40;
   const terminalColumns = stdout.columns ?? 120;
+  const reauthPromptActive = Boolean(reauthPrompt || reauthBusy);
+  const updatePromptActive = !reauthPromptActive && Boolean(updatePrompt || updateBusy);
+  const approvalPromptActive = !reauthPromptActive && !updatePromptActive && Boolean(pendingApproval || bypassConfirmation);
+  const blockingPromptActive = reauthPromptActive || updatePromptActive || approvalPromptActive;
   const paletteItems =
-    !isRunning && !onboarding && !experimentalOpen
+    !isRunning && !onboarding && !experimentalOpen && !blockingPromptActive
       ? buildCommandSuggestionItems({
           input,
           provider: settings.provider,
@@ -149,13 +227,15 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       : [];
   const rootHeight = Math.max(24, terminalRows);
   const headerReservedHeight = 5;
-  const paletteReservedHeight = !onboarding && paletteItems.length > 0 ? Math.min(8, paletteItems.length) + 4 : 0;
-  const composerReservedHeight = onboarding || experimentalOpen ? 0 : 2;
-  const footerReservedHeight = onboarding || experimentalOpen ? 0 : 1;
-  const approvalReservedHeight = !onboarding && !experimentalOpen && (pendingApproval || bypassConfirmation) ? 7 : 0;
-  const panelHeight = Math.max(8, rootHeight - headerReservedHeight - composerReservedHeight - paletteReservedHeight - footerReservedHeight - approvalReservedHeight);
   const transcriptWidth = Math.max(42, terminalColumns - 38);
-  const scrollStep = Math.max(4, Math.floor(panelHeight * 0.8));
+  const paletteReservedHeight = !onboarding && paletteItems.length > 0 ? Math.min(8, paletteItems.length) + 7 : 0;
+  const composerReservedHeight = onboarding || experimentalOpen ? 0 : computeComposerLayout({ input, width: transcriptWidth, promptWidth: 8 }).height;
+  const footerReservedHeight = onboarding || experimentalOpen ? 0 : 1;
+  const approvalReservedHeight = !onboarding && !experimentalOpen && blockingPromptActive ? 7 : 0;
+  const bodyHeight = Math.max(8, rootHeight - headerReservedHeight);
+  const transcriptHeight = Math.max(4, bodyHeight - composerReservedHeight - paletteReservedHeight - footerReservedHeight - approvalReservedHeight);
+  const panelHeight = onboarding || experimentalOpen ? bodyHeight : transcriptHeight;
+  const scrollStep = Math.max(4, Math.floor(transcriptHeight * 0.8));
   const appendLine = useCallback((line: LogLineInput) => {
     setLines((currentLines) =>
       [
@@ -168,6 +248,131 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       ].slice(-maxTranscriptLines)
     );
   }, []);
+
+  const pushArtifact = useCallback((artifact: Artifact): void => {
+    artifactsRef.current = [...artifactsRef.current, artifact].slice(-40);
+    setArtifacts(artifactsRef.current);
+    void contextStoreRef.current.append({
+      kind: artifact.origin === "attached" ? "attachment" : "artifact",
+      source: artifact.origin === "attached" ? "user" : "tool",
+      label: artifact.label,
+      path: artifact.path,
+      priority: artifact.origin === "attached" ? 85 : 75,
+      meta: {
+        artifactKind: artifact.kind,
+        origin: artifact.origin
+      }
+    }).catch(() => undefined);
+  }, []);
+
+  // Registers a pasted document as an attachment chip; returns the chip label
+  // ("[PNG #1]") for the composer to insert inline.
+  const attachFile = useCallback(
+    (path: string): string => {
+      const kind = attachmentKindForPath(path) ?? "file";
+      const type = attachmentTypeForPath(path);
+      const sameType = artifactsRef.current.filter((item) => item.origin === "attached" && attachmentTypeForPath(item.path) === type).length;
+      const label = attachmentLabel(kind, sameType + 1, path);
+      pushArtifact({ id: Date.now() + Math.random(), kind, path, label, origin: "attached" });
+      const nextPendingAttachments = [...pendingAttachmentsRef.current, path];
+      pendingAttachmentsRef.current = nextPendingAttachments;
+      appendLine({
+        tone: "accent",
+        label: "attach",
+        text: `${label} attached`,
+        detail: path
+      });
+      const warning = attachmentLimitWarning(nextPendingAttachments, settings.provider);
+      if (warning && warning !== lastAttachmentWarningRef.current) {
+        lastAttachmentWarningRef.current = warning;
+        appendLine({
+          tone: "warning",
+          label: "attach",
+          text: warning,
+          detail: "For Gemini/Gemini-Wrapper, send large batches in smaller prompts or ask PatchPilot to inspect the files in separate calls."
+        });
+      }
+      return label;
+    },
+    [appendLine, pushArtifact, settings.provider]
+  );
+
+  // Ctrl+V: pull an image straight out of the OS clipboard, save it to a temp
+  // file, and attach it — no need to save the screenshot to disk first.
+  const handleClipboardImagePaste = useCallback(async (): Promise<void> => {
+    appendLine({ kind: "status", tone: "muted", label: "clipboard", text: "Zwischenablage wird gelesen…" });
+    const imagePath = await readClipboardImage();
+    if (!imagePath) {
+      appendLine({
+        kind: "status",
+        tone: "warning",
+        label: "clipboard",
+        text: "Kein Bild in der Zwischenablage gefunden.",
+        detail: "Kopiere ein Bild (z. B. einen Screenshot) und drücke erneut Ctrl+V."
+      });
+      return;
+    }
+
+    const label = attachFile(imagePath);
+    setInput((current) => {
+      if (current.length === 0) {
+        return `${label} `;
+      }
+      return `${current}${current.endsWith(" ") ? "" : " "}${label} `;
+    });
+    clipboardHintShownRef.current = true;
+  }, [appendLine, attachFile]);
+
+  // Watch the OS clipboard while idle: when an image appears, tell the user
+  // once that they can attach it with Ctrl+V (reset when the image is gone).
+  useEffect(() => {
+    if (isRunning) {
+      return;
+    }
+
+    let cancelled = false;
+    const poll = async (): Promise<void> => {
+      const present = await clipboardHasImage();
+      if (cancelled) {
+        return;
+      }
+
+      if (present && !clipboardHintShownRef.current) {
+        clipboardHintShownRef.current = true;
+        appendLine({ kind: "status", tone: "accent", label: "clipboard", text: clipboardImageHint() });
+      } else if (!present) {
+        clipboardHintShownRef.current = false;
+      }
+    };
+
+    void poll();
+    const timer = setInterval(() => void poll(), 7000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [isRunning, appendLine]);
+
+  // Best-effort: record a document PatchPilot wrote during a run.
+  const registerCreatedArtifact = useCallback(
+    (path: string): void => {
+      const kind = attachmentKindForPath(path);
+      if (!kind || artifactsRef.current.some((item) => item.path === path)) {
+        return;
+      }
+
+      const type = attachmentTypeForPath(path);
+      const sameType = artifactsRef.current.filter((item) => item.origin === "created" && attachmentTypeForPath(item.path) === type).length;
+      pushArtifact({
+        id: Date.now() + Math.random(),
+        kind,
+        path,
+        label: attachmentLabel(kind, sameType + 1, path),
+        origin: "created"
+      });
+    },
+    [pushArtifact]
+  );
 
   useEffect(() => {
     if (!isRunning || todos.every((todo) => todo.status !== "in_progress")) {
@@ -183,6 +388,30 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       clearInterval(timer);
     };
   }, [isRunning, todos]);
+
+  // Slow run-status verb tick: the verb only advances every 10s while the fast
+  // spinner glyph keeps animating, so the status line never flickers.
+  useEffect(() => {
+    if (!isRunning) {
+      setVerbTick(randomLegacyVerbIndex());
+      return;
+    }
+
+    setVerbTick(randomLegacyVerbIndex());
+    const timer = setInterval(() => {
+      setVerbTick((currentTick) => {
+        let nextTick = randomLegacyVerbIndex();
+        if (nextTick === currentTick) {
+          nextTick += 1;
+        }
+        return nextTick;
+      });
+    }, 10_000);
+
+    return () => {
+      clearInterval(timer);
+    };
+  }, [isRunning]);
 
   const resolveApproval = useCallback(
     (decision: PermissionDecision) => {
@@ -208,6 +437,55 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       setPendingApproval(null);
     },
     [appendLine, pendingApproval]
+  );
+
+  const resolveUpdatePrompt = useCallback(
+    async (accept: boolean): Promise<void> => {
+      const pending = updatePrompt;
+      if (!pending || updateBusy) {
+        return;
+      }
+
+      if (!accept) {
+        setUpdatePrompt(null);
+        setStatus("idle");
+        appendLine({
+          tone: "muted",
+          label: "update",
+          text: `Skipped PatchPilot ${pending.latestVersion}.`,
+          detail: `Manual command: ${pending.command}`
+        });
+        return;
+      }
+
+      setUpdateBusy(true);
+      setStatus(`updating to ${pending.latestVersion}`);
+      appendLine({
+        tone: "accent",
+        label: "update",
+        text: `Running ${pending.command}`
+      });
+      try {
+        const result = await installPatchPilotUpdate(pending.latestVersion);
+        setUpdatePrompt(null);
+        appendLine({
+          tone: "success",
+          label: "update",
+          text: `⚡ Successfully updated to v${result.version}. Please restart PatchPilot.`,
+          detail: result.command
+        });
+      } catch (error) {
+        appendLine({
+          tone: "danger",
+          label: "update",
+          text: error instanceof Error ? error.message : String(error),
+          detail: `Automatic update failed. Manual command: ${pending.command}`
+        });
+      } finally {
+        setUpdateBusy(false);
+      }
+    },
+    [appendLine, updateBusy, updatePrompt]
   );
 
   const applyMode = useCallback(
@@ -502,6 +780,14 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
     setOnboardingIndex(0);
 
     switch (onboarding.step) {
+      case "welcome":
+        setOnboarding(null);
+        return;
+      case "disclaimer":
+        setOnboarding({
+          step: "welcome"
+        });
+        return;
       case "entry":
         setOnboarding(null);
         return;
@@ -525,6 +811,15 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           step: "host",
           hosts: hostOptions
         });
+        return;
+      case "preferences":
+        if (onboarding.provider === "gemini-wrapper") {
+          setOnboarding({
+            step: "gemini-wrapper-model-mode"
+          });
+          return;
+        }
+        void openModelSelection(onboarding.provider, { currentModel: onboarding.model });
         return;
       case "model":
         if (onboarding.provider === "ollama" && activeHost?.host.kind !== "local") {
@@ -568,7 +863,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           step: "entry"
         });
     }
-  }, [activeHost?.host.kind, hostOptions, onboarding]);
+  }, [activeHost?.host.kind, hostOptions, onboarding, openModelSelection]);
 
   const handleOnboardingSubmit = useCallback(
     async (value: string): Promise<void> => {
@@ -581,6 +876,36 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       }
 
       setOnboardingNotice(null);
+
+      if (onboarding.step === "welcome") {
+        setOnboarding({
+          step: "disclaimer"
+        });
+        setOnboardingIndex(0);
+        return;
+      }
+
+      if (onboarding.step === "disclaimer") {
+        const normalizedValue = value.trim().toLowerCase();
+        if (normalizedValue !== "y" && normalizedValue !== "yes" && normalizedValue !== "1") {
+          setOnboardingNotice({
+            tone: "warning",
+            text: "Accept the use-at-your-own-risk notice to continue.",
+            detail: "Press y to continue, or Escape to go back."
+          });
+          return;
+        }
+
+        savePatchPilotEnvValues({
+          PATCHPILOT_DISCLAIMER_ACCEPTED: "2026-05-22"
+        });
+        process.env.PATCHPILOT_DISCLAIMER_ACCEPTED = "2026-05-22";
+        setOnboarding({
+          step: "entry"
+        });
+        setOnboardingIndex(0);
+        return;
+      }
 
       if (onboarding.step === "entry") {
         const selection = readEntrySelection(value, onboardingIndex);
@@ -890,15 +1215,16 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           savePatchPilotEnvValues({
             PATCHPILOT_PROVIDER: "gemini-wrapper",
             PATCHPILOT_MODEL: curatedModel,
-            PATCHPILOT_ONBOARDING_COMPLETE: "1"
+            PATCHPILOT_GEMINI_WRAPPER_MODE: "python"
           });
-          process.env.PATCHPILOT_ONBOARDING_COMPLETE = "1";
-          appendLine({
-            tone: "success",
-            label: "onboarding",
-            text: `ready: gemini-wrapper using ${curatedModel}`
+          setOnboarding({
+            step: "preferences",
+            provider: "gemini-wrapper",
+            model: curatedModel,
+            preferences: readOnboardingPreferences()
           });
-          closeOnboarding();
+          setOnboardingInput("");
+          setOnboardingIndex(preferenceRows.length);
           return;
         }
 
@@ -930,10 +1256,12 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         }
 
         process.env.PATCHPILOT_GEMINI_WRAPPER_BASE_URL = baseUrl;
+        process.env.PATCHPILOT_GEMINI_WRAPPER_MODE = "http";
         savePatchPilotEnvValues({
           PATCHPILOT_PROVIDER: "gemini-wrapper",
           PATCHPILOT_MODEL: defaultGeminiWrapperModel,
-          PATCHPILOT_GEMINI_WRAPPER_BASE_URL: baseUrl
+          PATCHPILOT_GEMINI_WRAPPER_BASE_URL: baseUrl,
+          PATCHPILOT_GEMINI_WRAPPER_MODE: "http"
         });
         setOnboardingNotice({
           tone: "success",
@@ -971,6 +1299,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           PATCHPILOT_PROVIDER: "gemini-wrapper",
           PATCHPILOT_MODEL: defaultGeminiWrapperModel,
           PATCHPILOT_GEMINI_WRAPPER_BASE_URL: onboarding.baseUrl,
+          PATCHPILOT_GEMINI_WRAPPER_MODE: "http",
           ...(apiKey ? { PATCHPILOT_GEMINI_WRAPPER_API_KEY: apiKey } : {})
         });
         setOnboardingNotice({
@@ -1051,6 +1380,55 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         return;
       }
 
+      if (onboarding.step === "preferences") {
+        const confirmIndex = preferenceRows.length;
+        const selection = readIndexedSelection(value, onboardingIndex);
+        if (selection !== confirmIndex) {
+          return;
+        }
+
+        const prefs = onboarding.preferences;
+        const permissions = preferencesModePermissions(prefs.mode);
+        setTelemetry(null);
+        setAgentMode(prefs.mode);
+        grantedPermissionsRef.current = permissions;
+        setExperimentalFlags((currentFlags) => ({ ...currentFlags, subagents: prefs.subagents }));
+        setSettings((currentSettings) => ({
+          ...currentSettings,
+          provider: onboarding.provider,
+          model: onboarding.model,
+          allowWrite: permissions.allowWrite,
+          allowShell: permissions.allowShell,
+          thinkingMode: prefs.thinking,
+          reasoningEffort: prefs.reasoning,
+          subagents: prefs.subagents
+        }));
+        savePatchPilotEnvValues({
+          PATCHPILOT_PROVIDER: onboarding.provider,
+          PATCHPILOT_MODEL: onboarding.model,
+          PATCHPILOT_ONBOARDING_COMPLETE: "1",
+          ...preferencesEnvValues(prefs),
+          ...(onboarding.provider === "ollama" ? { PATCHPILOT_OLLAMA_URL: activeHost?.host.url ?? settings.ollamaUrl } : {})
+        });
+        process.env.PATCHPILOT_ONBOARDING_COMPLETE = "1";
+        appendLine({
+          tone: "success",
+          label: "onboarding",
+          text: `ready: ${onboarding.provider} using ${onboarding.model}`,
+          detail: `mode ${prefs.mode} · reasoning ${prefs.reasoning} · thinking ${prefs.thinking} · subagents ${prefs.subagents ? "on" : "off"}`
+        });
+        if (onboarding.provider === "openrouter" && isOpenRouterFreeModel(onboarding.model)) {
+          appendLine({
+            tone: "warning",
+            label: "openrouter",
+            text: "Free OpenRouter models are rate-limited.",
+            detail: "OpenRouter documents 20 requests/minute for :free models, plus daily limits depending on account credits."
+          });
+        }
+        closeOnboarding();
+        return;
+      }
+
       const visibleModels = selectableModels(onboardingInput, onboarding.models, formatModelLabel);
       const selectedModel = visibleModels[onboardingIndex] ?? selectModelFromInput(value, visibleModels, onboardingIndex, {
         allowManual: onboarding.provider !== "ollama" && onboarding.provider !== "gemini-wrapper"
@@ -1063,33 +1441,14 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         return;
       }
 
-      setTelemetry(null);
-      setSettings((currentSettings) => ({
-        ...currentSettings,
+      setOnboarding({
+        step: "preferences",
         provider: onboarding.provider,
-        model: selectedModel
-      }));
-      savePatchPilotEnvValues({
-        PATCHPILOT_PROVIDER: onboarding.provider,
-        PATCHPILOT_MODEL: selectedModel,
-        PATCHPILOT_ONBOARDING_COMPLETE: "1",
-        ...(onboarding.provider === "ollama" ? { PATCHPILOT_OLLAMA_URL: activeHost?.host.url ?? settings.ollamaUrl } : {})
+        model: selectedModel,
+        preferences: readOnboardingPreferences()
       });
-      process.env.PATCHPILOT_ONBOARDING_COMPLETE = "1";
-      appendLine({
-        tone: "success",
-        label: "onboarding",
-        text: `ready: ${onboarding.provider} using ${selectedModel}`
-      });
-      if (onboarding.provider === "openrouter" && isOpenRouterFreeModel(selectedModel)) {
-        appendLine({
-          tone: "warning",
-          label: "openrouter",
-          text: "Free OpenRouter models are rate-limited.",
-          detail: "OpenRouter documents 20 requests/minute for :free models, plus daily limits depending on account credits."
-        });
-      }
-      closeOnboarding();
+      setOnboardingInput("");
+      setOnboardingIndex(preferenceRows.length);
     },
     [activeHost?.host.url, appendLine, closeOnboarding, connectToHost, loadHostSuggestions, onboarding, onboardingBusyMessage, onboardingIndex, openModelSelection, settings.ollamaUrl]
   );
@@ -1100,9 +1459,54 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         return;
       }
 
+      // Ultra-modes: power-mode keywords (ultramaxx / ultracheap / ultrafocus /
+      // ultraloop) found anywhere in the prompt. Several may combine; an
+      // incompatible pair blocks the send so a contradictory run never starts.
+      const ultra = parseUltraModes(task);
+      if (ultra.conflict) {
+        appendLine({
+          kind: "status",
+          tone: "danger",
+          label: "ultra",
+          text: ultra.conflict,
+          detail: "Remove one of the conflicting keywords, then send again."
+        });
+        return;
+      }
+
+      const ultramaxx = ultra.modes.includes("maxx");
+      const ultracheap = ultra.modes.includes("cheap");
+      const ultrafast = ultra.modes.includes("fast");
+      const ultrafocus = ultra.modes.includes("focus");
+      const ultraloop = ultra.modes.includes("loop");
+      // ultracheap and ultrafast both run the lean pipeline (low reasoning,
+      // fixed short thinking, no advisors, capped steps).
+      const ultraLean = ultracheap || ultrafast;
+      const effectiveTask = ultra.modes.length > 0 ? ultra.cleaned : task;
+      if (ultra.modes.length > 0 && !effectiveTask) {
+        appendLine({
+          tone: "warning",
+          label: "ultra",
+          text: `${describeUltraModes(ultra.modes)} needs an actual task after the keyword.`
+        });
+        return;
+      }
+      if (ultrafocus && !ultra.focusPath) {
+        appendLine({
+          tone: "warning",
+          label: "ultra",
+          text: "ultrafocus needs a path — write ultrafocus:src/file.ts or ultrafocus \"my dir\"."
+        });
+        return;
+      }
+
+      const runStartedAt = Date.now();
+      softStopRequestedRef.current = false;
+      lastEscapeStopAtRef.current = 0;
       setInput("");
       setTranscriptScrollOffset(0);
       setTodos([]);
+      setUltramaxxRun(ultramaxx);
       setIsRunning(true);
       appendLine({
         kind: "user",
@@ -1110,9 +1514,41 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         label: "you",
         text: task
       });
+      if (ultra.modes.length > 0) {
+        const engagedDetail: string[] = [];
+        if (ultramaxx) {
+          engagedDetail.push("ultramaxx: xhigh reasoning, expanded step budget, advisors on.");
+        }
+        if (ultracheap) {
+          engagedDetail.push("ultracheap: low reasoning, terse output, advisors off.");
+        }
+        if (ultrafast) {
+          engagedDetail.push("ultrafast: lowest-latency pipeline — low reasoning, fixed short thinking, advisors off.");
+        }
+        if (ultrafocus) {
+          engagedDetail.push(`ultrafocus: the agent stays inside ${ultra.focusPath}.`);
+        }
+        if (ultraloop) {
+          engagedDetail.push("ultraloop: expanded budget with explicit final self-check before finishing.");
+        }
+        appendLine({
+          tone: "accent",
+          label: "ultra",
+          text: `✻ ${describeUltraModes(ultra.modes).toUpperCase()} engaged`,
+          detail: engagedDetail.join("\n")
+        });
+      }
 
+      let finalMessage = "";
+      let turnAttachmentPaths: string[] = [];
       try {
-        const runnableSettings = await resolveRunnableSettings(settings, modelOptions, appendLine, setModelOptions);
+        const runnableSettings = await resolveRunnableSettings(settings, modelOptions, appendLine, setModelOptions, (message) => {
+          if (settings.provider === "gemini-wrapper" && isGeminiCookieError(message)) {
+            setReauthPrompt({ task });
+            setStatus("gemini cookies expired");
+            setWorkState("waiting_approval");
+          }
+        });
         if (!runnableSettings) {
           return;
         }
@@ -1120,14 +1556,67 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         const abortController = new AbortController();
         abortControllerRef.current = abortController;
         const effectiveMode = overrides.mode ?? agentMode;
+        // Carry earlier-turn context forward so a follow-up prompt still knows
+        // what the user was doing and where. Advisory only — it never changes
+        // the workspace root or restricts the agent.
+        const sessionMemory =
+          conversationTurnsRef.current.length > 0
+            ? `Earlier in this PatchPilot session (most recent last), for continuity only — the request below still takes priority and is not restricted to these paths:\n${conversationTurnsRef.current.join("\n")}`
+            : "";
+        const artifactContext = formatSessionArtifactContext(artifactsRef.current);
+        const persistedContext = await contextStoreRef.current
+          .buildContextBlock({
+            maxItems: 12,
+            title: "Known session context"
+          })
+          .catch(() => "");
+        // Ultra-mode run instructions — injected as advisory context so each
+        // mode shapes the run without changing the workspace root.
+        const ultraInstructions: string[] = [];
+        if (ultrafocus && ultra.focusPath) {
+          ultraInstructions.push(
+            `ULTRAFOCUS is active. Restrict every read, edit, and command to \`${ultra.focusPath}\` and the files it directly depends on. Do not modify anything outside that path; if the task genuinely needs other files, stop and say so instead.`
+          );
+        }
+        if (ultraloop) {
+          ultraInstructions.push(
+            "ULTRALOOP is active. Do not finish until the user's actual goal is fully achieved and verified — not merely attempted. Before any final answer, restate the goal, list what is done, list any remaining gap, and keep working if something is still missing."
+          );
+        }
+        if (ultracheap) {
+          ultraInstructions.push(
+            "ULTRACHEAP is active. Keep output terse, avoid unnecessary tool calls, and take the most direct path to a correct result."
+          );
+        }
+        if (ultrafast) {
+          ultraInstructions.push(
+            "ULTRAFAST is active. Optimise for speed: minimal reasoning, the fewest tool calls that still get it right, no exploratory detours. Answer as directly as possible."
+          );
+        }
+        const effectiveResumeContext = [resumeContext, sessionMemory, artifactContext, persistedContext, ultraInstructions.join("\n\n")]
+          .filter(Boolean)
+          .join("\n\n");
         const taskRunner = new AgentRunner({
           ...runnableSettings,
+          maxSteps: ultraloop
+            ? Math.max(runnableSettings.maxSteps, 60)
+            : ultramaxx
+              ? Math.max(runnableSettings.maxSteps, 40)
+              : ultraLean
+                ? Math.min(runnableSettings.maxSteps, 12)
+                : runnableSettings.maxSteps,
+          reasoningEffort: ultramaxx ? "xhigh" : ultraLean ? "low" : runnableSettings.reasoningEffort,
+          thinkingMode: ultramaxx || ultraloop ? "adaptive" : ultraLean ? "fixed" : runnableSettings.thinkingMode,
+          subagents: ultramaxx || ultraloop ? true : ultraLean ? false : runnableSettings.subagents,
+          ultramaxx,
           allowExternalFileAnalysis: experimentalFlags.fileAnalysis,
+          allowShellMetacharacters: experimentalFlags.shellMetacharacters,
           memoryEnabled: experimentalFlags.memory,
           mode: effectiveMode,
           signal: abortController.signal,
+          shouldStopAfterStep: () => softStopRequestedRef.current,
           sessionStore: sessionStoreRef.current,
-          resumeContext,
+          resumeContext: effectiveResumeContext,
           approvalHandler: (request) =>
             new Promise<PermissionDecision>((resolve) => {
               if (effectiveMode === "plan") {
@@ -1145,7 +1634,15 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
                 return;
               }
 
-              if (effectiveMode === "bypass" && ((request.permission === "write" && runnableSettings.allowWrite) || (request.permission === "shell" && runnableSettings.allowShell))) {
+              if (
+                request.bypassable !== false &&
+                shouldBypassApproval({
+                  mode: effectiveMode,
+                  permission: request.permission,
+                  permissions: runnableSettings,
+                  allowExternalFileAnalysis: experimentalFlags.fileAnalysis
+                })
+              ) {
                 resolve("allow_session");
                 return;
               }
@@ -1167,7 +1664,16 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
               approvalResolverRef.current = resolve;
             })
         });
-        for await (const event of taskRunner.run(task)) {
+        // Hand any documents the user attached this turn to the agent so it
+        // can read/analyse them with its file tools.
+        const pendingAttachments = pendingAttachmentsRef.current;
+        turnAttachmentPaths = pendingAttachments;
+        pendingAttachmentsRef.current = [];
+        const taskWithAttachments =
+          pendingAttachments.length > 0
+            ? `${effectiveTask}\n\n[Attached documents for this task — read or analyse them as needed with inspect_document. Paths are JSON-escaped and may contain spaces:\n${formatAttachedDocuments(pendingAttachments)}\n]`
+            : effectiveTask;
+        for await (const event of taskRunner.run(taskWithAttachments)) {
           setWorkState(event.workState);
           if (event.type === "metrics") {
             if (runnableSettings.provider === "ollama") {
@@ -1181,6 +1687,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           if (event.type === "subagent") {
             setTelemetry(event.metrics);
             setSessionTelemetry((currentSession) => addTelemetryToSession(currentSession, event.metrics));
+            setToolTelemetry((currentTools) => addToolTelemetry(currentTools, "subagent", true));
             setAdvisorNotes((currentNotes) =>
               upsertAdvisorNote(currentNotes, {
                 role: event.role,
@@ -1192,7 +1699,41 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           if (event.type === "todo") {
             setTodos(event.items);
             setStatus(event.summary);
+            setToolTelemetry((currentTools) => addToolTelemetry(currentTools, "update_todo", true));
             continue;
+          }
+
+          if (event.type === "final") {
+            finalMessage = event.message;
+          }
+
+          // Best-effort: list documents PatchPilot wrote in the artifacts bar.
+          if (event.type === "tool" && event.ok && /write|create|pdf|save|export/i.test(event.name)) {
+            const created = /((?:\/|~|\.\/|[\w.-]+\/)[\w./-]+\.(?:pdf|docx?|md|txt|jsonl?|csv|ya?ml|toml|xml|html?|css|tsx?|jsx?|mjs|cjs|py|sh|zsh|bash|sql|log|diff|patch|png|jpe?g|gif|webp|bmp|heic|svg))/i.exec(
+              `${event.summary ?? ""} ${event.preview ?? ""}`
+            );
+            if (created?.[1]) {
+              registerCreatedArtifact(created[1]);
+            }
+          }
+
+          if (event.type === "tool") {
+            setToolTelemetry((currentTools) => addToolTelemetry(currentTools, event.name, event.ok));
+          }
+
+          if (event.type === "approval") {
+            setToolTelemetry((currentTools) => addApprovalTelemetry(currentTools, event.decision));
+          }
+
+          // Expired Gemini-Wrapper cookies arrive as an error event (the run
+          // does not throw) — offer the y/n re-auth prompt here too.
+          if (
+            event.type === "error" &&
+            settings.provider === "gemini-wrapper" &&
+            isGeminiCookieError(event.message)
+          ) {
+            setReauthPrompt({ task });
+            setWorkState("waiting_approval");
           }
 
           setStatus(eventToStatus(event));
@@ -1210,19 +1751,112 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           return;
         }
 
+        const message = error instanceof Error ? error.message : String(error);
         appendLine({
           kind: "error",
           tone: "danger",
           label: "error",
-          text: error instanceof Error ? error.message : String(error),
+          text: message,
           workState: "error"
         });
+        // Expired Gemini-Wrapper cookies: offer a one-key re-auth + retry
+        // instead of making the user restart and re-type the prompt.
+        if (settings.provider === "gemini-wrapper" && isGeminiCookieError(message)) {
+          setReauthPrompt({ task });
+          setStatus("gemini cookies expired");
+          setWorkState("waiting_approval");
+        }
       } finally {
         abortControllerRef.current = null;
         setIsRunning(false);
+        setUltramaxxRun(false);
+        // Record a short digest of this turn for cross-run continuity.
+        conversationTurnsRef.current = [
+          ...conversationTurnsRef.current,
+          `- Asked: "${task.replace(/\s+/g, " ").trim().slice(0, 220)}"${
+            turnAttachmentPaths.length > 0 ? ` attachments: ${turnAttachmentPaths.map(formatAttachmentDigestPath).join(", ")}` : ""
+          }${
+            finalMessage ? ` → outcome: ${finalMessage.replace(/\s+/g, " ").trim().slice(0, 220)}` : ""
+          }`
+        ].slice(-6);
+        void contextStoreRef.current.append({
+          kind: "turn",
+          source: "user",
+          label: task.replace(/\s+/g, " ").trim().slice(0, 120) || "PatchPilot turn",
+          text: [
+            `Asked: ${task.replace(/\s+/g, " ").trim()}`,
+            turnAttachmentPaths.length > 0 ? `Attachments: ${turnAttachmentPaths.join(", ")}` : "",
+            finalMessage ? `Outcome: ${finalMessage.replace(/\s+/g, " ").trim().slice(0, 500)}` : ""
+          ]
+            .filter(Boolean)
+            .join("\n"),
+          priority: turnAttachmentPaths.length > 0 ? 65 : 35
+        }).catch(() => undefined);
+        appendLine({
+          kind: "status",
+          tone: "muted",
+          label: "done",
+          text: `✻ ${formatCompletionSummary(Date.now() - runStartedAt, runStartedAt)}`,
+          workState: "done"
+        });
       }
     },
-    [agentMode, appendLine, experimentalFlags, isRunning, modelOptions, resumeContext, settings]
+    [agentMode, appendLine, experimentalFlags, isRunning, modelOptions, registerCreatedArtifact, resumeContext, settings]
+  );
+
+  const resolveReauthPrompt = useCallback(
+    async (accept: boolean): Promise<void> => {
+      const pending = reauthPrompt;
+      if (!pending || reauthBusy) {
+        return;
+      }
+
+      if (!accept) {
+        setReauthPrompt(null);
+        setStatus("idle");
+        setWorkState("idle");
+        appendLine({
+          tone: "warning",
+          label: "gemini",
+          text: "Cookie refresh declined.",
+          detail: "Run /onboarding to re-authenticate Gemini-Wrapper when you are ready."
+        });
+        return;
+      }
+
+      // Keep the panel on screen and show the busy animation while the
+      // browser cookies are imported.
+      setReauthBusy(true);
+      try {
+        const result = await importGeminiWrapperBrowserCookies();
+        process.env.PATCHPILOT_GEMINI_WRAPPER_MODE = "python";
+        process.env.PATCHPILOT_GEMINI_WRAPPER_COOKIES_JSON = result.cookiesPath;
+        savePatchPilotEnvValues({
+          PATCHPILOT_GEMINI_WRAPPER_MODE: "python",
+          PATCHPILOT_GEMINI_WRAPPER_COOKIES_JSON: result.cookiesPath
+        });
+        setReauthBusy(false);
+        setReauthPrompt(null);
+        appendLine({
+          tone: "success",
+          label: "gemini",
+          text: `Imported ${result.cookieCount} fresh cookies from ${result.source}. Retrying your task...`
+        });
+        await runTask(pending.task);
+      } catch (error) {
+        setReauthBusy(false);
+        setReauthPrompt(null);
+        setStatus("idle");
+        setWorkState("idle");
+        appendLine({
+          tone: "danger",
+          label: "gemini",
+          text: error instanceof Error ? error.message : String(error),
+          detail: "Cookie refresh failed. Sign in to Gemini in your browser, then retry the prompt."
+        });
+      }
+    },
+    [appendLine, reauthBusy, reauthPrompt, runTask]
   );
 
   const handleSlashCommand = useCallback(
@@ -1271,7 +1905,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           appendLine({
             tone: "accent",
             label: "permissions",
-            text: `mode ${agentMode} | write ${modePermissionLabel(agentMode, "write")} | shell ${modePermissionLabel(agentMode, "shell")} | subagents ${settings.subagents ? "on" : "off"}`,
+            text: `mode ${agentMode} | write ${modePermissionLabel(agentMode, "write", settings)} | shell ${modePermissionLabel(agentMode, "shell", settings)} | subagents ${settings.subagents ? "on" : "off"}`,
             detail: modeDescription(agentMode)
           });
           return;
@@ -1313,7 +1947,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         }
         case "onboarding":
           setOnboarding({
-            step: "entry"
+            step: "welcome"
           });
           setOnboardingIndex(0);
           setOnboardingInput("");
@@ -1388,6 +2022,15 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         case "write":
         case "apply": {
           const writeEnabled = readToggle(args[0], !settings.allowWrite);
+          if (writeEnabled) {
+            requestBypassMode();
+            appendLine({
+              tone: "warning",
+              label: "write",
+              text: "write bypass needs trusted-workspace confirmation"
+            });
+            return;
+          }
           setExplicitPermission("write", writeEnabled);
           appendLine({
             tone: "success",
@@ -1398,6 +2041,15 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         }
         case "shell": {
           const shellEnabled = readToggle(args[0], !settings.allowShell);
+          if (shellEnabled) {
+            requestBypassMode();
+            appendLine({
+              tone: "warning",
+              label: "shell",
+              text: "shell bypass needs trusted-workspace confirmation"
+            });
+            return;
+          }
           setExplicitPermission("shell", shellEnabled);
           appendLine({
             tone: "success",
@@ -1522,13 +2174,60 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         }
         case "status":
           appendLine({
+            kind: "status",
             tone: "accent",
             label: "status",
-            text:
-              settings.provider === "ollama"
-                ? `provider ollama | model ${settings.model} | host ${activeHost?.host.deviceName ?? settings.ollamaUrl} | route ${activeHost?.host.url ?? settings.ollamaUrl} | compute ${describeComputeTarget(settings.ollamaUrl).kind} | tools local | agents ${settings.subagents ? "on" : "off"} | mode ${agentMode} | write ${modePermissionLabel(agentMode, "write")} | shell ${modePermissionLabel(agentMode, "shell")} | draft ${draftTokens} tok | last ${formatTokens(telemetry)} | session ${formatSessionTokens(sessionTelemetry)} | cost ${formatCost(sessionTelemetry.estimatedCostUsd)}`
-              : `provider ${settings.provider} | model ${settings.model} | host ${settings.provider} api | compute cloud | agents ${settings.subagents ? "on" : "off"} | think ${settings.thinkingMode} | reasoning ${formatReasoningSupport(settings.provider, settings.model, settings.reasoningEffort === "adaptive" ? undefined : settings.reasoningEffort)} | mode ${agentMode} | write ${modePermissionLabel(agentMode, "write")} | shell ${modePermissionLabel(agentMode, "shell")} | draft ${draftTokens} tok | last ${formatTokens(telemetry)} | session ${formatSessionTokens(sessionTelemetry)} | cost ${formatCost(sessionTelemetry.estimatedCostUsd)}`
+            text: `mode ${agentMode} · write ${modePermissionLabel(agentMode, "write", settings)} · shell ${modePermissionLabel(agentMode, "shell", settings)} · ${settings.provider}/${settings.model} · subagents ${settings.subagents ? "on" : "off"}`,
+            detail: formatStatusDock({
+              provider: settings.provider,
+              model: settings.model,
+              agentMode,
+              subagents: settings.subagents,
+              thinkingMode: settings.thinkingMode,
+              reasoningEffort: settings.reasoningEffort,
+              workspace: settings.workspace,
+              ollamaUrl: settings.ollamaUrl,
+              sessionId: sessionStoreRef.current.sessionId,
+              activeHost,
+              advisorNotes,
+              toolTelemetry,
+              sessionTelemetry,
+              telemetry,
+              draftTokens
+            })
           });
+          return;
+        case "usage":
+          appendLine({
+            tone: "accent",
+            label: "usage",
+            text: formatUsageSummary({
+              provider: settings.provider,
+              model: settings.model,
+              telemetry,
+              sessionTelemetry,
+              toolTelemetry
+            }),
+            detail: formatUsageDetail({
+              provider: settings.provider,
+              model: settings.model,
+              sessionTelemetry,
+              toolTelemetry
+            })
+          });
+          return;
+        case "context":
+        case "ctx":
+        case "compact":
+        case "compress":
+          appendLine(
+            await runContextSlashCommand({
+              workspace: settings.workspace,
+              sessionId: sessionStoreRef.current.sessionId,
+              command: command === "compact" || command === "compress" ? "compact" : "context",
+              args
+            })
+          );
           return;
         case "sessions": {
           const sessions = await listWorkspaceSessions(settings.workspace);
@@ -1553,6 +2252,11 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
               workspace: settings.workspace,
               sessionId: selectedSession.sessionId
             });
+            contextStoreRef.current = new ContextStore({
+              workspace: settings.workspace,
+              sessionId: selectedSession.sessionId
+            });
+            await contextStoreRef.current.bootstrapFromSession(await sessionStoreRef.current.loadEvents());
             await sessionStoreRef.current.append({
               type: "session.resumed",
               sessionId: selectedSession.sessionId,
@@ -1737,6 +2441,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
             setAdvisorNotes([]);
             setTelemetry(null);
             setSessionTelemetry(emptySessionTelemetry());
+            setToolTelemetry(emptyToolTelemetry());
           }
           appendLine({
             tone: "success",
@@ -1755,31 +2460,60 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
             return;
           }
 
+          const normalizedFlag = normalizeExperimentalFlag(requestedFlag);
+          if (!normalizedFlag) {
+            appendLine({
+              tone: "warning",
+              label: "experimental",
+              text: `unknown flag ${requestedFlag}`,
+              detail: "Use file-analysis, memory, subagents, or shell-metacharacters."
+            });
+            return;
+          }
+
           const enabled = readToggle(requestedValue, true);
-          if (requestedFlag === "subagents" || requestedFlag === "agents") {
+          if (normalizedFlag === "subagents") {
             setSettings((currentSettings) => ({
               ...currentSettings,
               subagents: enabled
             }));
           }
           savePatchPilotEnvValues({
-            [`PATCHPILOT_EXPERIMENTAL_${requestedFlag.replace(/-/g, "_").toUpperCase()}`]: enabled ? "1" : "0"
+            [experimentalFlagEnvName(normalizedFlag)]: enabled ? "1" : "0"
           });
           setExperimentalFlags((currentFlags) => ({
             ...currentFlags,
-            ...(requestedFlag === "file-analysis"
+            ...(normalizedFlag === "fileAnalysis"
               ? { fileAnalysis: enabled }
-              : requestedFlag === "memory"
+              : normalizedFlag === "memory"
                 ? { memory: enabled }
-                : requestedFlag === "subagents" || requestedFlag === "agents"
+                : normalizedFlag === "subagents"
                   ? { subagents: enabled }
-                  : {})
+                  : { shellMetacharacters: enabled })
           }));
           appendLine({
             tone: "success",
             label: "experimental",
-            text: `${requestedFlag} ${enabled ? "enabled" : "disabled"}`
+            text: `${experimentalFlagCommandName(normalizedFlag)} ${enabled ? "enabled" : "disabled"}`
           });
+          return;
+        }
+        case "theme": {
+          const requested = args[0]?.toLowerCase();
+          if (requested === "new" || requested === "legacy") {
+            setUiTheme(requested);
+            savePatchPilotEnvValues({ PATCHPILOT_UI_THEME: requested });
+            appendLine({
+              tone: "success",
+              label: "theme",
+              text: `switched to the ${requested} UI`
+            });
+            return;
+          }
+
+          setThemePickerOpen(true);
+          setThemePickerIndex(themeOptions.findIndex((option) => option.value === uiTheme));
+          setInput("");
           return;
         }
         case "init": {
@@ -1802,8 +2536,13 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           setTelemetry(null);
           setResumeContext("");
           setSessionTelemetry(emptySessionTelemetry());
+          setToolTelemetry(emptyToolTelemetry());
           setTranscriptScrollOffset(0);
           setSessionScrollOffset(0);
+          conversationTurnsRef.current = [];
+          artifactsRef.current = [];
+          pendingAttachmentsRef.current = [];
+          setArtifacts([]);
           return;
         case "new":
           if (isRunning) {
@@ -1818,12 +2557,17 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           sessionStoreRef.current = new SessionStore({
             workspace: settings.workspace
           });
+          contextStoreRef.current = new ContextStore({
+            workspace: settings.workspace,
+            sessionId: sessionStoreRef.current.sessionId
+          });
           await sessionStoreRef.current.create();
           setLines([]);
           setAdvisorNotes([]);
           setTodos([]);
           setTelemetry(null);
           setSessionTelemetry(emptySessionTelemetry());
+          setToolTelemetry(emptyToolTelemetry());
           setPendingApproval(null);
           approvalResolverRef.current = null;
           setBypassConfirmation(false);
@@ -1832,11 +2576,12 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           setSessionScrollOffset(0);
           setStatus("idle");
           setWorkState("idle");
-          appendLine({
-            tone: "success",
-            label: "new",
-            text: `started session ${sessionStoreRef.current.sessionId}`
-          });
+          conversationTurnsRef.current = [];
+          artifactsRef.current = [];
+          pendingAttachmentsRef.current = [];
+          setArtifacts([]);
+          // Leave the transcript empty so the startup banner shows again,
+          // exactly like a fresh launch.
           return;
         case "exit":
         case "quit":
@@ -1923,9 +2668,40 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   }, []);
 
   useEffect(() => {
+    if (didCheckForUpdates.current || process.env.PATCHPILOT_UPDATE_CHECK === "0") {
+      return;
+    }
+
+    didCheckForUpdates.current = true;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 5000);
+    setStatus("checking for updates");
+    void checkForPatchPilotUpdate(props.packageVersion ?? "0.0.0", controller.signal)
+      .then((result) => {
+        if (result.available) {
+          setUpdatePrompt(result);
+          setStatus(`update available ${result.currentVersion} -> ${result.latestVersion}`);
+        } else {
+          setStatus((current) => (current === "checking for updates" ? "idle" : current));
+        }
+      })
+      .catch(() => {
+        setStatus((current) => (current === "checking for updates" ? "idle" : current));
+      })
+      .finally(() => {
+        clearTimeout(timer);
+      });
+
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
+  }, [props.packageVersion]);
+
+  useEffect(() => {
     runtimeStateRef.current.isRunning = isRunning;
-    runtimeStateRef.current.hasPendingApproval = Boolean(pendingApproval || bypassConfirmation);
-  }, [bypassConfirmation, isRunning, pendingApproval]);
+    runtimeStateRef.current.hasPendingApproval = Boolean(pendingApproval || bypassConfirmation || updatePrompt || updateBusy);
+  }, [bypassConfirmation, isRunning, pendingApproval, updateBusy, updatePrompt]);
 
   useEffect(() => {
     if (!props.initialTask || didRunInitialTask.current || onboarding || process.env.PATCHPILOT_ONBOARDING_COMPLETE !== "1") {
@@ -1947,7 +2723,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
 
     didOpenDefaultOnboarding.current = true;
     setOnboarding({
-      step: "entry"
+      step: "welcome"
     });
     setOnboardingIndex(0);
     setOnboardingInput("");
@@ -2030,6 +2806,40 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   }, [hostOptions.length, input, isLoadingHosts, isLoadingModels, isRunning, loadHostSuggestions, loadProviderModels, modelOptions.length, onboarding, settings.provider]);
 
   useInput((inputValue, key) => {
+    if (themePickerOpen) {
+      if (key.upArrow) {
+        setThemePickerIndex((currentIndex) => (currentIndex - 1 + themeOptions.length) % themeOptions.length);
+        return;
+      }
+
+      if (key.downArrow) {
+        setThemePickerIndex((currentIndex) => (currentIndex + 1) % themeOptions.length);
+        return;
+      }
+
+      if (key.escape || key.leftArrow) {
+        setThemePickerOpen(false);
+        setInput("");
+        return;
+      }
+
+      if (key.return) {
+        const chosen = themeOptions[themePickerIndex]?.value ?? "new";
+        setUiTheme(chosen);
+        savePatchPilotEnvValues({ PATCHPILOT_UI_THEME: chosen });
+        setThemePickerOpen(false);
+        setInput("");
+        appendLine({
+          tone: "success",
+          label: "theme",
+          text: `switched to the ${chosen} UI`
+        });
+        return;
+      }
+
+      return;
+    }
+
     if (experimentalOpen) {
       if (key.upArrow) {
         setExperimentalIndex((currentIndex) => (currentIndex - 1 + experimentalFlagCount()) % experimentalFlagCount());
@@ -2057,7 +2867,8 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           savePatchPilotEnvValues({
             PATCHPILOT_EXPERIMENTAL_FILE_ANALYSIS: nextFlags.fileAnalysis ? "1" : "0",
             PATCHPILOT_EXPERIMENTAL_MEMORY: nextFlags.memory ? "1" : "0",
-            PATCHPILOT_EXPERIMENTAL_SUBAGENTS: nextFlags.subagents ? "1" : "0"
+            PATCHPILOT_EXPERIMENTAL_SUBAGENTS: nextFlags.subagents ? "1" : "0",
+            PATCHPILOT_EXPERIMENTAL_SHELL_METACHARACTERS: nextFlags.shellMetacharacters ? "1" : "0"
           });
           return nextFlags;
         });
@@ -2075,8 +2886,11 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
 
     if (bypassConfirmation) {
       const normalizedInput = inputValue.toLowerCase();
+      // While the bypass confirmation is pending, tab continues the mode
+      // cycle straight back to plan — no need to confirm bypass first.
       if (key.tab) {
-        cancelBypassMode();
+        setInput("");
+        applyMode("plan");
         return;
       }
 
@@ -2089,6 +2903,44 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         cancelBypassMode();
         return;
       }
+    }
+
+    if (reauthBusy) {
+      return;
+    }
+
+    if (updateBusy) {
+      return;
+    }
+
+    if (updatePrompt) {
+      const normalizedInput = inputValue.toLowerCase();
+      if (normalizedInput === "y") {
+        void resolveUpdatePrompt(true);
+        return;
+      }
+
+      if (normalizedInput === "n" || key.escape) {
+        void resolveUpdatePrompt(false);
+        return;
+      }
+
+      return;
+    }
+
+    if (reauthPrompt) {
+      const normalizedInput = inputValue.toLowerCase();
+      if (normalizedInput === "y") {
+        void resolveReauthPrompt(true);
+        return;
+      }
+
+      if (normalizedInput === "n" || key.escape) {
+        void resolveReauthPrompt(false);
+        return;
+      }
+
+      return;
     }
 
     if (pendingApproval) {
@@ -2110,24 +2962,81 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
     }
 
     if (isRunning && key.escape) {
-      abortControllerRef.current?.abort();
+      const now = Date.now();
+      const isDoubleEscape = now - lastEscapeStopAtRef.current <= 700;
+      lastEscapeStopAtRef.current = now;
+
+      if (isDoubleEscape) {
+        abortControllerRef.current?.abort();
+        appendLine({
+          kind: "status",
+          tone: "warning",
+          label: "stop",
+          text: "Force stopping current task now..."
+        });
+        setStatus("force stopping");
+        return;
+      }
+
+      softStopRequestedRef.current = true;
       appendLine({
         kind: "status",
         tone: "warning",
         label: "stop",
-        text: "Stopping current task..."
+        text: "Will stop after the current step. Press esc again quickly to force stop now."
       });
-      setStatus("stopping");
+      setStatus("stopping after current step");
+      return;
+    }
+
+    // Ctrl+V — paste an image from the OS clipboard as an attachment. Bound to
+    // Ctrl+V on every platform because terminals capture ⌘V / the native paste
+    // shortcut for their own text paste.
+    if (key.ctrl && (inputValue === "v" || inputValue === "V") && !onboarding && !isRunning) {
+      void handleClipboardImagePaste();
       return;
     }
 
     if (onboarding) {
-      if (key.escape || key.leftArrow) {
+      if (key.escape) {
         goBackOnboarding();
         return;
       }
 
       if (onboardingBusyMessage) {
+        return;
+      }
+
+      // Preferences step: left/right cycle the selected row's value in place;
+      // left only goes back when no row is highlighted (the confirm row).
+      if (onboarding.step === "preferences") {
+        const confirmIndex = preferenceRows.length;
+        if ((key.leftArrow || key.rightArrow) && onboardingIndex < confirmIndex) {
+          const row = preferenceRows[onboardingIndex];
+          if (row) {
+            setOnboarding((current) =>
+              current && current.step === "preferences"
+                ? { ...current, preferences: cyclePreference(current.preferences, row.key, key.leftArrow ? -1 : 1) }
+                : current
+            );
+          }
+          return;
+        }
+        if (key.leftArrow) {
+          goBackOnboarding();
+          return;
+        }
+      } else if (key.leftArrow) {
+        goBackOnboarding();
+        return;
+      }
+
+      if (onboarding.step === "disclaimer") {
+        if (inputValue.toLowerCase() === "y") {
+          void handleOnboardingSubmit("y");
+        } else if (inputValue.toLowerCase() === "n") {
+          goBackOnboarding();
+        }
         return;
       }
 
@@ -2213,10 +3122,6 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       toggleMode();
       return;
     }
-
-    if (!isRunning && input.length === 0 && inputValue === "q") {
-      void unloadUsedOllamaModels(usedOllamaModelsRef.current).finally(exit);
-    }
   });
 
   useEffect(() => {
@@ -2296,6 +3201,81 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
     };
   }, []);
 
+  if (themePickerOpen) {
+    return (
+      <Box flexDirection="column" paddingX={1} height={rootHeight} overflowY="hidden">
+        <ThemePicker options={themeOptions} selectedIndex={themePickerIndex} currentValue={uiTheme} height={rootHeight - 2} />
+      </Box>
+    );
+  }
+
+  if (uiTheme === "new" && !experimentalOpen) {
+    if (onboarding) {
+      return (
+        <Box flexDirection="column" paddingX={1} height={rootHeight} overflowY="hidden">
+          <Box borderStyle="round" borderColor="cyan" paddingX={1}>
+            <Text color="cyan" bold>
+              ◆ PatchPilot
+            </Text>
+            <Text color="gray"> · guided setup · the new shell starts once setup is done</Text>
+          </Box>
+          <OnboardingPanel
+            state={onboarding}
+            height={rootHeight - 3}
+            selectedIndex={onboardingIndex}
+            input={onboardingInput}
+            busyMessage={onboardingBusyMessage}
+            notice={onboardingNotice}
+            formatModelLabel={formatModelLabel}
+            formatModelDescription={formatModelDescription}
+            onInputChange={setOnboardingInput}
+            onInputSubmit={(value) => void handleOnboardingSubmit(value)}
+          />
+        </Box>
+      );
+    }
+
+    return (
+      <ExperimentalShell
+        provider={settings.provider}
+        model={settings.model}
+        workspace={settings.workspace}
+        sessionId={sessionStoreRef.current.sessionId}
+        agentMode={agentMode}
+        allowWrite={settings.allowWrite}
+        allowShell={settings.allowShell}
+        subagents={settings.subagents}
+        workState={workState}
+        status={status}
+        isRunning={isRunning}
+        ultramaxxRun={ultramaxxRun}
+        telemetry={telemetry}
+        sessionTelemetry={sessionTelemetry}
+        draftTokens={draftTokens}
+        lines={lines}
+        todos={todos}
+        todoFrame={todoFrame}
+        pendingApproval={pendingApproval}
+        bypassConfirmation={bypassConfirmation}
+        updatePrompt={updatePrompt}
+        updateBusy={updateBusy}
+        reauthActive={Boolean(reauthPrompt) || reauthBusy}
+        reauthBusy={reauthBusy}
+        transcriptScrollOffset={transcriptScrollOffset}
+        input={input}
+        paletteItems={paletteItems}
+        paletteIndex={paletteIndex}
+        rows={terminalRows}
+        columns={terminalColumns}
+        activeHost={activeHost}
+        artifacts={artifacts}
+        onChange={setInput}
+        onSubmit={(value) => void handleSubmit(value)}
+        onAttach={attachFile}
+      />
+    );
+  }
+
   return (
     <Box flexDirection="column" paddingX={1} height={rootHeight} overflowY="hidden">
       <Header
@@ -2323,12 +3303,12 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         <ExperimentalPanel
           flags={experimentalFlags}
           selectedIndex={experimentalIndex}
-          height={panelHeight}
+          height={bodyHeight}
         />
       ) : onboarding ? (
         <OnboardingPanel
           state={onboarding}
-          height={panelHeight}
+          height={bodyHeight}
           selectedIndex={onboardingIndex}
           input={onboardingInput}
           busyMessage={onboardingBusyMessage}
@@ -2339,7 +3319,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           onInputSubmit={(value) => void handleOnboardingSubmit(value)}
         />
       ) : (
-        <Box flexDirection="row" height={panelHeight + approvalReservedHeight + composerReservedHeight + paletteReservedHeight + footerReservedHeight} overflowY="hidden">
+        <Box flexDirection="row" height={bodyHeight} overflowY="hidden">
           <Sidebar
             workspace={settings.workspace}
             model={settings.model}
@@ -2356,30 +3336,38 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
             telemetry={telemetry}
             sessionTelemetry={sessionTelemetry}
             draftTokens={draftTokens}
-            height={panelHeight}
+            height={bodyHeight}
             scrollOffset={sessionScrollOffset}
             advisors={advisorNotes}
             isActive={activeScrollPane === "session"}
             activeHost={activeHost}
           />
-          <Box flexDirection="column" flexGrow={1} height={panelHeight + approvalReservedHeight + composerReservedHeight + paletteReservedHeight + footerReservedHeight} overflowY="hidden">
+          <Box flexDirection="column" flexGrow={1} height={bodyHeight} overflowY="hidden">
             <Transcript
               lines={lines}
               isRunning={isRunning}
               isActive={activeScrollPane === "transcript"}
-              height={panelHeight}
+              height={transcriptHeight}
               width={transcriptWidth}
               scrollOffset={transcriptScrollOffset}
               todos={todos}
               todoFrame={todoFrame}
+              verbIndex={verbTick}
+              status={status}
+              workState={workState}
+              isApprovalWaiting={blockingPromptActive}
             />
-            <ApprovalPanel request={pendingApproval} bypassConfirmation={bypassConfirmation} />
+            <ReauthPromptPanel active={reauthPromptActive} busy={reauthBusy} />
+            <UpdatePromptPanel prompt={updatePromptActive ? updatePrompt : null} busy={updatePromptActive && updateBusy} />
+            <ApprovalPanel request={approvalPromptActive ? pendingApproval : null} bypassConfirmation={approvalPromptActive && bypassConfirmation} />
             <Composer
               input={input}
               isRunning={isRunning}
               status={status}
+              workState={workState}
               draftTokens={draftTokens}
-              isApprovalWaiting={Boolean(pendingApproval || bypassConfirmation)}
+              width={transcriptWidth}
+              isApprovalWaiting={blockingPromptActive}
               onChange={setInput}
               onSubmit={(value) => void handleSubmit(value)}
             />
@@ -2552,7 +3540,8 @@ async function resolveRunnableSettings(
   settings: AgentRunnerOptions,
   modelOptions: string[],
   appendLine: (line: LogLineInput) => void,
-  setModelOptions: React.Dispatch<React.SetStateAction<string[]>>
+  setModelOptions: React.Dispatch<React.SetStateAction<string[]>>,
+  onProviderError?: (message: string) => void
 ): Promise<AgentRunnerOptions | null> {
   let installedModels: string[];
   try {
@@ -2560,11 +3549,13 @@ async function resolveRunnableSettings(
       ? modelOptions
       : await loadAvailableModels(settings.provider, settings.ollamaUrl, setModelOptions);
   } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
     appendLine({
       tone: "danger",
       label: settings.provider,
-      text: error instanceof Error ? error.message : String(error)
+      text: message
     });
+    onProviderError?.(message);
     return null;
   }
 
@@ -2682,6 +3673,10 @@ function buildCommandSuggestionItems(options: {
 
 function getOnboardingOptionCount(onboarding: OnboardingState): number {
   switch (onboarding.step) {
+    case "welcome":
+      return 1;
+    case "disclaimer":
+      return 0;
     case "entry":
       return 7;
     case "host":
@@ -2695,6 +3690,8 @@ function getOnboardingOptionCount(onboarding: OnboardingState): number {
       return geminiWrapperShortcutModels.length + 1;
     case "model":
       return onboarding.models.length;
+    case "preferences":
+      return preferenceRows.length + 1;
     default:
       return 0;
   }
@@ -2752,6 +3749,40 @@ function readBooleanEnv(value: string | undefined, fallback: boolean): boolean {
   }
 
   return fallback;
+}
+
+function normalizeExperimentalFlag(value: string): ExperimentalFlag | null {
+  switch (value.trim().toLowerCase()) {
+    case "file-analysis":
+    case "fileanalysis":
+    case "files":
+      return "fileAnalysis";
+    case "memory":
+      return "memory";
+    case "subagents":
+    case "agents":
+      return "subagents";
+    case "shell-metacharacters":
+    case "shell-metachars":
+    case "metacharacters":
+    case "metachars":
+    case "shell":
+      return "shellMetacharacters";
+    default:
+      return null;
+  }
+}
+
+function experimentalFlagCommandName(flag: ExperimentalFlag): string {
+  return flag === "fileAnalysis"
+    ? "file-analysis"
+    : flag === "shellMetacharacters"
+      ? "shell-metacharacters"
+      : flag;
+}
+
+function experimentalFlagEnvName(flag: ExperimentalFlag): string {
+  return `PATCHPILOT_EXPERIMENTAL_${experimentalFlagCommandName(flag).replace(/-/g, "_").toUpperCase()}`;
 }
 
 function readIndexedSelection(value: string, selectedIndex: number): number | null {
@@ -2851,7 +3882,12 @@ function hasApiKey(provider: ApiKeyProvider): boolean {
   }
 
   if (provider === "gemini-wrapper") {
-    return Boolean(readGeminiWrapperBaseUrl() || readGeminiWrapperCookiesJson());
+    const baseUrl = readGeminiWrapperBaseUrl();
+    if (readGeminiWrapperMode() === "http") {
+      return !geminiWrapperRequiresApiKey(baseUrl) || Boolean(readGeminiWrapperApiKey());
+    }
+
+    return Boolean(readGeminiWrapperCookiesJson());
   }
 
   if (provider === "openrouter") {
@@ -2919,6 +3955,342 @@ function isReasoningEffort(value: string | undefined): value is AgentRunnerOptio
 function upsertAdvisorNote(notes: AdvisorNote[], nextNote: AdvisorNote): AdvisorNote[] {
   const nextNotes = notes.filter((note) => note.role !== nextNote.role);
   return [...nextNotes, nextNote].slice(-2);
+}
+
+function UpdatePromptPanel(props: {
+  prompt: UpdatePromptState | null;
+  busy: boolean;
+}): React.ReactElement | null {
+  if (!props.prompt && !props.busy) {
+    return null;
+  }
+
+  const command = props.prompt?.command ?? "npm update -g @jx-grxf/patchpilot";
+  return (
+    <Box borderStyle="double" borderColor="yellow" flexDirection="column" paddingX={1}>
+      <Text color="yellow" bold>
+        UPDATE AVAILABLE
+      </Text>
+      {props.busy ? (
+        <>
+          <Text color="cyan">Updating PatchPilot...</Text>
+          <Text color="gray">{command}</Text>
+        </>
+      ) : (
+        <>
+          <Text color="white">Install PatchPilot {props.prompt?.latestVersion} now?</Text>
+          <Text color="gray">
+            Current {props.prompt?.currentVersion} · source {props.prompt?.source} · {command}
+          </Text>
+          <Text>
+            <Text color="green" bold>
+              [y]
+            </Text>
+            <Text color="gray"> update   </Text>
+            <Text color="red" bold>
+              [n / esc]
+            </Text>
+            <Text color="gray"> skip</Text>
+          </Text>
+        </>
+      )}
+    </Box>
+  );
+}
+
+function ReauthPromptPanel(props: {
+  active: boolean;
+  busy: boolean;
+}): React.ReactElement | null {
+  if (!props.active) {
+    return null;
+  }
+
+  return (
+    <Box borderStyle="double" borderColor="yellow" flexDirection="column" paddingX={1}>
+      <Text color="yellow" bold>
+        GEMINI COOKIES EXPIRED
+      </Text>
+      {props.busy ? (
+        <>
+          <Text color="cyan">Refreshing Gemini browser cookies...</Text>
+          <Text color="gray">PatchPilot will retry the prompt automatically on success.</Text>
+        </>
+      ) : (
+        <>
+          <Text color="white">Refresh Gemini browser cookies and retry the last prompt?</Text>
+          <Text color="gray">Secret cookie values are imported from your signed-in browser and are not printed.</Text>
+          <Text>
+            <Text color="green" bold>
+              [y]
+            </Text>
+            <Text color="gray"> refresh & retry   </Text>
+            <Text color="red" bold>
+              [n / esc]
+            </Text>
+            <Text color="gray"> dismiss</Text>
+          </Text>
+        </>
+      )}
+    </Box>
+  );
+}
+
+function emptyToolTelemetry(): ToolTelemetry {
+  return {
+    total: 0,
+    succeeded: 0,
+    failed: 0,
+    approvals: 0,
+    denied: 0,
+    byTool: {}
+  };
+}
+
+function addToolTelemetry(current: ToolTelemetry, tool: AgentToolName | "subagent", ok: boolean): ToolTelemetry {
+  return {
+    ...current,
+    total: current.total + 1,
+    succeeded: current.succeeded + (ok ? 1 : 0),
+    failed: current.failed + (ok ? 0 : 1),
+    byTool: {
+      ...current.byTool,
+      [tool]: (current.byTool[tool] ?? 0) + 1
+    }
+  };
+}
+
+function addApprovalTelemetry(current: ToolTelemetry, decision: PermissionDecision): ToolTelemetry {
+  return {
+    ...current,
+    approvals: current.approvals + (decision === "deny" ? 0 : 1),
+    denied: current.denied + (decision === "deny" ? 1 : 0)
+  };
+}
+
+/**
+ * Dense operational status dock for `/status` — restores the always-available
+ * "what mode am I in and what can happen" view the legacy sidebar provided,
+ * without spending fixed screen rows in the new shell's header.
+ */
+function formatStatusDock(options: {
+  provider: ModelProvider;
+  model: string;
+  agentMode: AgentMode;
+  subagents: boolean;
+  thinkingMode: string;
+  reasoningEffort: ReasoningSetting | "adaptive";
+  workspace: string;
+  ollamaUrl: string;
+  sessionId: string;
+  activeHost: OllamaHostDetails | null;
+  advisorNotes: AdvisorNote[];
+  toolTelemetry: ToolTelemetry;
+  sessionTelemetry: SessionTelemetry;
+  telemetry: ModelTelemetry | null;
+  draftTokens: number;
+}): string {
+  const isOllama = options.provider === "ollama";
+  const hostLine = isOllama
+    ? `${options.activeHost?.host.deviceName ?? "ollama"}  ${options.activeHost?.host.url ?? options.ollamaUrl}`
+    : `${options.provider} api`;
+  const computeKind = isOllama ? describeComputeTarget(options.ollamaUrl).kind : "cloud";
+  const reasoning = isOllama
+    ? `think ${options.thinkingMode}`
+    : `think ${options.thinkingMode} · reasoning ${formatReasoningSupport(
+        options.provider,
+        options.model,
+        options.reasoningEffort === "adaptive" ? undefined : options.reasoningEffort,
+      )}`;
+  const toolCounters = Object.entries(options.toolTelemetry.byTool)
+    .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+    .slice(0, 6)
+    .map(([tool, count]) => `${tool} ${count}`)
+    .join(" · ");
+  const advisors = options.advisorNotes.length > 0
+    ? options.advisorNotes.map((note) => `  ${note.role}: ${note.message.replace(/\s+/g, " ").slice(0, 88)}`).join("\n")
+    : "  none yet";
+  return [
+    `provider   ${options.provider}/${options.model}`,
+    `host       ${hostLine}  ·  compute ${computeKind}  ·  tools local`,
+    `mode       ${options.agentMode}  ·  write ${modePermissionLabel(options.agentMode, "write")}  ·  shell ${modePermissionLabel(options.agentMode, "shell")}`,
+    `model cfg  ${reasoning}  ·  subagents ${options.subagents ? "on" : "off"}`,
+    `workspace  ${options.workspace}`,
+    `session    ${options.sessionId}`,
+    `tokens     draft ${options.draftTokens} · last ${formatTokens(options.telemetry)} · session ${formatSessionTokens(options.sessionTelemetry)} · cost ${formatCost(options.sessionTelemetry.estimatedCostUsd)}`,
+    options.toolTelemetry.total > 0
+      ? `tools      ${options.toolTelemetry.total} calls · ${options.toolTelemetry.succeeded} ok · ${options.toolTelemetry.failed} failed · ${options.toolTelemetry.approvals} approved · ${options.toolTelemetry.denied} denied`
+      : "tools      none yet",
+    toolCounters ? `counters   ${toolCounters}` : "",
+    `advisors\n${advisors}`,
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+function formatUsageSummary(options: {
+  provider: ModelProvider;
+  model: string;
+  telemetry: ModelTelemetry | null;
+  sessionTelemetry: SessionTelemetry;
+  toolTelemetry: ToolTelemetry;
+}): string {
+  const session = options.sessionTelemetry;
+  const cost = formatCost(session.estimatedCostUsd);
+  const saved = estimateSessionSavings(options.provider, options.model, session);
+  const pricingNote = pricingSourceLabel(session.costSource, saved.source);
+  return [
+    `${session.requests} request${session.requests === 1 ? "" : "s"}`,
+    `${session.promptTokens} in`,
+    `${session.responseTokens} out`,
+    `${session.cachedPromptTokens} cached`,
+    `${options.toolTelemetry.total} tool call${options.toolTelemetry.total === 1 ? "" : "s"}`,
+    `cost ${cost}`,
+    saved.costUsd !== null ? `saved ${formatCost(saved.costUsd)}` : "saved -",
+    pricingNote
+  ].join(" · ");
+}
+
+function formatUsageDetail(options: {
+  provider: ModelProvider;
+  model: string;
+  sessionTelemetry: SessionTelemetry;
+  toolTelemetry: ToolTelemetry;
+}): string {
+  const session = options.sessionTelemetry;
+  const saved = estimateSessionSavings(options.provider, options.model, session);
+  const toolRows = Object.entries(options.toolTelemetry.byTool)
+    .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+    .map(([tool, count]) => `${tool}: ${count}`)
+    .join("\n");
+  return [
+    `model: ${options.provider}/${options.model}`,
+    `tokens: ${session.promptTokens} input, ${session.responseTokens} output, ${session.cachedPromptTokens} cached, ${session.cacheWriteTokens} cache-write, ${session.totalTokens} total`,
+    `cost: ${formatCost(session.estimatedCostUsd)} (${session.costSource})`,
+    saved.costUsd !== null ? `lifetime saved this session: ${formatCost(saved.costUsd)} (${saved.source})` : "lifetime saved this session: -",
+    options.toolTelemetry.total > 0
+      ? `tools: ${options.toolTelemetry.total} total, ${options.toolTelemetry.succeeded} ok, ${options.toolTelemetry.failed} failed, ${options.toolTelemetry.approvals} approved, ${options.toolTelemetry.denied} denied`
+      : "tools: none yet",
+    toolRows ? `tool counters:\n${toolRows}` : "",
+    session.costSource === "fallback-pricing" || saved.source === "fallback-pricing"
+      ? "pricing note: exact model pricing was not available, so PatchPilot used a conservative general cloud-model estimate."
+      : session.costSource === "unknown"
+        ? "pricing note: exact pricing is unavailable for this provider/model."
+        : ""
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+function estimateSessionSavings(provider: ModelProvider, model: string, session: SessionTelemetry): {
+  costUsd: number | null;
+  source: "api-pricing" | "fallback-pricing" | "unknown";
+} {
+  return estimateComparableApiCost(provider, model, session.promptTokens, session.responseTokens, session.cachedPromptTokens);
+}
+
+function pricingSourceLabel(costSource: SessionTelemetry["costSource"], savedSource: "api-pricing" | "fallback-pricing" | "unknown"): string {
+  if (costSource === "fallback-pricing" || savedSource === "fallback-pricing") {
+    return "fallback pricing";
+  }
+  if (costSource === "unknown" && savedSource === "unknown") {
+    return "pricing unknown";
+  }
+  if (costSource === "free-route") {
+    return "free route";
+  }
+  if (costSource === "mixed") {
+    return "mixed pricing";
+  }
+  return "priced";
+}
+
+const bytesPerMiB = 1024 * 1024;
+const geminiAppsPromptFileLimit = 10;
+const geminiNonVideoFileLimitBytes = 100 * bytesPerMiB;
+const geminiApiPdfLimitBytes = 50 * bytesPerMiB;
+const geminiPdfCautionBytes = 20 * bytesPerMiB;
+const geminiInlineRequestWarnBytes = 25 * bytesPerMiB;
+
+function attachmentLimitWarning(paths: string[], provider: ModelProvider): string | null {
+  if (paths.length === 0 || (provider !== "gemini" && provider !== "gemini-wrapper")) {
+    return null;
+  }
+
+  const files = paths.map((filePath) => ({
+    path: filePath,
+    type: attachmentTypeForPath(filePath),
+    size: readFileSize(filePath)
+  }));
+  const knownTotalBytes = files.reduce((total, file) => total + (file.size ?? 0), 0);
+  const tooLargePdf = files.find((file) => file.type === "PDF" && typeof file.size === "number" && file.size > geminiApiPdfLimitBytes);
+  const largePdf = files.find((file) => file.type === "PDF" && typeof file.size === "number" && file.size > geminiPdfCautionBytes);
+  const tooLargeFile = files.find((file) => typeof file.size === "number" && file.size > geminiNonVideoFileLimitBytes);
+
+  if (paths.length > geminiAppsPromptFileLimit) {
+    return `Attached ${paths.length} files; Gemini web-style uploads are capped around ${geminiAppsPromptFileLimit} files per prompt. Split this into smaller batches.`;
+  }
+
+  if (tooLargePdf) {
+    return `${attachmentTypeForPath(tooLargePdf.path)} file ${attachmentBasename(tooLargePdf.path)} is over 50 MiB; Gemini API PDF input can reject it.`;
+  }
+
+  if (tooLargeFile) {
+    return `${attachmentTypeForPath(tooLargeFile.path)} file ${attachmentBasename(tooLargeFile.path)} is over 100 MiB; Gemini file prompts may reject it.`;
+  }
+
+  if (largePdf) {
+    return `${attachmentTypeForPath(largePdf.path)} file ${attachmentBasename(largePdf.path)} is over 20 MiB; Gemini PDF analysis can be slow or incomplete.`;
+  }
+
+  if (knownTotalBytes > geminiInlineRequestWarnBytes) {
+    return `Attached files total about ${formatMiB(knownTotalBytes)}; Gemini analysis is more reliable in smaller batches.`;
+  }
+
+  if (paths.length > 3) {
+    return `Attached ${paths.length} files; PatchPilot will reference them, but Gemini/Gemini-Wrapper is more reliable if you split large batches.`;
+  }
+
+  return null;
+}
+
+function readFileSize(filePath: string): number | null {
+  try {
+    const stats = statSync(filePath);
+    return stats.isFile() ? stats.size : null;
+  } catch {
+    return null;
+  }
+}
+
+function formatMiB(bytes: number): string {
+  return `${Math.round((bytes / bytesPerMiB) * 10) / 10} MiB`;
+}
+
+function formatAttachedDocuments(paths: string[]): string {
+  const counts = new Map<string, number>();
+  return paths
+    .map((filePath) => {
+      const kind = attachmentKindForPath(filePath) ?? "file";
+      const type = attachmentTypeForPath(filePath);
+      const index = (counts.get(type) ?? 0) + 1;
+      counts.set(type, index);
+      return `- ${attachmentLabel(kind, index, filePath)} path=${JSON.stringify(filePath)}`;
+    })
+    .join("\n");
+}
+
+/** Last path segment, splitting on both POSIX and Windows separators. */
+function attachmentBasename(filePath: string): string {
+  return filePath.split(/[\\/]/).filter(Boolean).at(-1) ?? filePath;
+}
+
+function formatAttachmentDigestPath(filePath: string): string {
+  return JSON.stringify(filePath.split(/[\\/]/).filter(Boolean).at(-1) ?? filePath);
+}
+
+function randomLegacyVerbIndex(): number {
+  return Math.floor(Math.random() * 1_000_000);
 }
 
 function eventToLine(event: AgentEvent): LogLineInput {

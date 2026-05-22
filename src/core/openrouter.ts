@@ -38,6 +38,7 @@ type OpenRouterChatResponse = {
     message?: {
       content?: string;
     };
+    finish_reason?: string;
   }>;
   usage?: {
     prompt_tokens?: number;
@@ -111,7 +112,8 @@ export class OpenRouterClient {
         max_tokens: this.runtimeOptions.maxTokens,
         temperature: this.runtimeOptions.temperature,
         reasoning: this.supportsReasoning(options.model) ? getOpenRouterReasoningConfig(options.reasoningEffort) : undefined,
-        response_format: options.formatJson && this.supportsJson(options.model) !== false ? { type: "json_object" } : undefined
+        response_format: options.formatJson && this.supportsJson(options.model) !== false ? { type: "json_object" } : undefined,
+        provider: options.formatJson && this.supportsJson(options.model) !== false ? { require_parameters: true } : undefined
       })),
       signal: options.signal
     });
@@ -131,6 +133,11 @@ export class OpenRouterClient {
         throw new Error(`OpenRouter rate limit hit for model "${options.model}".${retryAfter ? ` Retry after ${retryAfter}s.` : ""}${reason}`);
       }
       throw new Error(`OpenRouter chat failed for model "${options.model}": HTTP ${response.status}.${reason}`);
+    }
+
+    const finishReason = payload.choices?.[0]?.finish_reason;
+    if (isTruncatedFinishReason(finishReason)) {
+      throw new Error(`OpenRouter response for model "${options.model}" was truncated by max_tokens (${this.runtimeOptions.maxTokens}).`);
     }
 
     const content = payload.choices?.[0]?.message?.content?.trim() ?? "";
@@ -164,7 +171,7 @@ export class OpenRouterClient {
     try {
       return await fetchWithTimeout(`${this.baseUrl}${path}`, init, {
         timeoutMs: init?.method === "POST" ? 90_000 : 8000,
-        retries: init?.method === "POST" ? 0 : 1,
+        retries: init?.method === "POST" ? 2 : 1,
         label: `OpenRouter ${path}`
       });
     } catch (error) {
@@ -301,9 +308,13 @@ async function toTelemetry(payload: OpenRouterChatResponse, durationMs: number, 
 
 function readOpenRouterRuntimeOptions(env: NodeJS.ProcessEnv = process.env): OpenRouterRuntimeOptions {
   return {
-    maxTokens: readPositiveInteger(env.PATCHPILOT_NUM_PREDICT, 1024),
+    maxTokens: readPositiveInteger(env.PATCHPILOT_NUM_PREDICT, 8192),
     temperature: readTemperature(env.PATCHPILOT_TEMPERATURE, 0.1)
   };
+}
+
+function isTruncatedFinishReason(value: string | undefined): boolean {
+  return typeof value === "string" && /length|max_?tokens/i.test(value);
 }
 
 async function readJsonSafely(response: Response): Promise<unknown> {
@@ -326,5 +337,5 @@ function readPositiveInteger(value: string | undefined, fallback: number): numbe
 
 function readTemperature(value: string | undefined, fallback: number): number {
   const parsedValue = Number.parseFloat(value ?? "");
-  return Number.isFinite(parsedValue) && parsedValue >= 0 ? parsedValue : fallback;
+  return Number.isFinite(parsedValue) && parsedValue >= 0 && parsedValue <= 2 ? parsedValue : fallback;
 }

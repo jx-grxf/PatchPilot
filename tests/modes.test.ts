@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { initialAgentMode, modePermissionLabel, nextAgentMode, permissionsForMode } from "../src/tui/modes.js";
+import { initialAgentMode, modePermissionLabel, nextAgentMode, permissionsForMode, shouldBypassApproval } from "../src/tui/modes.js";
 
 describe("agent modes", () => {
   it("starts in build for partial permissions and bypass only when both write and shell are enabled", () => {
@@ -23,5 +23,41 @@ describe("agent modes", () => {
     expect(modePermissionLabel("plan", "write")).toBe("off");
     expect(modePermissionLabel("build", "write")).toBe("approval");
     expect(modePermissionLabel("bypass", "shell")).toBe("on");
+  });
+
+  it("bypasses external file approvals only in bypass with file analysis enabled", () => {
+    expect(
+      shouldBypassApproval({
+        mode: "bypass",
+        permission: "external_file",
+        permissions: {
+          allowWrite: true,
+          allowShell: true
+        },
+        allowExternalFileAnalysis: true
+      })
+    ).toBe(true);
+    expect(
+      shouldBypassApproval({
+        mode: "build",
+        permission: "external_file",
+        permissions: {
+          allowWrite: false,
+          allowShell: false
+        },
+        allowExternalFileAnalysis: true
+      })
+    ).toBe(false);
+    expect(
+      shouldBypassApproval({
+        mode: "bypass",
+        permission: "external_file",
+        permissions: {
+          allowWrite: true,
+          allowShell: true
+        },
+        allowExternalFileAnalysis: false
+      })
+    ).toBe(false);
   });
 });

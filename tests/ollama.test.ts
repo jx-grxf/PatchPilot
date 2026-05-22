@@ -54,7 +54,7 @@ describe("OllamaClient", () => {
       keep_alive: "15m",
       options: {
         num_ctx: 8192,
-        num_predict: 1024,
+        num_predict: 8192,
         temperature: 0.1
       }
     });
@@ -145,6 +145,37 @@ describe("OllamaClient", () => {
         ]
       })
     ).rejects.toThrow('Ollama returned an empty response for model "qwen2.5-coder:7b"');
+  });
+
+  it("surfaces truncated responses before protocol parsing", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          done_reason: "length",
+          message: {
+            content: "{\"action\":\"tools\""
+          }
+        }),
+        {
+          status: 200,
+          headers: {
+            "Content-Type": "application/json"
+          }
+        }
+      )
+    );
+
+    await expect(
+      new OllamaClient().chat({
+        model: "qwen2.5-coder:7b",
+        messages: [
+          {
+            role: "user",
+            content: "hello"
+          }
+        ]
+      })
+    ).rejects.toThrow("truncated by num_predict");
   });
 
   it("lists running models from the Ollama ps endpoint", async () => {

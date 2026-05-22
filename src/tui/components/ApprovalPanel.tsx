@@ -33,7 +33,7 @@ export function ApprovalPanel(props: {
         ACTION REQUIRED  {request.tool} needs {request.permission} approval
       </Text>
       <Text color="gray">
-        risk {request.risk}  scope allow-session applies only to this tool
+        risk {request.risk}  scope allow-session applies only to this tool{request.bypassable === false ? "  bypass cannot skip this" : ""}
       </Text>
       <Text color="white" bold wrap="wrap">
         {request.preview} {formatApprovalTarget(request.arguments)}

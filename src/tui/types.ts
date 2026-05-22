@@ -31,4 +31,13 @@ export type AdvisorNote = {
   message: string;
 };
 
+export type ToolTelemetry = {
+  total: number;
+  succeeded: number;
+  failed: number;
+  approvals: number;
+  denied: number;
+  byTool: Partial<Record<AgentToolName | "subagent", number>>;
+};
+
 export const maxTranscriptLines = 300;

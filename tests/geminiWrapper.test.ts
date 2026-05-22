@@ -10,6 +10,9 @@ import {
   getGeminiWrapperVenvDir,
   getManagedGeminiWrapperPythonPath,
   importGeminiWrapperBrowserCookies,
+  isGeminiBrowserCookieImportInstalled,
+  geminiWrapperShortcutModels,
+  normalizeGeminiWrapperBridgeModelFallback,
   readGeminiWrapperApiKey,
   readGeminiWrapperBaseUrl,
   readGeminiWrapperBootstrapPythonCommand,
@@ -23,6 +26,47 @@ import { normalizeModelProvider } from "../src/core/modelClient.js";
 
 afterEach(() => {
   vi.restoreAllMocks();
+});
+
+describe("Gemini-Wrapper model routing", () => {
+  // gemini_webapi 2.0.0 Model enum — the only model_name values the bridge
+  // resolver accepts. Anything else raises ValueError inside generate_content.
+  const validBridgeModels = new Set([
+    "gemini-3-pro",
+    "gemini-3-flash",
+    "gemini-3-flash-thinking",
+    "gemini-3-pro-plus",
+    "gemini-3-flash-plus",
+    "gemini-3-flash-thinking-plus",
+    "gemini-3-pro-advanced",
+    "gemini-3-flash-advanced",
+    "gemini-3-flash-thinking-advanced",
+  ]);
+
+  it("no longer offers the non-existent flash-lite tier", () => {
+    expect(geminiWrapperShortcutModels).not.toContain("flash-lite");
+    expect([...geminiWrapperShortcutModels]).toEqual(["auto", "flash", "pro"]);
+  });
+
+  it("maps every shortcut fallback to a model the bridge can resolve", () => {
+    // auto routes to the Gemini Web default — an empty model string.
+    expect(normalizeGeminiWrapperBridgeModelFallback("auto")).toBe("");
+    for (const shortcut of ["flash", "pro", "thinking"]) {
+      const resolved = normalizeGeminiWrapperBridgeModelFallback(shortcut);
+      expect(validBridgeModels.has(resolved), `${shortcut} -> ${resolved}`).toBe(true);
+    }
+  });
+
+  it("routes each shortcut to a distinct model", () => {
+    const flash = normalizeGeminiWrapperBridgeModelFallback("flash");
+    const pro = normalizeGeminiWrapperBridgeModelFallback("pro");
+    const thinking = normalizeGeminiWrapperBridgeModelFallback("thinking");
+    expect(new Set([flash, pro, thinking]).size).toBe(3);
+  });
+
+  it("rescues a stray flash-lite onto the closest valid tier", () => {
+    expect(normalizeGeminiWrapperBridgeModelFallback("flash-lite")).toBe("gemini-3-flash");
+  });
 });
 
 describe("GeminiWrapperClient", () => {
@@ -43,12 +87,20 @@ describe("GeminiWrapperClient", () => {
   });
 
   it("defaults Python bridge execution to PatchPilot's managed venv", () => {
+    const configDir = path.join(tmpdir(), "patchpilot-test-config");
     const env = {
-      PATCHPILOT_CONFIG_DIR: "/tmp/patchpilot-test-config"
+      PATCHPILOT_CONFIG_DIR: configDir
     } as NodeJS.ProcessEnv;
-    expect(getGeminiWrapperVenvDir(env)).toBe("/tmp/patchpilot-test-config/gemini-wrapper-venv");
-    expect(getGeminiWrapperCookieCacheDir(env)).toBe("/tmp/patchpilot-test-config/gemini-webapi-cache");
+    // Build expected paths with path.join so the assertion uses the platform
+    // separator (backslash on Windows, slash elsewhere).
+    expect(getGeminiWrapperVenvDir(env)).toBe(path.join(configDir, "gemini-wrapper-venv"));
+    expect(getGeminiWrapperCookieCacheDir(env)).toBe(path.join(configDir, "gemini-webapi-cache"));
     expect(readGeminiWrapperPythonCommand(env)).toBe(getManagedGeminiWrapperPythonPath(env));
+  });
+
+  it("only advertises file analysis for Python bridge mode", () => {
+    expect(new GeminiWrapperClient("http://localhost:8787/v1", "", undefined, "http").supportsFileAnalysis()).toBe(false);
+    expect(new GeminiWrapperClient("", "", undefined, "python", "python3", "").supportsFileAnalysis()).toBe(true);
   });
 
   it("writes pasted Gemini cookies into PatchPilot config with owner-only permissions", async () => {
@@ -419,7 +471,7 @@ describe("GeminiWrapperClient", () => {
       await writeFile(cookiesPath, JSON.stringify({ cookies: { "__Secure-1PSID": "psid-value" } }), "utf8");
 
       const client = new GeminiWrapperClient("", "", { maxTokens: 256, temperature: 0.2, bridgeMinIntervalMs: 0 }, "python", pythonShimPath, cookiesPath);
-      await expect(client.listModels()).resolves.toEqual(["auto", "flash-lite", "flash", "pro", "thinking", "flash-lite-id", "gemini-2.5-flash", "gemini-2.0-flash-vision"]);
+      await expect(client.listModels()).resolves.toEqual(["auto", "flash", "pro", "thinking", "flash-lite-id", "gemini-2.5-flash", "gemini-2.0-flash-vision"]);
       await expect(client.listModelDescriptors()).resolves.toContainEqual(
         expect.objectContaining({
           id: "flash-lite-id",
@@ -621,7 +673,7 @@ describe("GeminiWrapperClient", () => {
 
       const client = new GeminiWrapperClient("", "", { maxTokens: 256, temperature: 0.2, bridgeMinIntervalMs: 0 }, "python", pythonShimPath, cookiesPath);
       await expect(client.chat({ model: "flash-lite", messages: [{ role: "user", content: "hello" }] })).resolves.toMatchObject({
-        content: '{"model": "lite-id"}'
+        content: '{"model": "gemini-3-flash"}'
       });
       await expect(client.chat({ model: "flash", messages: [{ role: "user", content: "hello" }] })).resolves.toMatchObject({
         content: '{"model": "flash35-id"}'
@@ -859,7 +911,44 @@ describe("GeminiWrapperClient", () => {
       )
     );
 
-    await expect(new GeminiWrapperClient("http://localhost:8787/v1", "", undefined, "http").listModels()).resolves.toEqual(["auto", "flash-lite", "flash", "pro", "thinking", "gemini-2.5-flash"]);
+    await expect(new GeminiWrapperClient("http://localhost:8787/v1", "", undefined, "http").listModels()).resolves.toEqual(["auto", "flash", "pro", "thinking", "gemini-2.5-flash"]);
+  });
+
+  it("caches wrapper model descriptors for repeated model listings", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          data: [{ id: "gemini-2.5-flash" }]
+        }),
+        {
+          status: 200,
+          headers: {
+            "Content-Type": "application/json"
+          }
+        }
+      )
+    );
+    const client = new GeminiWrapperClient("http://localhost:8787/v1", "", undefined, "http");
+
+    await expect(client.listModels()).resolves.toContain("gemini-2.5-flash");
+    await expect(client.listModelDescriptors()).resolves.toContainEqual(expect.objectContaining({ id: "gemini-2.5-flash" }));
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("requires browser-cookie3 for browser cookie bridge readiness", async () => {
+    const tempRoot = await mkdtemp(path.join(tmpdir(), "patchpilot-gemini-ready-deps-"));
+    try {
+      const modulePath = path.join(tempRoot, "gemini_webapi.py");
+      const pythonShimPath = path.join(tempRoot, "python-shim");
+      await writeFile(modulePath, "", "utf8");
+      await writeFile(pythonShimPath, `#!/bin/sh\nPYTHONPATH="${tempRoot}" python3 "$@"\n`, "utf8");
+      await chmod(pythonShimPath, 0o755);
+
+      await expect(isGeminiBrowserCookieImportInstalled(pythonShimPath)).resolves.toBe(false);
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
   });
 
   it("memoizes Python bridge readiness checks for repeated chats", async () => {
@@ -928,14 +1017,23 @@ describe("GeminiWrapperClient", () => {
   });
 
   it("includes response body details for non-JSON wrapper errors", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response("<html>bad gateway</html>", {
-        status: 502,
-        headers: {
-          "retry-after": "3"
-        }
-      })
-    );
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(
+        new Response("<html>bad gateway</html>", {
+          status: 502,
+          headers: {
+            "retry-after": "3"
+          }
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response("<html>bad gateway</html>", {
+          status: 502,
+          headers: {
+            "retry-after": "3"
+          }
+        })
+      );
 
     await expect(new GeminiWrapperClient("http://localhost:8787/v1", "", undefined, "http").listModels()).rejects.toThrow(/bad gateway.*retry-after 3s/);
   });

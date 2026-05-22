@@ -1,6 +1,6 @@
 {
   "name": "@jx-grxf/patchpilot",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "private": false,
   "description": "Local-first coding agent TUI for visible, permissioned repo changes.",
   "type": "module",
@@ -12,6 +12,7 @@
     ".env.example",
     "docs/architecture.md",
     "docs/gemini-wrapper.md",
+    "docs/product-context.md",
     "docs/releases",
     "docs/showcase/patchpilot-banner.png",
     "docs/showcase/patchpilot-logo.png",

@@ -1,5 +1,29 @@
 import { describe, expect, it } from "vitest";
-import { getModelHint } from "../src/tui/format.js";
+import { formatCompactTokens, getModelHint } from "../src/tui/format.js";
+
+describe("formatCompactTokens", () => {
+  it("shows raw counts below 1000", () => {
+    expect(formatCompactTokens(0)).toBe("0");
+    expect(formatCompactTokens(42)).toBe("42");
+    expect(formatCompactTokens(999)).toBe("999");
+  });
+
+  it("shows one decimal in the low-thousands range", () => {
+    expect(formatCompactTokens(6100)).toBe("6.1k");
+    expect(formatCompactTokens(1000)).toBe("1.0k");
+  });
+
+  it("rounds to whole-k above ten thousand", () => {
+    expect(formatCompactTokens(175_239)).toBe("175k");
+    expect(formatCompactTokens(12_500)).toBe("13k");
+  });
+
+  it("switches to millions past 1M and clamps junk input", () => {
+    expect(formatCompactTokens(2_400_000)).toBe("2.4M");
+    expect(formatCompactTokens(-5)).toBe("0");
+    expect(formatCompactTokens(Number.NaN)).toBe("0");
+  });
+});
 
 describe("getModelHint", () => {
   it("recognizes explicit coding models", () => {
