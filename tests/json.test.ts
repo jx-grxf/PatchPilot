@@ -137,4 +137,25 @@ describe("parseAgentResponse", () => {
       message: "done"
     });
   });
+
+  it("repairs a stray backslash in a code snippet (Windows path)", () => {
+    // Raw backslashes before non-escape letters must survive as literals.
+    const parsed = parseAgentResponse('{"action":"final","message":"see C:\\Users\\dev\\App.ts"}');
+    expect(parsed).toEqual({ action: "final", message: "see C:\\Users\\dev\\App.ts" });
+  });
+
+  it("repairs a model showing a code snippet with newlines and a path", () => {
+    // The model emits a file path then the file body with raw newlines —
+    // exactly the "search the code and show me that snippet" case.
+    const raw = '{"action":"final","message":"AnimatedText.tsx\nexport const palette = [\n  \\"#fff\\"\n];"}';
+    const parsed = parseAgentResponse(raw) as { action: string; message: string };
+    expect(parsed.action).toBe("final");
+    expect(parsed.message).toContain("export const palette");
+    expect(parsed.message).toContain('"#fff"');
+  });
+
+  it("repairs raw tabs inside JSON strings", () => {
+    const parsed = parseAgentResponse('{"action":"final","message":"col1\tcol2"}') as { message: string };
+    expect(parsed.message).toBe("col1\tcol2");
+  });
 });

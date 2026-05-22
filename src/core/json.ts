@@ -22,7 +22,7 @@ const agentResponseSchema = z.discriminatedUnion("action", [
 
 export function parseAgentResponse(rawContent: string): AgentResponse {
   const jsonContent = extractJson(rawContent);
-  const parsed = normalizeModelJson(parseJsonWithControlCharRepair(jsonContent));
+  const parsed = normalizeModelJson(parseJsonWithRepair(jsonContent));
   return agentResponseSchema.parse(parsed);
 }
 
@@ -61,29 +61,45 @@ function extractJson(rawContent: string): string {
   throw new Error("Model response did not contain a JSON object.");
 }
 
-function parseJsonWithControlCharRepair(jsonContent: string): unknown {
+function parseJsonWithRepair(jsonContent: string): unknown {
   try {
     return JSON.parse(jsonContent);
   } catch (error) {
-    if (!isControlCharacterJsonError(error)) {
+    // Local and cloud models routinely emit invalid JSON when a string value
+    // carries file content — literal newlines/tabs and stray backslashes
+    // (Windows paths, regex, code). Repair the string contents and retry on
+    // any syntax error so "search the code and show me that snippet" works.
+    if (!(error instanceof SyntaxError)) {
       throw error;
     }
 
-    return JSON.parse(escapeControlCharactersInsideStrings(jsonContent));
+    try {
+      return JSON.parse(repairJsonStrings(jsonContent));
+    } catch {
+      // Surface the original, more descriptive error if the repair did not help.
+      throw error;
+    }
   }
 }
 
-function isControlCharacterJsonError(error: unknown): boolean {
-  return error instanceof SyntaxError && /control character|bad escaped character|bad character/i.test(error.message);
-}
+// The only escape characters JSON permits after a backslash.
+const validJsonEscapes = new Set(['"', "\\", "/", "b", "f", "n", "r", "t", "u"]);
 
-function escapeControlCharactersInsideStrings(jsonContent: string): string {
+/**
+ * Repair the inside of JSON string literals: escape literal control characters
+ * (newlines/tabs the model forgot to escape) and double any stray backslash
+ * that is not a valid JSON escape, so file content survives JSON.parse.
+ */
+function repairJsonStrings(jsonContent: string): string {
+  const chars = [...jsonContent];
   let repaired = "";
   let insideString = false;
-  let escaped = false;
 
-  for (const character of jsonContent) {
+  for (let index = 0; index < chars.length; index += 1) {
+    const character = chars[index]!;
+
     if (!insideString) {
+      // Drop control-character noise sitting between JSON tokens.
       if (character.charCodeAt(0) < 0x20) {
         continue;
       }
@@ -94,38 +110,38 @@ function escapeControlCharactersInsideStrings(jsonContent: string): string {
       continue;
     }
 
-    if (escaped) {
-      repaired += character;
-      escaped = false;
-      continue;
-    }
-
-    if (character === "\\") {
-      repaired += character;
-      escaped = true;
-      continue;
-    }
-
     if (character === "\"") {
       repaired += character;
       insideString = false;
       continue;
     }
 
-    switch (character) {
-      case "\n":
-        repaired += "\\n";
-        break;
-      case "\r":
-        repaired += "\\r";
-        break;
-      case "\t":
-        repaired += "\\t";
-        break;
-      default:
-        repaired += character.charCodeAt(0) < 0x20 ? `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}` : character;
-        break;
+    if (character === "\\") {
+      const next = chars[index + 1];
+      if (next !== undefined && validJsonEscapes.has(next)) {
+        repaired += character + next;
+        index += 1;
+      } else {
+        // Stray backslash (Windows path, regex) — escape it as a literal.
+        repaired += "\\\\";
+      }
+      continue;
     }
+
+    const code = character.charCodeAt(0);
+    if (code >= 0x20) {
+      repaired += character;
+      continue;
+    }
+
+    repaired +=
+      character === "\n"
+        ? "\\n"
+        : character === "\r"
+          ? "\\r"
+          : character === "\t"
+            ? "\\t"
+            : `\\u${code.toString(16).padStart(4, "0")}`;
   }
 
   return repaired;
