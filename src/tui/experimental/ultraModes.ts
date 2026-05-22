@@ -6,15 +6,17 @@
  *
  *  - `ultramaxx`  — escalate: xhigh reasoning, large step budget, advisors on.
  *  - `ultracheap` — minimize: cheapest model, low reasoning, terse, advisors off.
+ *  - `ultrafast`  — speed: lowest-latency settings, fixed short thinking, no advisors.
  *  - `ultrafocus` — restrict the agent to a single file/folder (`ultrafocus:path`).
  *  - `ultraloop`  — expand the run budget and require explicit self-verification
  *                   before the final answer.
  */
-export type UltraMode = "maxx" | "cheap" | "focus" | "loop";
+export type UltraMode = "maxx" | "cheap" | "fast" | "focus" | "loop";
 
 export const ultraModeKeyword: Record<UltraMode, string> = {
   maxx: "ultramaxx",
   cheap: "ultracheap",
+  fast: "ultrafast",
   focus: "ultrafocus",
   loop: "ultraloop",
 };
@@ -27,7 +29,10 @@ export const ultraKeywords: readonly string[] = Object.values(ultraModeKeyword);
  * of the cost/effort axis — escalating and minimizing at the same time is
  * contradictory, so the prompt cannot be sent.
  */
-const incompatiblePairs: ReadonlyArray<readonly [UltraMode, UltraMode]> = [["maxx", "cheap"]];
+const incompatiblePairs: ReadonlyArray<readonly [UltraMode, UltraMode]> = [
+  ["maxx", "cheap"],
+  ["maxx", "fast"],
+];
 
 export type UltraModeParse = {
   /** Distinct modes found, in detection order. */
@@ -68,7 +73,7 @@ export function parseUltraModes(text: string): UltraModeParse {
     cleaned = cleaned.replace(focusPattern, " ");
   }
 
-  for (const mode of ["maxx", "cheap", "loop"] as const) {
+  for (const mode of ["maxx", "cheap", "fast", "loop"] as const) {
     const pattern = plainKeywordPattern(ultraModeKeyword[mode]);
     if (pattern.test(cleaned)) {
       modes.push(mode);
@@ -91,7 +96,7 @@ export function parseUltraModes(text: string): UltraModeParse {
 
 /** Stable display order regardless of where the keywords appeared. */
 function orderModes(modes: UltraMode[]): UltraMode[] {
-  const order: UltraMode[] = ["maxx", "cheap", "focus", "loop"];
+  const order: UltraMode[] = ["maxx", "cheap", "fast", "focus", "loop"];
   return order.filter((mode) => modes.includes(mode));
 }
 

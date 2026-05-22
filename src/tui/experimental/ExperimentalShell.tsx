@@ -273,7 +273,9 @@ function ShellTranscript(props: {
 }): React.ReactElement {
   const rows = buildShellRows(props.lines, props.width);
   const [frame, setFrame] = useState(0);
-  const hasRainbowRows = rows.some((row) => row.effect === "rainbow");
+  // Animate when a row is rainbow-tagged, or when any row spells an ultra
+  // keyword — so submitted ultra keywords keep flowing their gradient.
+  const hasRainbowRows = rows.some((row) => row.effect === "rainbow" || hasUltraMode(row.text));
   useEffect(() => {
     if (!hasRainbowRows) {
       setFrame(0);
@@ -357,7 +359,19 @@ function ShellRowView(props: { row: ReturnType<typeof buildShellRows>[number]; f
         )}
       </Box>
       <Text color={textColor} dimColor={props.row.dim} wrap="truncate">
-        {props.row.text}
+        {splitUltraSegments(props.row.text).map((segment, index) =>
+          segment.mode ? (
+            <GradientText
+              key={`ultra-${index}`}
+              text={segment.text}
+              palette={ultraGradients[segment.mode]}
+              frame={props.frame + index}
+              bold
+            />
+          ) : (
+            <Text key={`plain-${index}`}>{segment.text}</Text>
+          ),
+        )}
       </Text>
     </Box>
   );

@@ -1448,8 +1448,12 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
 
       const ultramaxx = ultra.modes.includes("maxx");
       const ultracheap = ultra.modes.includes("cheap");
+      const ultrafast = ultra.modes.includes("fast");
       const ultrafocus = ultra.modes.includes("focus");
       const ultraloop = ultra.modes.includes("loop");
+      // ultracheap and ultrafast both run the lean pipeline (low reasoning,
+      // fixed short thinking, no advisors, capped steps).
+      const ultraLean = ultracheap || ultrafast;
       const effectiveTask = ultra.modes.length > 0 ? ultra.cleaned : task;
       if (ultra.modes.length > 0 && !effectiveTask) {
         appendLine({
@@ -1489,6 +1493,9 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         }
         if (ultracheap) {
           engagedDetail.push("ultracheap: low reasoning, terse output, advisors off.");
+        }
+        if (ultrafast) {
+          engagedDetail.push("ultrafast: lowest-latency pipeline — low reasoning, fixed short thinking, advisors off.");
         }
         if (ultrafocus) {
           engagedDetail.push(`ultrafocus: the agent stays inside ${ultra.focusPath}.`);
@@ -1553,6 +1560,11 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
             "ULTRACHEAP is active. Keep output terse, avoid unnecessary tool calls, and take the most direct path to a correct result."
           );
         }
+        if (ultrafast) {
+          ultraInstructions.push(
+            "ULTRAFAST is active. Optimise for speed: minimal reasoning, the fewest tool calls that still get it right, no exploratory detours. Answer as directly as possible."
+          );
+        }
         const effectiveResumeContext = [resumeContext, sessionMemory, artifactContext, persistedContext, ultraInstructions.join("\n\n")]
           .filter(Boolean)
           .join("\n\n");
@@ -1562,12 +1574,12 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
             ? Math.max(runnableSettings.maxSteps, 60)
             : ultramaxx
               ? Math.max(runnableSettings.maxSteps, 40)
-              : ultracheap
+              : ultraLean
                 ? Math.min(runnableSettings.maxSteps, 12)
                 : runnableSettings.maxSteps,
-          reasoningEffort: ultramaxx ? "xhigh" : ultracheap ? "low" : runnableSettings.reasoningEffort,
-          thinkingMode: ultramaxx || ultraloop ? "adaptive" : ultracheap ? "fixed" : runnableSettings.thinkingMode,
-          subagents: ultramaxx || ultraloop ? true : ultracheap ? false : runnableSettings.subagents,
+          reasoningEffort: ultramaxx ? "xhigh" : ultraLean ? "low" : runnableSettings.reasoningEffort,
+          thinkingMode: ultramaxx || ultraloop ? "adaptive" : ultraLean ? "fixed" : runnableSettings.thinkingMode,
+          subagents: ultramaxx || ultraloop ? true : ultraLean ? false : runnableSettings.subagents,
           ultramaxx,
           allowExternalFileAnalysis: experimentalFlags.fileAnalysis,
           memoryEnabled: experimentalFlags.memory,

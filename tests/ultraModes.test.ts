@@ -21,6 +21,19 @@ describe("parseUltraModes", () => {
     expect(parsed.conflict).toContain("cannot be combined");
   });
 
+  it("rejects ultramaxx + ultrafast as a conflict", () => {
+    const parsed = parseUltraModes("ultramaxx ultrafast ship it");
+    expect(parsed.modes).toEqual(["maxx", "fast"]);
+    expect(parsed.conflict).toContain("cannot be combined");
+  });
+
+  it("allows ultrafast together with ultracheap and ultrafocus", () => {
+    const parsed = parseUltraModes("ultrafast ultracheap ultrafocus:lib.ts trim it");
+    expect(parsed.modes).toEqual(["cheap", "fast", "focus"]);
+    expect(parsed.focusPath).toBe("lib.ts");
+    expect(parsed.conflict).toBeNull();
+  });
+
   it("captures a focus path with a colon", () => {
     const parsed = parseUltraModes("ultrafocus:src/core/agent.ts fix the retry bug");
     expect(parsed.modes).toEqual(["focus"]);

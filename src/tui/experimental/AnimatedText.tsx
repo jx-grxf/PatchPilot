@@ -18,6 +18,7 @@ export const rainbowPalette = ["#ff5f7e", "#ff9d3c", "#ffe14a", "#5fe08a", "#4fc
 export const ultraGradients: Record<UltraMode, string[]> = {
   maxx: rainbowPalette,
   cheap: ["#3fae6a", "#5fe08a", "#9fe8b8", "#5fe08a", "#3fae6a"],
+  fast: ["#ff8a3d", "#ffd54a", "#fff1a8", "#ffd54a", "#ff8a3d"],
   focus: ["#2f8fd0", "#4fc6ff", "#bdeaff", "#4fc6ff", "#2f8fd0"],
   loop: ["#7a5fff", "#9d8bff", "#c77dff", "#9d8bff", "#7a5fff"],
 };
