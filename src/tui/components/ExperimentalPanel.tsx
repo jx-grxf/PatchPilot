@@ -1,7 +1,7 @@
 import React from "react";
 import { Box, Text } from "ink";
 
-export type ExperimentalFlag = "fileAnalysis" | "memory" | "subagents";
+export type ExperimentalFlag = "fileAnalysis" | "memory" | "subagents" | "shellMetacharacters";
 
 export type ExperimentalFlags = Record<ExperimentalFlag, boolean>;
 
@@ -24,6 +24,11 @@ const experimentalRows: Array<{
     key: "subagents",
     label: "Subagents",
     description: "Enable explorer, planner, and reviewer advisors for larger workspace tasks."
+  },
+  {
+    key: "shellMetacharacters",
+    label: "Shell Metachars",
+    description: "Allow pipes, &&, and ; in run_shell. Redirects and expansion still ask even in bypass."
   }
 ];
 

@@ -1268,6 +1268,108 @@ describe("WorkspaceTools", () => {
     expect(result.summary).toContain("command exited");
   });
 
+  it("blocks shell chains until experimental shell metacharacters are enabled", async () => {
+    let approvals = 0;
+    const tools = new WorkspaceTools({
+      root: tempRoot,
+      allowWrite: false,
+      allowShell: false,
+      approvalHandler: async () => {
+        approvals += 1;
+        return "allow_once";
+      }
+    });
+
+    const result = await tools.execute({
+      name: "run_shell",
+      arguments: {
+        command: "printf hello && printf world"
+      }
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.summary).toContain("shell metacharacters");
+    expect(approvals).toBe(0);
+  });
+
+  it("allows approved shell chains when experimental shell metacharacters are enabled", async () => {
+    let approvals = 0;
+    const tools = new WorkspaceTools({
+      root: tempRoot,
+      allowWrite: false,
+      allowShell: false,
+      allowShellMetacharacters: true,
+      approvalHandler: async () => {
+        approvals += 1;
+        return "allow_once";
+      }
+    });
+
+    const result = await tools.execute({
+      name: "run_shell",
+      arguments: {
+        command: "printf hello && printf world"
+      }
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.content).toContain("helloworld");
+    expect(approvals).toBe(1);
+  });
+
+  it("forces approval for high-risk shell syntax even when shell bypass is enabled", async () => {
+    let approvals = 0;
+    const tools = new WorkspaceTools({
+      root: tempRoot,
+      allowWrite: true,
+      allowShell: true,
+      allowShellMetacharacters: true,
+      approvalHandler: async () => {
+        approvals += 1;
+        return "deny";
+      }
+    });
+
+    const result = await tools.execute({
+      name: "run_shell",
+      arguments: {
+        command: "printf secret > out.txt"
+      }
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.approval?.request.bypassable).toBe(false);
+    expect(result.approval?.request.preview).toContain("redirection");
+    expect(approvals).toBe(1);
+    await expect(readFile(path.join(tempRoot, "out.txt"), "utf8")).rejects.toThrow();
+  });
+
+  it("blocks unapproved shell glob expansion before bypass execution", async () => {
+    await writeFile(path.join(tempRoot, "secret.txt"), "secret");
+    let approvals = 0;
+    const tools = new WorkspaceTools({
+      root: tempRoot,
+      allowWrite: true,
+      allowShell: true,
+      allowShellMetacharacters: true,
+      approvalHandler: async () => {
+        approvals += 1;
+        return "deny";
+      }
+    });
+
+    const result = await tools.execute({
+      name: "run_shell",
+      arguments: {
+        command: "cat *.txt"
+      }
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.approval?.request.preview).toContain("glob expansion");
+    expect(approvals).toBe(1);
+  });
+
   it("blocks absolute shell path arguments outside the workspace before approval", async () => {
     let approvals = 0;
     const tools = new WorkspaceTools({

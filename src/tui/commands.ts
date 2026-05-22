@@ -277,10 +277,10 @@ export const slashCommands: SlashCommand[] = [
   },
   {
     name: "experimental",
-    usage: "/experimental [file-analysis|memory|subagents] [on|off]",
+    usage: "/experimental [file-analysis|memory|subagents|shell-metacharacters] [on|off]",
     description: "Open or update experimental feature toggles.",
     category: "utility",
-    detail: "Run /experimental to open the checkbox menu. Use space to toggle file-analysis, memory, and subagents."
+    detail: "Run /experimental to open the checkbox menu. Use space to toggle file-analysis, memory, subagents, and shell-metacharacters."
   },
   {
     name: "theme",

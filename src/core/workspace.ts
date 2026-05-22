@@ -1581,7 +1581,7 @@ export class WorkspaceTools {
     for (const segment of splitPipeline(tokens)) {
       for (const token of segment.slice(1)) {
         const normalizedToken = stripQuotes(token);
-        if (!normalizedToken || normalizedToken === "|" || normalizedToken.startsWith("-")) {
+        if (!normalizedToken || shellOperatorTokens.has(normalizedToken) || normalizedToken.startsWith("-")) {
           continue;
         }
 
@@ -2568,48 +2568,53 @@ function normalizePatchHeaderPath(value: string): string {
   return trimmedValue;
 }
 
-function validateShellCommand(command: string, workspaceRoot: string): string | null {
+function validateShellCommand(command: string, workspaceRoot: string, options: { allowMetacharacters: boolean }): { error: string | null; requiresApprovalReason?: string } {
   const trimmedCommand = command.trim();
-  if (/[;&<>`$\n\r]/.test(trimmedCommand)) {
-    return "dangerous shell metacharacters are blocked; pipes are allowed, but command separators, redirects, expansion, and multiline commands are not.";
-  }
-
-  if (/(^|\s)\|\|(\s|$)/.test(trimmedCommand)) {
-    return "shell command separators are blocked; use a single pipeline.";
-  }
-
-  const tokens = tokenizeShellCommand(trimmedCommand);
-  if (tokens.length === 0) {
-    return "command is empty.";
-  }
-
-  for (const segment of splitPipeline(tokens)) {
-    const segmentError = validateShellSegment(segment);
-    if (segmentError) {
-      return segmentError;
+  const syntax = analyzeShellSyntax(trimmedCommand);
+  if (!options.allowMetacharacters) {
+    if (syntax.hasShellChains || syntax.highRiskReasons.length > 0) {
+      return {
+        error:
+          "shell metacharacters beyond pipes require /experimental shell-metacharacters; redirects, expansion, background jobs, OR chains, and multiline commands stay approval-gated."
+      };
     }
   }
 
-  for (const token of tokens.filter((value) => value !== "|")) {
+  const tokens = syntax.tokens;
+  if (tokens.length === 0) {
+    return { error: "command is empty." };
+  }
+
+  for (const segment of splitShellCommandSegments(tokens)) {
+    const segmentError = validateShellSegment(segment);
+    if (segmentError) {
+      return { error: segmentError };
+    }
+  }
+
+  for (const token of tokens.filter((value) => !shellOperatorTokens.has(value))) {
     const normalizedToken = stripQuotes(token);
     if (isSensitivePath(normalizedToken)) {
-      return "sensitive path arguments are blocked.";
+      return { error: "sensitive path arguments are blocked." };
     }
 
     if (/(^|[\\/])\.\.([\\/]|$)/.test(normalizedToken)) {
-      return "parent directory traversal is blocked.";
+      return { error: "parent directory traversal is blocked." };
     }
 
     const absolutePath = toAbsoluteShellPath(normalizedToken);
     if (absolutePath) {
       const relativePath = path.relative(workspaceRoot, absolutePath);
       if (relativePath.startsWith("..") || path.isAbsolute(relativePath)) {
-        return "absolute path arguments outside the workspace are blocked. Use inspect_document with /experimental file-analysis for external files.";
+        return { error: "absolute path arguments outside the workspace are blocked. Use inspect_document with /experimental file-analysis for external files." };
       }
     }
   }
 
-  return null;
+  return {
+    error: null,
+    requiresApprovalReason: syntax.highRiskReasons[0]
+  };
 }
 
 type PackageScriptCommand = {
@@ -2697,8 +2702,132 @@ function splitPackageCommandTokens(tokens: string[]): string[][] {
   return commands;
 }
 
+const shellOperatorTokens = new Set(["|", "&&", "||", ";", "&", "<", "<<", ">", ">>"]);
+
+function analyzeShellSyntax(command: string): { tokens: string[]; hasShellChains: boolean; highRiskReasons: string[] } {
+  const tokens: string[] = [];
+  const highRiskReasons = new Set<string>();
+  let current = "";
+  let quote: "'" | "\"" | null = null;
+  let escaping = false;
+  let hasShellChains = false;
+
+  const pushCurrent = () => {
+    if (current) {
+      tokens.push(current);
+      current = "";
+    }
+  };
+  const pushOperator = (operator: string) => {
+    pushCurrent();
+    tokens.push(operator);
+  };
+
+  for (let index = 0; index < command.length; index += 1) {
+    const char = command[index] ?? "";
+    const next = command[index + 1] ?? "";
+
+    if (escaping) {
+      current += char;
+      escaping = false;
+      continue;
+    }
+
+    if (char === "\\") {
+      current += char;
+      escaping = true;
+      continue;
+    }
+
+    if (quote) {
+      current += char;
+      if (quote === "\"" && (char === "$" || char === "`")) {
+        highRiskReasons.add("shell expansion");
+      }
+      if (char === quote) {
+        quote = null;
+      }
+      continue;
+    }
+
+    if (char === "'" || char === "\"") {
+      current += char;
+      quote = char;
+      continue;
+    }
+
+    if (char === "\n" || char === "\r") {
+      pushCurrent();
+      highRiskReasons.add("multiline command");
+      continue;
+    }
+
+    if (/\s/.test(char)) {
+      pushCurrent();
+      continue;
+    }
+
+    if (char === "|") {
+      if (next === "|") {
+        pushOperator("||");
+        highRiskReasons.add("OR chain");
+        index += 1;
+      } else {
+        pushOperator("|");
+      }
+      continue;
+    }
+
+    if (char === "&") {
+      if (next === "&") {
+        pushOperator("&&");
+        hasShellChains = true;
+        index += 1;
+      } else {
+        pushOperator("&");
+        highRiskReasons.add("background execution");
+      }
+      continue;
+    }
+
+    if (char === ";") {
+      pushOperator(";");
+      hasShellChains = true;
+      continue;
+    }
+
+    if (char === "<" || char === ">") {
+      const operator = next === char ? `${char}${next}` : char;
+      pushOperator(operator);
+      highRiskReasons.add("redirection");
+      if (next === char) {
+        index += 1;
+      }
+      continue;
+    }
+
+    if (char === "$" || char === "`") {
+      highRiskReasons.add("shell expansion");
+    }
+
+    if (char === "*" || char === "?" || char === "[") {
+      highRiskReasons.add("glob expansion");
+    }
+
+    current += char;
+  }
+
+  pushCurrent();
+
+  return {
+    tokens,
+    hasShellChains,
+    highRiskReasons: [...highRiskReasons]
+  };
+}
+
 function tokenizeShellCommand(command: string): string[] {
-  return command.match(/"[^"]*"|'[^']*'|\S+/g) ?? [];
+  return analyzeShellSyntax(command).tokens;
 }
 
 function validatePackageScriptSegment(tokens: string[]): string | null {
@@ -2751,6 +2880,20 @@ function validateShellSegment(tokens: string[]): string | null {
   }
 
   return null;
+}
+
+function splitShellCommandSegments(tokens: string[]): string[][] {
+  const segments: string[][] = [[]];
+  for (const token of tokens) {
+    if (["|", "&&", "||", ";", "&"].includes(token)) {
+      segments.push([]);
+      continue;
+    }
+
+    segments.at(-1)?.push(token);
+  }
+
+  return segments;
 }
 
 function splitPipeline(tokens: string[]): string[][] {

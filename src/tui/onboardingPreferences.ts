@@ -32,7 +32,7 @@ export const preferenceRows: PreferenceRow[] = [
   {
     key: "mode",
     label: "Agent mode",
-    values: ["plan", "build", "bypass"],
+    values: ["plan", "build"],
   },
   {
     key: "reasoning",
@@ -58,7 +58,7 @@ export function describePreferenceValue(key: keyof OnboardingPreferences, value:
       ? "Read-only. The agent inspects and plans, never writes."
       : value === "build"
         ? "Recommended. Writes and shell run behind per-action approval prompts."
-        : "Trusted workspaces only. Writes and shell run without prompts.";
+        : "Use /mode bypass after setup when you want trusted-workspace bypass.";
   }
 
   if (key === "reasoning") {

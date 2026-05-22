@@ -19,6 +19,9 @@ export type OnboardingState =
       step: "welcome";
     }
   | {
+      step: "disclaimer";
+    }
+  | {
       step: "entry";
     }
   | {
@@ -125,7 +128,7 @@ export function OnboardingPanel(props: {
   onInputSubmit: (value: string) => void;
 }): React.ReactElement {
   const currentStepIndex =
-    props.state.step === "welcome" || props.state.step === "entry"
+    props.state.step === "welcome" || props.state.step === "disclaimer" || props.state.step === "entry"
       ? 0
       : props.state.step === "host" || props.state.step === "host-input"
         ? 1
@@ -177,6 +180,9 @@ export function OnboardingPanel(props: {
       ) : null}
       {props.state.step === "welcome" ? (
         <WelcomeStep />
+      ) : null}
+      {props.state.step === "disclaimer" ? (
+        <DisclaimerStep />
       ) : null}
       {props.state.step === "entry" ? (
         <SelectionList
@@ -407,6 +413,21 @@ function WelcomeStep(): React.ReactElement {
       <Box marginTop={1} flexDirection="column">
         <Text color="yellow">{symbols.pin} First task to try: "summarize this repo and list the safest next fixes"</Text>
         <Text color="gray">{symbols.arrow} enter continues {symbols.bullet} esc skips {symbols.bullet} reopen later with /onboarding</Text>
+      </Box>
+    </Box>
+  );
+}
+
+function DisclaimerStep(): React.ReactElement {
+  return (
+    <Box marginTop={1} flexDirection="column">
+      <Text color="yellow" bold>{symbols.approval} Use at your own risk</Text>
+      <Text color="gray">PatchPilot can read files, edit files, and run shell commands when you enable those capabilities.</Text>
+      <Text color="gray">You remain responsible for reviewing actions, diffs, commands, provider terms, and generated output.</Text>
+      <Text color="gray">The software is provided as-is, without warranty or liability from the maintainer.</Text>
+      <Box marginTop={1}>
+        <Text color="cyan" bold>Press [y] to accept and continue</Text>
+        <Text color="gray">  {symbols.bullet}  Esc goes back</Text>
       </Box>
     </Box>
   );

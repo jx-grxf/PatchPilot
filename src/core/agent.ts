@@ -23,6 +23,7 @@ export type AgentRunnerOptions = {
   subagents: boolean;
   resumeContext?: string;
   allowExternalFileAnalysis?: boolean;
+  allowShellMetacharacters?: boolean;
   memoryEnabled?: boolean;
   ultramaxx?: boolean;
   signal?: AbortSignal;
@@ -58,6 +59,7 @@ export class AgentRunner {
       root: options.workspace,
       allowWrite: options.allowWrite,
       allowShell: options.allowShell,
+      allowShellMetacharacters: options.allowShellMetacharacters,
       allowExternalFileAnalysis: options.allowExternalFileAnalysis,
       documentAnalyzer,
       memoryEnabled: options.memoryEnabled,
@@ -144,6 +146,7 @@ export class AgentRunner {
         }, {
           allowExternalFileAnalysis: Boolean(this.options.allowExternalFileAnalysis),
           memoryEnabled: Boolean(this.options.memoryEnabled),
+          allowShellMetacharacters: Boolean(this.options.allowShellMetacharacters),
           ultramaxx,
           expectsTodos
         })
@@ -734,6 +737,7 @@ function buildSystemPrompt(
   experimental: {
     allowExternalFileAnalysis: boolean;
     memoryEnabled: boolean;
+    allowShellMetacharacters: boolean;
     ultramaxx: boolean;
     expectsTodos: boolean;
   }
@@ -792,6 +796,9 @@ function buildSystemPrompt(
     experimental.memoryEnabled
       ? "Experimental memory is enabled: use memory_search for relevant durable context and memory_remember when the user asks you to remember something or states durable project guidance."
       : "Experimental memory is disabled.",
+    experimental.allowShellMetacharacters
+      ? "Experimental shell metacharacters are enabled: run_shell may use pipes, &&, and ;. Redirects, shell expansion, background jobs, OR chains, and multiline commands still require explicit approval even in bypass."
+      : "Experimental shell metacharacters are disabled: run_shell may use simple commands and pipes only.",
     workspaceSummary ? ["", "Workspace context:", workspaceSummary].join("\n") : "",
     resumeContext
       ? [

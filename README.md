@@ -180,7 +180,7 @@ patchpilot "add tests for the parser" --apply --allow-shell
 
 API keys are stored by onboarding in `~/.patchpilot/.env`.
 
-On first launch, PatchPilot opens guided setup for provider choice, API-key storage, host discovery, and model selection. Press Escape to leave setup, or run `/onboarding` later to reopen it.
+On first launch, PatchPilot opens guided setup for provider choice, API-key storage, host discovery, and model selection. Setup includes a discreet use-at-your-own-risk acceptance step. Press Escape to leave setup, or run `/onboarding` later to reopen it.
 
 ## Usage
 
@@ -229,7 +229,7 @@ Useful slash commands inside the TUI:
 | `/doctor` | Run provider diagnostics from inside the TUI. |
 | `/doctor fix` | Apply safe doctor repairs, such as installing the managed Gemini-API bridge. |
 | `/cleanup cache\|sessions\|temp\|all` | Clean PatchPilot workspace state. |
-| `/experimental` | Open the experimental checkbox menu; use Space to toggle file-analysis, memory, and subagents. |
+| `/experimental` | Open the experimental checkbox menu; use Space to toggle file-analysis, memory, subagents, and shell-metacharacters. |
 | `/init` | Ask the selected model to inspect the repository and create or update `PATCHPILOT.md`. |
 | `/new` | Start a fresh session and clear current context. |
 | `/sessions` | List recent sessions for the current workspace. |
@@ -244,7 +244,7 @@ The transcript and sidebar have internal scroll areas. With an empty prompt, use
 
 The TUI also keeps a live todo panel in the lower transcript area. Providers can update it through the provider-neutral `update_todo` tool, so longer runs show the current task, pending work, and completed checkpoints without hiding the chat transcript.
 
-Experimental file analysis allows `inspect_document` to read supported files outside the workspace after per-path approval when the user provides an absolute path. With Gemini-Wrapper's managed Python bridge, PatchPilot sends PNG/JPEG/WebP/GIF/HEIC images to Gemini Web as file inputs for visual analysis and text extraction. PDFs and DOCX files use local text extraction first, then fall back to Gemini-Wrapper only when local extraction cannot produce useful text. Image OCR remains explicit through `mode:"ocr"`/`mode:"local"`. Experimental memory stores durable workspace notes in `~/.patchpilot/memory.sqlite`; `memory_remember` requires write approval and `memory_search` is read-only.
+Experimental file analysis allows `inspect_document` to read supported files outside the workspace after per-path approval when the user provides an absolute path. With Gemini-Wrapper's managed Python bridge, PatchPilot sends PNG/JPEG/WebP/GIF/HEIC images to Gemini Web as file inputs for visual analysis and text extraction. PDFs and DOCX files use local text extraction first, then fall back to Gemini-Wrapper only when local extraction cannot produce useful text. Image OCR remains explicit through `mode:"ocr"`/`mode:"local"`. Experimental memory stores durable workspace notes in `~/.patchpilot/memory.sqlite`; `memory_remember` requires write approval and `memory_search` is read-only. Experimental shell-metacharacters allow `run_shell` to use pipes, `&&`, and `;`; redirects, shell expansion, background jobs, OR chains, and multiline commands still require explicit approval even in build+bypass.
 
 ## Providers
 
@@ -366,7 +366,7 @@ PatchPilot is designed to keep powerful actions boring and reviewable:
 - Secret-like files such as `.env`, `.envrc`, `.npmrc`, `.netrc`, SSH keys, PEM/key/cert bundles, and credential files are blocked from normal file tools.
 - Writes are blocked by default; in the TUI, risky write tools request approval, and `--apply` keeps the legacy always-allow write path.
 - Shell commands are blocked by default; dedicated script/test tools request approval and show the package script body before running. `--allow-shell` keeps the legacy always-allow shell path.
-- Shell execution uses a restricted single-command runner.
+- Shell execution uses a restricted runner. Pipes are supported; `&&` and `;` require `/experimental shell-metacharacters`, and higher-risk shell syntax remains approval-gated even in build+bypass.
 - Provider config is stored in `~/.patchpilot/.env`, not in the current repository by default.
 - Session logs are stored as append-only JSONL in `.patchpilot/sessions/`; that folder is gitignored. A global index in `~/.patchpilot/session-index.json` powers `patchpilot sessions` and `/resume`.
 - Tool output is shown in the transcript and fed back into the agent in clipped form.
@@ -451,7 +451,7 @@ Release notes are kept in [docs/releases](docs/releases).
 
 ## Security and Legal
 
-PatchPilot can read files, write files, and run shell commands when you enable those capabilities. Use it only in repositories and environments you trust.
+PatchPilot can read files, write files, and run shell commands when you enable those capabilities. Use it only in repositories and environments you trust. You use PatchPilot at your own risk; the maintainer accepts no liability for actions you approve, bypass, or run from generated output.
 
 - Security policy: see [SECURITY.md](SECURITY.md).
 - Security reports: please use GitHub Security Advisories or contact the maintainer privately with reproduction steps and impact.

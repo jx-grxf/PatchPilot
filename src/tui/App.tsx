@@ -37,7 +37,7 @@ import { ApprovalPanel } from "./components/ApprovalPanel.js";
 import { clipboardHasImage, clipboardImageHint, readClipboardImage } from "../core/clipboard.js";
 import { CommandSuggestions, type CommandSuggestionItem } from "./components/CommandSuggestions.js";
 import { Composer, FooterHints } from "./components/Composer.js";
-import { ExperimentalPanel, experimentalFlagAt, experimentalFlagCount, type ExperimentalFlags } from "./components/ExperimentalPanel.js";
+import { ExperimentalPanel, experimentalFlagAt, experimentalFlagCount, type ExperimentalFlag, type ExperimentalFlags } from "./components/ExperimentalPanel.js";
 import { runContextSlashCommand } from "./contextCommands.js";
 import { ExperimentalShell } from "./experimental/ExperimentalShell.js";
 import { ThemePicker } from "./experimental/ThemePicker.js";
@@ -167,7 +167,8 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   const [experimentalFlags, setExperimentalFlags] = useState<ExperimentalFlags>({
     fileAnalysis: readBooleanEnv(process.env.PATCHPILOT_EXPERIMENTAL_FILE_ANALYSIS, false),
     memory: readBooleanEnv(process.env.PATCHPILOT_EXPERIMENTAL_MEMORY, false),
-    subagents: props.subagents
+    subagents: props.subagents,
+    shellMetacharacters: readBooleanEnv(process.env.PATCHPILOT_EXPERIMENTAL_SHELL_METACHARACTERS, false)
   });
   const [uiTheme, setUiTheme] = useState<UiTheme>(() => readUiTheme());
   const [themePickerOpen, setThemePickerOpen] = useState(false);
@@ -782,6 +783,11 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       case "welcome":
         setOnboarding(null);
         return;
+      case "disclaimer":
+        setOnboarding({
+          step: "welcome"
+        });
+        return;
       case "entry":
         setOnboarding(null);
         return;
@@ -872,6 +878,28 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       setOnboardingNotice(null);
 
       if (onboarding.step === "welcome") {
+        setOnboarding({
+          step: "disclaimer"
+        });
+        setOnboardingIndex(0);
+        return;
+      }
+
+      if (onboarding.step === "disclaimer") {
+        const normalizedValue = value.trim().toLowerCase();
+        if (normalizedValue !== "y" && normalizedValue !== "yes" && normalizedValue !== "1") {
+          setOnboardingNotice({
+            tone: "warning",
+            text: "Accept the use-at-your-own-risk notice to continue.",
+            detail: "Press y to continue, or Escape to go back."
+          });
+          return;
+        }
+
+        savePatchPilotEnvValues({
+          PATCHPILOT_DISCLAIMER_ACCEPTED: "2026-05-22"
+        });
+        process.env.PATCHPILOT_DISCLAIMER_ACCEPTED = "2026-05-22";
         setOnboarding({
           step: "entry"
         });
@@ -1582,6 +1610,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           subagents: ultramaxx || ultraloop ? true : ultraLean ? false : runnableSettings.subagents,
           ultramaxx,
           allowExternalFileAnalysis: experimentalFlags.fileAnalysis,
+          allowShellMetacharacters: experimentalFlags.shellMetacharacters,
           memoryEnabled: experimentalFlags.memory,
           mode: effectiveMode,
           signal: abortController.signal,
@@ -1606,6 +1635,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
               }
 
               if (
+                request.bypassable !== false &&
                 shouldBypassApproval({
                   mode: effectiveMode,
                   permission: request.permission,
@@ -1875,7 +1905,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           appendLine({
             tone: "accent",
             label: "permissions",
-            text: `mode ${agentMode} | write ${modePermissionLabel(agentMode, "write")} | shell ${modePermissionLabel(agentMode, "shell")} | subagents ${settings.subagents ? "on" : "off"}`,
+            text: `mode ${agentMode} | write ${modePermissionLabel(agentMode, "write", settings)} | shell ${modePermissionLabel(agentMode, "shell", settings)} | subagents ${settings.subagents ? "on" : "off"}`,
             detail: modeDescription(agentMode)
           });
           return;
@@ -1992,6 +2022,15 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         case "write":
         case "apply": {
           const writeEnabled = readToggle(args[0], !settings.allowWrite);
+          if (writeEnabled) {
+            requestBypassMode();
+            appendLine({
+              tone: "warning",
+              label: "write",
+              text: "write bypass needs trusted-workspace confirmation"
+            });
+            return;
+          }
           setExplicitPermission("write", writeEnabled);
           appendLine({
             tone: "success",
@@ -2002,6 +2041,15 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         }
         case "shell": {
           const shellEnabled = readToggle(args[0], !settings.allowShell);
+          if (shellEnabled) {
+            requestBypassMode();
+            appendLine({
+              tone: "warning",
+              label: "shell",
+              text: "shell bypass needs trusted-workspace confirmation"
+            });
+            return;
+          }
           setExplicitPermission("shell", shellEnabled);
           appendLine({
             tone: "success",
@@ -2129,7 +2177,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
             kind: "status",
             tone: "accent",
             label: "status",
-            text: `mode ${agentMode} · write ${modePermissionLabel(agentMode, "write")} · shell ${modePermissionLabel(agentMode, "shell")} · ${settings.provider}/${settings.model} · subagents ${settings.subagents ? "on" : "off"}`,
+            text: `mode ${agentMode} · write ${modePermissionLabel(agentMode, "write", settings)} · shell ${modePermissionLabel(agentMode, "shell", settings)} · ${settings.provider}/${settings.model} · subagents ${settings.subagents ? "on" : "off"}`,
             detail: formatStatusDock({
               provider: settings.provider,
               model: settings.model,
@@ -2412,30 +2460,41 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
             return;
           }
 
+          const normalizedFlag = normalizeExperimentalFlag(requestedFlag);
+          if (!normalizedFlag) {
+            appendLine({
+              tone: "warning",
+              label: "experimental",
+              text: `unknown flag ${requestedFlag}`,
+              detail: "Use file-analysis, memory, subagents, or shell-metacharacters."
+            });
+            return;
+          }
+
           const enabled = readToggle(requestedValue, true);
-          if (requestedFlag === "subagents" || requestedFlag === "agents") {
+          if (normalizedFlag === "subagents") {
             setSettings((currentSettings) => ({
               ...currentSettings,
               subagents: enabled
             }));
           }
           savePatchPilotEnvValues({
-            [`PATCHPILOT_EXPERIMENTAL_${requestedFlag.replace(/-/g, "_").toUpperCase()}`]: enabled ? "1" : "0"
+            [experimentalFlagEnvName(normalizedFlag)]: enabled ? "1" : "0"
           });
           setExperimentalFlags((currentFlags) => ({
             ...currentFlags,
-            ...(requestedFlag === "file-analysis"
+            ...(normalizedFlag === "fileAnalysis"
               ? { fileAnalysis: enabled }
-              : requestedFlag === "memory"
+              : normalizedFlag === "memory"
                 ? { memory: enabled }
-                : requestedFlag === "subagents" || requestedFlag === "agents"
+                : normalizedFlag === "subagents"
                   ? { subagents: enabled }
-                  : {})
+                  : { shellMetacharacters: enabled })
           }));
           appendLine({
             tone: "success",
             label: "experimental",
-            text: `${requestedFlag} ${enabled ? "enabled" : "disabled"}`
+            text: `${experimentalFlagCommandName(normalizedFlag)} ${enabled ? "enabled" : "disabled"}`
           });
           return;
         }
@@ -2808,7 +2867,8 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           savePatchPilotEnvValues({
             PATCHPILOT_EXPERIMENTAL_FILE_ANALYSIS: nextFlags.fileAnalysis ? "1" : "0",
             PATCHPILOT_EXPERIMENTAL_MEMORY: nextFlags.memory ? "1" : "0",
-            PATCHPILOT_EXPERIMENTAL_SUBAGENTS: nextFlags.subagents ? "1" : "0"
+            PATCHPILOT_EXPERIMENTAL_SUBAGENTS: nextFlags.subagents ? "1" : "0",
+            PATCHPILOT_EXPERIMENTAL_SHELL_METACHARACTERS: nextFlags.shellMetacharacters ? "1" : "0"
           });
           return nextFlags;
         });
@@ -2968,6 +3028,15 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         }
       } else if (key.leftArrow) {
         goBackOnboarding();
+        return;
+      }
+
+      if (onboarding.step === "disclaimer") {
+        if (inputValue.toLowerCase() === "y") {
+          void handleOnboardingSubmit("y");
+        } else if (inputValue.toLowerCase() === "n") {
+          goBackOnboarding();
+        }
         return;
       }
 
@@ -3606,6 +3675,8 @@ function getOnboardingOptionCount(onboarding: OnboardingState): number {
   switch (onboarding.step) {
     case "welcome":
       return 1;
+    case "disclaimer":
+      return 0;
     case "entry":
       return 7;
     case "host":
@@ -3678,6 +3749,40 @@ function readBooleanEnv(value: string | undefined, fallback: boolean): boolean {
   }
 
   return fallback;
+}
+
+function normalizeExperimentalFlag(value: string): ExperimentalFlag | null {
+  switch (value.trim().toLowerCase()) {
+    case "file-analysis":
+    case "fileanalysis":
+    case "files":
+      return "fileAnalysis";
+    case "memory":
+      return "memory";
+    case "subagents":
+    case "agents":
+      return "subagents";
+    case "shell-metacharacters":
+    case "shell-metachars":
+    case "metacharacters":
+    case "metachars":
+    case "shell":
+      return "shellMetacharacters";
+    default:
+      return null;
+  }
+}
+
+function experimentalFlagCommandName(flag: ExperimentalFlag): string {
+  return flag === "fileAnalysis"
+    ? "file-analysis"
+    : flag === "shellMetacharacters"
+      ? "shell-metacharacters"
+      : flag;
+}
+
+function experimentalFlagEnvName(flag: ExperimentalFlag): string {
+  return `PATCHPILOT_EXPERIMENTAL_${experimentalFlagCommandName(flag).replace(/-/g, "_").toUpperCase()}`;
 }
 
 function readIndexedSelection(value: string, selectedIndex: number): number | null {
