@@ -125,6 +125,7 @@ export type ApprovalRequest = {
   risk: ToolRisk;
   preview: string;
   arguments: Record<string, unknown>;
+  bypassable?: boolean;
 };
 
 export type AgentResponse =

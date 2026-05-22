@@ -14,7 +14,10 @@ export const geminiWrapperShortcutModels = ["auto", "flash", "pro"] as const;
 export const geminiWrapperLegacyModels = ["thinking"] as const;
 export const geminiWrapperCuratedModels = [...geminiWrapperShortcutModels, ...geminiWrapperLegacyModels] as const;
 export const geminiWebApiVersion = "2.0.0";
-export const geminiWebApiInstallCommand = `PatchPilot managed install: python3 -m venv ~/.patchpilot/gemini-wrapper-venv && ~/.patchpilot/gemini-wrapper-venv/bin/python -m pip install gemini_webapi==${geminiWebApiVersion} browser-cookie3`;
+export const geminiWebApiInstallCommand =
+  process.platform === "win32"
+    ? `PatchPilot managed install: python -m venv %USERPROFILE%\\.patchpilot\\gemini-wrapper-venv && %USERPROFILE%\\.patchpilot\\gemini-wrapper-venv\\Scripts\\python.exe -m pip install gemini_webapi==${geminiWebApiVersion} browser-cookie3`
+    : `PatchPilot managed install: python3 -m venv ~/.patchpilot/gemini-wrapper-venv && ~/.patchpilot/gemini-wrapper-venv/bin/python -m pip install gemini_webapi==${geminiWebApiVersion} browser-cookie3`;
 const pythonBridgeReadyTtlMs = 5 * 60_000;
 const geminiBrowserCookieImportTimeoutMs = 60_000;
 const geminiBridgeOutputMaxBytes = 2 * 1024 * 1024;
@@ -597,7 +600,9 @@ export function readGeminiWrapperPythonCommand(env: NodeJS.ProcessEnv = process.
 }
 
 export function readGeminiWrapperBootstrapPythonCommand(env: NodeJS.ProcessEnv = process.env): string {
-  return env.PATCHPILOT_GEMINI_WRAPPER_BOOTSTRAP_PYTHON?.trim() || "python3";
+  // Windows ships the `python` launcher (or the `py` redirector); `python3` is
+  // a POSIX convention and is usually not on PATH there.
+  return env.PATCHPILOT_GEMINI_WRAPPER_BOOTSTRAP_PYTHON?.trim() || (process.platform === "win32" ? "python" : "python3");
 }
 
 export function getGeminiWrapperVenvDir(env: NodeJS.ProcessEnv = process.env): string {

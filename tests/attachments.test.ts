@@ -72,6 +72,25 @@ describe("attachment classification", () => {
     expect(extractAttachmentPaths("please inspect /a/b/shot.png")).toBeNull();
   });
 
+  it("detects and preserves Windows-style attachment paths", () => {
+    // Drive-letter paths with backslash separators must survive normalization.
+    expect(looksLikeAttachmentPath("C:\\Users\\x\\Downloads\\shot.png")).toBe(true);
+    expect(looksLikeAttachmentPath('"C:\\Users\\x\\my file.png"')).toBe(true);
+    expect(looksLikeAttachmentPath(".\\docs\\report.pdf")).toBe(true);
+    expect(extractAttachmentPaths("C:\\Users\\x\\Downloads\\report.pdf")).toEqual([
+      "C:\\Users\\x\\Downloads\\report.pdf",
+    ]);
+    expect(
+      extractAttachmentPaths("C:\\Users\\x\\a.png\nD:\\data\\b.docx")
+    ).toEqual(["C:\\Users\\x\\a.png", "D:\\data\\b.docx"]);
+    // UNC paths.
+    expect(extractAttachmentPaths("\\\\server\\share\\spec.md")).toEqual(["\\\\server\\share\\spec.md"]);
+    // Windows file:// URLs decode to a clean drive path.
+    expect(extractAttachmentPaths("file:///C:/Users/x/Downloads/shot.png")).toEqual([
+      "C:/Users/x/Downloads/shot.png",
+    ]);
+  });
+
   it("normalizes newlines and drops control characters when pasting", () => {
     expect(sanitizePastedText("a\r\nb\rc")).toBe("a\nb\nc");
     expect(sanitizePastedText("keep\tthis\nand\nthis")).toBe("keep\tthis\nand\nthis");

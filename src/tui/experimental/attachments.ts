@@ -89,17 +89,41 @@ export function stripQuotes(value: string): string {
   return value;
 }
 
+/** Does this value look like a Windows path (drive-letter or UNC)? */
+function looksLikeWindowsPath(value: string): boolean {
+  return /^[A-Za-z]:[\\/]/.test(value) || value.startsWith("\\\\");
+}
+
+/**
+ * Strip POSIX shell-escape backslashes (e.g. `\ ` for a space) without
+ * destroying Windows path separators. A backslash only acts as an escape when
+ * it precedes whitespace or a quote; a backslash before any other character is
+ * treated as a literal Windows path separator and kept.
+ */
+function stripShellEscapes(value: string): string {
+  return value.replace(/\\([\s'"])/g, "$1");
+}
+
+function stripFileUrlPrefix(value: string): string {
+  // file:///C:/path -> C:/path ; file:///home/x -> /home/x ; file://host/share -> //host/share
+  const withoutScheme = value.replace(/^file:\/\//i, "");
+  if (/^\/[A-Za-z]:[\\/]/.test(withoutScheme)) {
+    return withoutScheme.slice(1);
+  }
+  return withoutScheme;
+}
+
 export function normalizeAttachmentPath(value: string): string {
-  const trimmed = stripQuotes(value.trim()).replace(/\\([^\n])/g, "$1");
-  if (trimmed.startsWith("file://")) {
+  const unquoted = stripQuotes(value.trim());
+  if (/^file:\/\//i.test(unquoted)) {
     try {
-      return decodeURIComponent(trimmed.replace(/^file:\/\//, ""));
+      return stripFileUrlPrefix(decodeURIComponent(unquoted));
     } catch {
-      return trimmed.replace(/^file:\/\//, "");
+      return stripFileUrlPrefix(unquoted);
     }
   }
 
-  return trimmed;
+  return stripShellEscapes(unquoted);
 }
 
 function looksLikeAttachablePath(value: string, options: { allowSpaces: boolean }): boolean {
@@ -108,7 +132,14 @@ function looksLikeAttachablePath(value: string, options: { allowSpaces: boolean 
     return false;
   }
 
-  const pathLike = trimmed.startsWith("/") || trimmed.startsWith("~") || trimmed.startsWith("./") || trimmed.includes("/");
+  const pathLike =
+    trimmed.startsWith("/") ||
+    trimmed.startsWith("~") ||
+    trimmed.startsWith("./") ||
+    trimmed.startsWith(".\\") ||
+    trimmed.includes("/") ||
+    looksLikeWindowsPath(trimmed) ||
+    trimmed.includes("\\");
   const raw = value.trim();
   const wasQuoted = raw !== stripQuotes(raw);
   const hadEscapedSpace = /\\\s/.test(raw);
@@ -165,8 +196,12 @@ function splitShellLikePaths(value: string): string[] {
   let current = "";
   let quote: "'" | "\"" | null = null;
   let escaping = false;
+  // A backslash only acts as a POSIX shell escape when it precedes whitespace
+  // or a quote. Otherwise (e.g. inside a Windows path) it is a literal char.
+  const chars = [...value.trim()];
 
-  for (const char of value.trim()) {
+  for (let index = 0; index < chars.length; index += 1) {
+    const char = chars[index];
     if (escaping) {
       current += `\\${char}`;
       escaping = false;
@@ -174,7 +209,12 @@ function splitShellLikePaths(value: string): string[] {
     }
 
     if (char === "\\") {
-      escaping = true;
+      const next = chars[index + 1];
+      if (next === undefined || /\s/.test(next) || next === "'" || next === '"') {
+        escaping = true;
+        continue;
+      }
+      current += char;
       continue;
     }
 

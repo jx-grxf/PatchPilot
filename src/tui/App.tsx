@@ -4127,15 +4127,15 @@ function attachmentLimitWarning(paths: string[], provider: ModelProvider): strin
   }
 
   if (tooLargePdf) {
-    return `${attachmentTypeForPath(tooLargePdf.path)} file ${tooLargePdf.path.split("/").at(-1) ?? tooLargePdf.path} is over 50 MiB; Gemini API PDF input can reject it.`;
+    return `${attachmentTypeForPath(tooLargePdf.path)} file ${attachmentBasename(tooLargePdf.path)} is over 50 MiB; Gemini API PDF input can reject it.`;
   }
 
   if (tooLargeFile) {
-    return `${attachmentTypeForPath(tooLargeFile.path)} file ${tooLargeFile.path.split("/").at(-1) ?? tooLargeFile.path} is over 100 MiB; Gemini file prompts may reject it.`;
+    return `${attachmentTypeForPath(tooLargeFile.path)} file ${attachmentBasename(tooLargeFile.path)} is over 100 MiB; Gemini file prompts may reject it.`;
   }
 
   if (largePdf) {
-    return `${attachmentTypeForPath(largePdf.path)} file ${largePdf.path.split("/").at(-1) ?? largePdf.path} is over 20 MiB; Gemini PDF analysis can be slow or incomplete.`;
+    return `${attachmentTypeForPath(largePdf.path)} file ${attachmentBasename(largePdf.path)} is over 20 MiB; Gemini PDF analysis can be slow or incomplete.`;
   }
 
   if (knownTotalBytes > geminiInlineRequestWarnBytes) {
@@ -4173,6 +4173,11 @@ function formatAttachedDocuments(paths: string[]): string {
       return `- ${attachmentLabel(kind, index, filePath)} path=${JSON.stringify(filePath)}`;
     })
     .join("\n");
+}
+
+/** Last path segment, splitting on both POSIX and Windows separators. */
+function attachmentBasename(filePath: string): string {
+  return filePath.split(/[\\/]/).filter(Boolean).at(-1) ?? filePath;
 }
 
 function formatAttachmentDigestPath(filePath: string): string {

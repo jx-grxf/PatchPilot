@@ -94,6 +94,7 @@ export type WorkspaceToolsOptions = {
   root: string;
   allowWrite: boolean;
   allowShell: boolean;
+  allowShellMetacharacters?: boolean;
   allowExternalFileAnalysis?: boolean;
   documentAnalyzer?: DocumentAnalyzer;
   memoryEnabled?: boolean;
@@ -330,6 +331,7 @@ export class WorkspaceTools {
   private readonly rootRealPath: Promise<string>;
   private readonly allowWrite: boolean;
   private readonly allowShell: boolean;
+  private readonly allowShellMetacharacters: boolean;
   private readonly allowExternalFileAnalysis: boolean;
   private readonly memoryEnabled: boolean;
   private readonly documentAnalyzer?: DocumentAnalyzer;
@@ -343,6 +345,7 @@ export class WorkspaceTools {
     this.rootRealPath = realpath(this.root).catch(() => this.root);
     this.allowWrite = options.allowWrite;
     this.allowShell = options.allowShell;
+    this.allowShellMetacharacters = Boolean(options.allowShellMetacharacters);
     this.allowExternalFileAnalysis = Boolean(options.allowExternalFileAnalysis);
     this.documentAnalyzer = options.documentAnalyzer;
     this.memoryEnabled = Boolean(options.memoryEnabled);
@@ -1367,9 +1370,11 @@ export class WorkspaceTools {
       return denied("run_shell requires a command.");
     }
 
-    const shellSafetyError = validateShellCommand(command, this.root);
-    if (shellSafetyError) {
-      return denied(`run_shell denied. ${shellSafetyError}`);
+    const shellSafety = validateShellCommand(command, this.root, {
+      allowMetacharacters: this.allowShellMetacharacters
+    });
+    if (shellSafety.error) {
+      return denied(`run_shell denied. ${shellSafety.error}`);
     }
 
     const shellPathError = await this.validateShellPathArguments(command);
@@ -1377,14 +1382,20 @@ export class WorkspaceTools {
       return denied(`run_shell denied. ${shellPathError}`);
     }
 
-    if (!this.allowShell) {
+    if (!this.allowShell || shellSafety.requiresApprovalReason) {
       const approval = await this.requestApproval(
         "run_shell",
         "shell",
         {
-          command
+          command,
+          ...(shellSafety.requiresApprovalReason ? { approvalReason: shellSafety.requiresApprovalReason } : {})
         },
-        `Run shell command: ${command}`
+        shellSafety.requiresApprovalReason
+          ? `High-risk shell command (${shellSafety.requiresApprovalReason}): ${command}`
+          : `Run shell command: ${command}`,
+        {
+          bypassable: !shellSafety.requiresApprovalReason
+        }
       );
       if (approval.decision === "deny") {
         return denied("run_shell denied by permission policy.", "run_shell", approval);
@@ -1416,7 +1427,8 @@ export class WorkspaceTools {
     tool: AgentToolName,
     permission: Exclude<ToolPermission, "none">,
     args: Record<string, unknown>,
-    preview: string
+    preview: string,
+    options: { bypassable?: boolean } = {}
   ): Promise<{ request: ApprovalRequest; decision: PermissionDecision }> {
     const spec = getToolSpec(tool);
     const request: ApprovalRequest = {
@@ -1425,7 +1437,8 @@ export class WorkspaceTools {
       permission,
       risk: spec.risk,
       preview,
-      arguments: args
+      arguments: args,
+      bypassable: options.bypassable
     };
 
     const approvalKey = approvalScopeKey(tool, permission, args);

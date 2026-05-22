@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { describeComputeTarget } from "./compute.js";
-import { codexOAuthModels, hasCodexCliOAuth } from "./codex.js";
+import { codexOAuthModels, hasCodexCliOAuth, resolveCodexExecutable } from "./codex.js";
 import { GeminiClient, readGeminiApiKey } from "./gemini.js";
 import {
   GeminiWrapperClient,
@@ -180,7 +180,7 @@ async function checkNvidia(model?: string): Promise<DoctorResult[]> {
 }
 
 async function checkCodex(model?: string): Promise<DoctorResult[]> {
-  const cli = await checkCommand("codex", ["--version"], "codex-cli", "Install Codex CLI, then run codex login.");
+  const cli = await checkCommand(resolveCodexExecutable(), ["--version"], "codex-cli", "Install Codex CLI, then run codex login.");
   const hasOAuth = hasCodexCliOAuth();
   const results: DoctorResult[] = [
     cli,
