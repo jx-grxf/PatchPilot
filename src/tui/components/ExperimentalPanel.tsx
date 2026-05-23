@@ -1,7 +1,7 @@
 import React from "react";
 import { Box, Text } from "ink";
 
-export type ExperimentalFlag = "fileAnalysis" | "memory" | "subagents" | "shellMetacharacters";
+export type ExperimentalFlag = "fileAnalysis" | "memory" | "subagents" | "shellMetacharacters" | "discord";
 
 export type ExperimentalFlags = Record<ExperimentalFlag, boolean>;
 
@@ -29,6 +29,11 @@ const experimentalRows: Array<{
     key: "shellMetacharacters",
     label: "Shell Metachars",
     description: "Allow pipes, &&, and ; in run_shell. Redirects and expansion still ask even in bypass."
+  },
+  {
+    key: "discord",
+    label: "Discord",
+    description: "Enable the experimental Discord bot daemon, slash commands, and /discord status surface."
   }
 ];
 

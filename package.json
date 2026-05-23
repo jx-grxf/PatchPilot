@@ -54,6 +54,7 @@
   "license": "MIT",
   "dependencies": {
     "commander": "^14.0.3",
+    "discord.js": "14.26.4",
     "ink": "7.0.5",
     "ink-text-input": "^6.0.0",
     "react": "^19.2.1",

@@ -215,6 +215,13 @@ export const slashCommands: SlashCommand[] = [
     detail: "Checks npm first and GitHub Releases as fallback. If an update exists, PatchPilot asks for confirmation and installs the exact release globally through npm. Restart PatchPilot afterward."
   },
   {
+    name: "discord",
+    usage: "/discord",
+    description: "Show experimental Discord bot config, daemon, launchd, session, token, and tool status.",
+    category: "session",
+    detail: "Reads the local PatchPilot Discord status snapshot and launchd state. Enable the feature with /experimental discord on, then configure PATCHPILOT_DISCORD_TOKEN, PATCHPILOT_DISCORD_CLIENT_ID, guild/channel allowlists, and run patchpilot discord register."
+  },
+  {
     name: "compact",
     usage: "/compact now|auto|reset",
     description: "Run or configure session-context compaction.",

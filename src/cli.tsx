@@ -16,6 +16,22 @@ import { ensurePatchPilotInstructions } from "./core/projectInit.js";
 import { defaultOllamaModel, resolveOllamaBaseUrl } from "./core/ollama.js";
 import { defaultOpenRouterModel } from "./core/openrouter.js";
 import { listIndexedSessions, listWorkspaceSessions, loadSessionSummary } from "./core/session.js";
+import {
+  followDiscordLogs,
+  formatDiscordStatus,
+  installDiscordLaunchAgent,
+  readDiscordLaunchdStatus,
+  readDiscordRuntimeStatus,
+  readDiscordConfig,
+  redactDiscordConfig,
+  registerDiscordCommands,
+  requireDiscordConfig,
+  runDiscordDaemon,
+  stopDiscordLaunchAgent,
+  summarizeLaunchdStatus,
+  uninstallDiscordLaunchAgent,
+  validateDiscordConfig
+} from "./discord/index.js";
 import { App } from "./tui/App.js";
 
 loadPatchPilotEnv();
@@ -148,6 +164,80 @@ program
     for (const session of sessions.slice(0, 20)) {
       console.log(`${session.sessionId}  ${session.updatedAt}  ${session.workspace}  ${session.lastTask ?? ""}`);
     }
+  });
+
+const discordCommand = program
+  .command("discord")
+  .description("Manage the experimental PatchPilot Discord bot integration.");
+
+discordCommand
+  .command("run")
+  .description("Run the Discord bot in the foreground.")
+  .action(async () => {
+    await runDiscordDaemon(requireDiscordConfig());
+  });
+
+discordCommand
+  .command("register")
+  .description("Register Discord slash commands.")
+  .option("--guild <id>", "Register only for this guild. Defaults to PATCHPILOT_DISCORD_GUILD_IDS, then global.")
+  .option("--dry-run", "Print command JSON without registering.", false)
+  .action(async (options: { guild?: string; dryRun?: boolean }) => {
+    const config = options.dryRun ? readDiscordConfig() : requireDiscordConfig();
+    console.log(await registerDiscordCommands(config, { guildId: options.guild, dryRun: Boolean(options.dryRun) }));
+  });
+
+discordCommand
+  .command("status")
+  .description("Show Discord config, runtime, and launchd status.")
+  .action(async () => {
+    const config = readDiscordConfig();
+    for (const issue of validateDiscordConfig(config)) {
+      console.log(`${issue.ok ? "ok" : "fail"} ${issue.name}: ${issue.details}`);
+    }
+    console.log(JSON.stringify(redactDiscordConfig(config), null, 2));
+    const launchd = await readDiscordLaunchdStatus();
+    console.log(`launchd: ${summarizeLaunchdStatus(launchd)}`);
+    console.log(formatDiscordStatus(await readDiscordRuntimeStatus(config.stateDir), { launchd: summarizeLaunchdStatus(launchd) }));
+  });
+
+discordCommand
+  .command("install-service")
+  .description("Install and start the macOS LaunchAgent for the Discord bot.")
+  .action(async () => {
+    const plistPath = await installDiscordLaunchAgent(requireDiscordConfig());
+    console.log(`Installed and started ${plistPath}`);
+  });
+
+discordCommand
+  .command("start-service")
+  .description("Alias for install-service; writes the plist and kickstarts launchd.")
+  .action(async () => {
+    const plistPath = await installDiscordLaunchAgent(requireDiscordConfig());
+    console.log(`Started ${plistPath}`);
+  });
+
+discordCommand
+  .command("stop-service")
+  .description("Stop the Discord LaunchAgent for the current login session.")
+  .action(async () => {
+    await stopDiscordLaunchAgent();
+    console.log("Stopped PatchPilot Discord LaunchAgent.");
+  });
+
+discordCommand
+  .command("uninstall-service")
+  .description("Stop and remove the Discord LaunchAgent plist.")
+  .action(async () => {
+    await uninstallDiscordLaunchAgent();
+    console.log("Removed PatchPilot Discord LaunchAgent.");
+  });
+
+discordCommand
+  .command("logs")
+  .description("Follow Discord bot logs.")
+  .action(async () => {
+    await followDiscordLogs(readDiscordConfig());
   });
 
 program

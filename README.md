@@ -231,7 +231,8 @@ Useful slash commands inside the TUI:
 | `/doctor` | Run provider diagnostics from inside the TUI. |
 | `/doctor fix` | Apply safe doctor repairs, such as installing the managed Gemini-API bridge. |
 | `/cleanup cache\|sessions\|temp\|all` | Clean PatchPilot workspace state. |
-| `/experimental` | Open the experimental checkbox menu; use Space to toggle file-analysis, memory, subagents, and shell-metacharacters. |
+| `/experimental` | Open the experimental checkbox menu; use Space to toggle file-analysis, memory, subagents, shell-metacharacters, and Discord. |
+| `/discord` | Show experimental Discord bot config, launchd, heartbeat, session, token, and tool status. |
 | `/init` | Ask the selected model to inspect the repository and create or update `PATCHPILOT.md`. |
 | `/new` | Start a fresh session and clear current context. |
 | `/recap` | Summarize current-session tasks, outcomes, tool calls, failures, and approvals without another model call. |
@@ -373,6 +374,7 @@ PatchPilot is designed to keep powerful actions boring and reviewable:
 - Shell execution uses a restricted runner. Pipes are supported; `&&` and `;` require `/experimental shell-metacharacters`, and higher-risk shell syntax remains approval-gated even in build+bypass.
 - Provider config is stored in `~/.patchpilot/.env`, not in the current repository by default.
 - Session logs are stored as append-only JSONL in `.patchpilot/sessions/`; that folder is gitignored. A global index in `~/.patchpilot/session-index.json` powers `patchpilot sessions` and `/resume`.
+- The experimental Discord bot is off by default. Enable `PATCHPILOT_EXPERIMENTAL_DISCORD=1`, configure bot secrets in `~/.patchpilot/.env`, register commands with `patchpilot discord register --guild <id>`, and run it with `patchpilot discord run` or `patchpilot discord install-service`.
 - Tool output is shown in the transcript and fed back into the agent in clipped form.
 - Cloud providers may process prompts and context remotely under their own terms.
 

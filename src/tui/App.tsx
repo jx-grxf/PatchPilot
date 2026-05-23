@@ -33,6 +33,7 @@ import { addTelemetryToSession, emptySessionTelemetry, estimateComparableApiCost
 import type { AgentEvent, AgentTodoItem, AgentToolName, AgentWorkState, ApprovalRequest, ModelDescriptor, ModelProvider, ModelTelemetry, PermissionDecision, SessionTelemetry } from "../core/types.js";
 import { checkForPatchPilotUpdate, installPatchPilotUpdate, type UpdateCheckResult } from "../core/updateCheck.js";
 import { getToolSpec, WorkspaceTools } from "../core/workspace.js";
+import { formatDiscordStatus, readDiscordConfig, readDiscordLaunchdStatus, readDiscordRuntimeStatus, summarizeLaunchdStatus, validateDiscordConfig } from "../discord/index.js";
 import { ApprovalPanel } from "./components/ApprovalPanel.js";
 import { clipboardHasImage, clipboardImageHint, readClipboardImage } from "../core/clipboard.js";
 import { CommandSuggestions, type CommandSuggestionItem } from "./components/CommandSuggestions.js";
@@ -168,7 +169,8 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
     fileAnalysis: readBooleanEnv(process.env.PATCHPILOT_EXPERIMENTAL_FILE_ANALYSIS, false),
     memory: readBooleanEnv(process.env.PATCHPILOT_EXPERIMENTAL_MEMORY, false),
     subagents: props.subagents,
-    shellMetacharacters: readBooleanEnv(process.env.PATCHPILOT_EXPERIMENTAL_SHELL_METACHARACTERS, false)
+    shellMetacharacters: readBooleanEnv(process.env.PATCHPILOT_EXPERIMENTAL_SHELL_METACHARACTERS, false),
+    discord: readBooleanEnv(process.env.PATCHPILOT_EXPERIMENTAL_DISCORD, false)
   });
   const [uiTheme, setUiTheme] = useState<UiTheme>(() => readUiTheme());
   const [themePickerOpen, setThemePickerOpen] = useState(false);
@@ -2278,6 +2280,22 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           });
           return;
         }
+        case "discord": {
+          const discordConfig = readDiscordConfig();
+          const configIssues = validateDiscordConfig(discordConfig)
+            .map((issue) => `${issue.ok ? "ok" : "fail"} ${issue.name}: ${issue.details}`)
+            .join("\n");
+          const launchd = await readDiscordLaunchdStatus();
+          const runtime = await readDiscordRuntimeStatus(discordConfig.stateDir);
+          appendLine({
+            kind: "status",
+            tone: runtime || discordConfig.enabled ? "accent" : "warning",
+            label: "discord",
+            text: runtime ? `Discord daemon ${runtime.enabled ? "enabled" : "disabled"} · ${runtime.activeSessions} session${runtime.activeSessions === 1 ? "" : "s"}` : "Discord daemon has no heartbeat yet.",
+            detail: [configIssues, formatDiscordStatus(runtime, { launchd: summarizeLaunchdStatus(launchd) })].filter(Boolean).join("\n\n")
+          });
+          return;
+        }
         case "context":
         case "ctx":
         case "compact":
@@ -2546,12 +2564,14 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           setExperimentalFlags((currentFlags) => ({
             ...currentFlags,
             ...(normalizedFlag === "fileAnalysis"
-              ? { fileAnalysis: enabled }
-              : normalizedFlag === "memory"
-                ? { memory: enabled }
-                : normalizedFlag === "subagents"
-                  ? { subagents: enabled }
-                  : { shellMetacharacters: enabled })
+                ? { fileAnalysis: enabled }
+                : normalizedFlag === "memory"
+                  ? { memory: enabled }
+                  : normalizedFlag === "subagents"
+                    ? { subagents: enabled }
+                    : normalizedFlag === "shellMetacharacters"
+                      ? { shellMetacharacters: enabled }
+                      : { discord: enabled })
           }));
           appendLine({
             tone: "success",
@@ -2932,7 +2952,8 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
             PATCHPILOT_EXPERIMENTAL_FILE_ANALYSIS: nextFlags.fileAnalysis ? "1" : "0",
             PATCHPILOT_EXPERIMENTAL_MEMORY: nextFlags.memory ? "1" : "0",
             PATCHPILOT_EXPERIMENTAL_SUBAGENTS: nextFlags.subagents ? "1" : "0",
-            PATCHPILOT_EXPERIMENTAL_SHELL_METACHARACTERS: nextFlags.shellMetacharacters ? "1" : "0"
+            PATCHPILOT_EXPERIMENTAL_SHELL_METACHARACTERS: nextFlags.shellMetacharacters ? "1" : "0",
+            PATCHPILOT_EXPERIMENTAL_DISCORD: nextFlags.discord ? "1" : "0"
           });
           return nextFlags;
         });
@@ -3832,6 +3853,9 @@ function normalizeExperimentalFlag(value: string): ExperimentalFlag | null {
     case "metachars":
     case "shell":
       return "shellMetacharacters";
+    case "discord":
+    case "bot":
+      return "discord";
     default:
       return null;
   }

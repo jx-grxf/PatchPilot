@@ -82,6 +82,7 @@ describe("filterSlashCommands", () => {
       })
     ]);
   });
+
   it("includes the session recap command and summary alias", () => {
     expect(filterSlashCommands("/recap")).toEqual([
       expect.objectContaining({
@@ -90,5 +91,15 @@ describe("filterSlashCommands", () => {
       })
     ]);
     expect(filterSlashCommands("/summary").map((command) => command.name)).toEqual(["recap"]);
+  });
+
+  it("includes Discord experimental status command", () => {
+    expect(filterSlashCommands("/discord")).toEqual([
+      expect.objectContaining({
+        name: "discord",
+        category: "session"
+      })
+    ]);
+    expect(formatCommandHelp("discord")).toContain("Discord bot");
   });
 });
