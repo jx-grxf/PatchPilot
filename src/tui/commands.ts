@@ -208,6 +208,13 @@ export const slashCommands: SlashCommand[] = [
     detail: "Shows current-session request counts, input/output/cache tokens, tool counters by name, and estimated cost/savings. If exact model pricing is unavailable, PatchPilot marks the figure as fallback-priced."
   },
   {
+    name: "update",
+    usage: "/update",
+    description: "Check npm/GitHub for a newer PatchPilot release and offer to install it.",
+    category: "utility",
+    detail: "Checks npm first and GitHub Releases as fallback. If an update exists, PatchPilot asks for confirmation and installs the exact release globally through npm. Restart PatchPilot afterward."
+  },
+  {
     name: "compact",
     usage: "/compact now|auto|reset",
     description: "Run or configure session-context compaction.",

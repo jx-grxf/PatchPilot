@@ -21,7 +21,7 @@ describe("updateCheck", () => {
       currentVersion: "1.1.0",
       latestVersion: "1.2.0",
       source: "npm",
-      command: updateCommand()
+      command: updateCommand("1.2.0")
     });
   });
 
@@ -60,5 +60,9 @@ describe("updateCheck", () => {
       latestVersion: "1.1.0",
       source: "npm"
     });
+  });
+
+  it("builds an exact npm install command for the selected release", () => {
+    expect(updateCommand("1.2.2")).toBe("npm install -g @jx-grxf/patchpilot@1.2.2");
   });
 });

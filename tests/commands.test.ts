@@ -73,6 +73,15 @@ describe("filterSlashCommands", () => {
       })
     ]);
   });
+
+  it("includes the manual update checker", () => {
+    expect(filterSlashCommands("/update")).toEqual([
+      expect.objectContaining({
+        name: "update",
+        category: "utility"
+      })
+    ]);
+  });
   it("includes the session recap command and summary alias", () => {
     expect(filterSlashCommands("/recap")).toEqual([
       expect.objectContaining({

@@ -2218,6 +2218,54 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
             })
           });
           return;
+        case "update": {
+          if (updateBusy) {
+            appendLine({
+              tone: "muted",
+              label: "update",
+              text: "A PatchPilot update is already running."
+            });
+            return;
+          }
+
+          setStatus("checking for updates");
+          appendLine({
+            tone: "muted",
+            label: "update",
+            text: "Checking npm and GitHub Releases for updates..."
+          });
+          try {
+            const result = await checkForPatchPilotUpdate(props.packageVersion ?? "0.0.0");
+            if (result.available) {
+              setUpdatePrompt(result);
+              setStatus(`update available ${result.currentVersion} -> ${result.latestVersion}`);
+              appendLine({
+                tone: "accent",
+                label: "update",
+                text: `PatchPilot ${result.latestVersion} is available.`,
+                detail: `Current ${result.currentVersion} · source ${result.source} · confirm below to run ${result.command}`
+              });
+            } else {
+              setStatus("idle");
+              appendLine({
+                tone: result.latestVersion ? "success" : "warning",
+                label: "update",
+                text: result.latestVersion
+                  ? `PatchPilot ${result.currentVersion} is up to date.`
+                  : "Could not reach npm or GitHub Releases.",
+                detail: result.latestVersion ? `Latest published version: ${result.latestVersion} (${result.source})` : "Check your network connection and run /update again."
+              });
+            }
+          } catch (error) {
+            setStatus("idle");
+            appendLine({
+              tone: "danger",
+              label: "update",
+              text: error instanceof Error ? error.message : String(error)
+            });
+          }
+          return;
+        }
         case "recap":
         case "summary": {
           const recap = buildSessionRecap(await sessionStoreRef.current.loadEvents());
@@ -2628,7 +2676,9 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       resolveApproval,
       sessionTelemetry,
       settings,
-      telemetry
+      telemetry,
+      updateBusy,
+      props.packageVersion
     ]
   );
 
@@ -3979,7 +4029,7 @@ function UpdatePromptPanel(props: {
     return null;
   }
 
-  const command = props.prompt?.command ?? "npm update -g @jx-grxf/patchpilot";
+  const command = props.prompt?.command ?? "npm install -g @jx-grxf/patchpilot@latest";
   return (
     <Box borderStyle="double" borderColor="yellow" flexDirection="column" paddingX={1}>
       <Text color="yellow" bold>

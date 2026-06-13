@@ -46,8 +46,8 @@ export async function checkForPatchPilotUpdate(currentVersion: string, signal?: 
 }
 
 export async function installPatchPilotUpdate(version: string): Promise<UpdateInstallResult> {
-  const command = updateCommand();
-  await execFileAsync("npm", ["update", "-g", packageName], {
+  const command = updateCommand(version);
+  await execFileAsync("npm", ["install", "-g", `${packageName}@${version}`], {
     timeout: 180_000,
     maxBuffer: 2_000_000,
     windowsHide: true
@@ -58,8 +58,8 @@ export async function installPatchPilotUpdate(version: string): Promise<UpdateIn
   };
 }
 
-export function updateCommand(): string {
-  return `npm update -g ${packageName}`;
+export function updateCommand(version = "latest"): string {
+  return `npm install -g ${packageName}@${version}`;
 }
 
 function toUpdateResult(currentVersion: string, latestVersion: string, source: "npm" | "github"): UpdateCheckResult {
@@ -77,7 +77,7 @@ function toUpdateResult(currentVersion: string, latestVersion: string, source: "
     currentVersion,
     latestVersion,
     source,
-    command: updateCommand()
+    command: updateCommand(latestVersion)
   };
 }
 

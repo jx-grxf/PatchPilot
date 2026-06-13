@@ -148,7 +148,7 @@ function ShellUpdate(props: {
   }, [props.busy]);
 
   const latestVersion = props.prompt?.latestVersion ?? "";
-  const command = props.prompt?.command ?? "npm update -g @jx-grxf/patchpilot";
+  const command = props.prompt?.command ?? "npm install -g @jx-grxf/patchpilot@latest";
   return (
     <Box borderStyle="round" borderColor="yellow" flexDirection="column" paddingX={1}>
       <Text color="yellow" bold>

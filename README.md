@@ -234,6 +234,8 @@ Useful slash commands inside the TUI:
 | `/experimental` | Open the experimental checkbox menu; use Space to toggle file-analysis, memory, subagents, and shell-metacharacters. |
 | `/init` | Ask the selected model to inspect the repository and create or update `PATCHPILOT.md`. |
 | `/new` | Start a fresh session and clear current context. |
+| `/recap` | Summarize current-session tasks, outcomes, tool calls, failures, and approvals without another model call. |
+| `/update` | Check npm/GitHub Releases and offer to install a newer PatchPilot version globally. |
 | `/sessions` | List recent sessions for the current workspace. |
 | `/resume [session-id]` | Resume a previous session and inject its compact summary into the next run. |
 | `/diff` | Show the current Git diff. |
