@@ -207,8 +207,10 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
     subagents: props.subagents
   });
   const draftTokens = estimateTokens(input);
-  const terminalRows = stdout.rows ?? 40;
-  const terminalColumns = stdout.columns ?? 120;
+  // `||` instead of `??`: some PTYs report 0 rows/columns before the first
+  // resize event, which would otherwise collapse the whole layout.
+  const terminalRows = stdout.rows || 40;
+  const terminalColumns = stdout.columns || 120;
   const reauthPromptActive = Boolean(reauthPrompt || reauthBusy);
   const updatePromptActive = !reauthPromptActive && Boolean(updatePrompt || updateBusy);
   const approvalPromptActive = !reauthPromptActive && !updatePromptActive && Boolean(pendingApproval || bypassConfirmation);
