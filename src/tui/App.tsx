@@ -28,7 +28,7 @@ import { defaultOllamaModel, OllamaClient } from "../core/ollama.js";
 import { defaultOpenRouterModel, isOpenRouterFreeModel, readOpenRouterApiKey } from "../core/openrouter.js";
 import { ensurePatchPilotGitignore, patchPilotInitPrompt } from "../core/projectInit.js";
 import { formatReasoningSupport, type ReasoningSetting } from "../core/reasoning.js";
-import { buildSessionResumeContext, listWorkspaceSessions, loadSessionSummary, SessionStore } from "../core/session.js";
+import { buildSessionRecap, buildSessionResumeContext, listWorkspaceSessions, loadSessionSummary, SessionStore } from "../core/session.js";
 import { addTelemetryToSession, emptySessionTelemetry, estimateComparableApiCost, estimateTokens } from "../core/tokenAccounting.js";
 import type { AgentEvent, AgentTodoItem, AgentToolName, AgentWorkState, ApprovalRequest, ModelDescriptor, ModelProvider, ModelTelemetry, PermissionDecision, SessionTelemetry } from "../core/types.js";
 import { checkForPatchPilotUpdate, installPatchPilotUpdate, type UpdateCheckResult } from "../core/updateCheck.js";
@@ -2218,6 +2218,18 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
             })
           });
           return;
+        case "recap":
+        case "summary": {
+          const recap = buildSessionRecap(await sessionStoreRef.current.loadEvents());
+          appendLine({
+            kind: "status",
+            tone: "accent",
+            label: "recap",
+            text: recap.text,
+            detail: recap.detail
+          });
+          return;
+        }
         case "context":
         case "ctx":
         case "compact":

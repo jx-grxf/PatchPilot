@@ -13,6 +13,11 @@ export type SessionSummary = {
   model?: string;
 };
 
+export type SessionRecap = {
+  text: string;
+  detail: string;
+};
+
 type SessionIndex = {
   sessions: SessionSummary[];
 };
@@ -137,6 +142,112 @@ export async function buildSessionResumeContext(workspace: string, sessionId: st
   ]
     .filter(Boolean)
     .join("\n");
+}
+
+export function buildSessionRecap(events: SessionEvent[]): SessionRecap {
+  const runs = new Map<
+    string,
+    {
+      task: string;
+      outcome?: string;
+      failed?: string;
+      tools: Array<{ tool: string; ok: boolean; summary: string }>;
+    }
+  >();
+  let approvalsAllowed = 0;
+  let approvalsDenied = 0;
+
+  for (const event of events) {
+    if (event.type === "run.started") {
+      runs.set(event.runId, {
+        task: event.task,
+        tools: []
+      });
+      continue;
+    }
+
+    if (event.type === "tool.completed") {
+      const run = runs.get(event.runId);
+      run?.tools.push({
+        tool: event.tool,
+        ok: event.ok,
+        summary: event.summary
+      });
+      continue;
+    }
+
+    if (event.type === "approval.requested") {
+      if (event.decision === "deny") {
+        approvalsDenied += 1;
+      } else {
+        approvalsAllowed += 1;
+      }
+      continue;
+    }
+
+    if (event.type === "run.completed") {
+      const run = runs.get(event.runId);
+      if (run) {
+        run.outcome = event.message;
+      }
+      continue;
+    }
+
+    if (event.type === "run.failed") {
+      const run = runs.get(event.runId);
+      if (run) {
+        run.failed = event.message;
+      }
+    }
+  }
+
+  const runList = [...runs.values()];
+  const completed = runList.filter((run) => run.outcome).length;
+  const failed = runList.filter((run) => run.failed).length;
+  const active = runList.length - completed - failed;
+  const tools = runList.flatMap((run) => run.tools);
+  const failedTools = tools.filter((tool) => !tool.ok).length;
+
+  if (runList.length === 0) {
+    return {
+      text: "No tasks have been recorded in this session yet.",
+      detail: "Start a task, then run /recap to summarize requests, outcomes, tools, and approvals."
+    };
+  }
+
+  const visibleRuns = runList.slice(-12);
+  const hiddenRuns = runList.length - visibleRuns.length;
+  const detail = visibleRuns
+    .map((run, index) => {
+      const number = hiddenRuns + index + 1;
+      const state = run.failed ? "failed" : run.outcome ? "done" : "active";
+      const result = run.failed ?? run.outcome;
+      const notableTools = run.tools.filter((tool) => !tool.ok || /write|edit|patch|create|delete|git|test|script|shell/i.test(tool.tool)).slice(-4);
+      return [
+        `${number}. ${state} · ${clip(run.task.replace(/\s+/g, " ").trim(), 180)}`,
+        result ? `   result: ${clip(result.replace(/\s+/g, " ").trim(), 260)}` : "",
+        ...notableTools.map((tool) => `   ${tool.ok ? "ok" : "failed"} ${tool.tool}: ${clip(tool.summary.replace(/\s+/g, " ").trim(), 180)}`)
+      ]
+        .filter(Boolean)
+        .join("\n");
+    })
+    .join("\n");
+
+  const statusParts = [
+    `${runList.length} task${runList.length === 1 ? "" : "s"}`,
+    completed > 0 ? `${completed} completed` : "",
+    active > 0 ? `${active} active` : "",
+    failed > 0 ? `${failed} failed` : "",
+    `${tools.length} tool call${tools.length === 1 ? "" : "s"}${failedTools > 0 ? ` (${failedTools} failed)` : ""}`,
+    approvalsAllowed + approvalsDenied > 0 ? `${approvalsAllowed} approved · ${approvalsDenied} denied` : ""
+  ].filter(Boolean);
+
+  return {
+    text: `Session recap · ${statusParts.join(" · ")}`,
+    detail: [hiddenRuns > 0 ? `${hiddenRuns} earlier task${hiddenRuns === 1 ? "" : "s"} included in totals; latest 12 shown.` : "", detail]
+      .filter(Boolean)
+      .join("\n")
+  };
 }
 
 function summarizeEvents(events: SessionEvent[], sessionId: string, workspace: string): SessionSummary {

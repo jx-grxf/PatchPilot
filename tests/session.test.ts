@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { buildSessionResumeContext, listIndexedSessions, listWorkspaceSessions, readSessionEvents, SessionStore } from "../src/core/session.js";
+import { buildSessionRecap, buildSessionResumeContext, listIndexedSessions, listWorkspaceSessions, readSessionEvents, SessionStore } from "../src/core/session.js";
 
 let tempRoot = "";
 let previousConfigDir: string | undefined;
@@ -98,6 +98,56 @@ describe("SessionStore", () => {
 
     await expect(buildSessionResumeContext(tempRoot, "resume-me")).resolves.toContain("fix the broken game");
     await expect(buildSessionResumeContext(tempRoot, "resume-me")).resolves.toContain("changed index.html");
+  });
+
+  it("builds a concise recap from tasks, tool results, outcomes, and approvals", () => {
+    const recap = buildSessionRecap([
+      {
+        type: "run.started",
+        runId: "run-1",
+        task: "fix the layout",
+        provider: "codex",
+        model: "gpt-5.5",
+        startedAt: "2026-06-13T10:00:00.000Z"
+      },
+      {
+        type: "tool.completed",
+        runId: "run-1",
+        toolCallId: "tool-1",
+        tool: "write_file",
+        ok: true,
+        summary: "updated the transcript layout",
+        workState: "editing",
+        createdAt: "2026-06-13T10:00:01.000Z"
+      },
+      {
+        type: "approval.requested",
+        runId: "run-1",
+        request: {
+          id: "approval-1",
+          tool: "write_file",
+          arguments: {},
+          permission: "write",
+          risk: "medium",
+          preview: "write layout file"
+        },
+        decision: "allow_once",
+        createdAt: "2026-06-13T10:00:01.000Z"
+      },
+      {
+        type: "run.completed",
+        runId: "run-1",
+        message: "layout fixed and tested",
+        completedAt: "2026-06-13T10:00:02.000Z"
+      }
+    ]);
+
+    expect(recap.text).toContain("1 task");
+    expect(recap.text).toContain("1 completed");
+    expect(recap.text).toContain("1 approved");
+    expect(recap.detail).toContain("fix the layout");
+    expect(recap.detail).toContain("updated the transcript layout");
+    expect(recap.detail).toContain("layout fixed and tested");
   });
 
   it("stores the global session index in PATCHPILOT_CONFIG_DIR", async () => {

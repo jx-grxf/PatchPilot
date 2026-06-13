@@ -73,4 +73,13 @@ describe("filterSlashCommands", () => {
       })
     ]);
   });
+  it("includes the session recap command and summary alias", () => {
+    expect(filterSlashCommands("/recap")).toEqual([
+      expect.objectContaining({
+        name: "recap",
+        category: "session"
+      })
+    ]);
+    expect(filterSlashCommands("/summary").map((command) => command.name)).toEqual(["recap"]);
+  });
 });

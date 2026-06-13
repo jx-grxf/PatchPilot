@@ -67,6 +67,14 @@ export const slashCommands: SlashCommand[] = [
     detail: "Clears the visible transcript, telemetry, advisor notes, approvals, and starts a new session file. Provider, model, mode, and permissions stay unchanged."
   },
   {
+    name: "recap",
+    usage: "/recap",
+    description: "Summarize the current session's tasks, outcomes, tools, failures, and approvals.",
+    category: "session",
+    aliases: ["summary"],
+    detail: "Builds an instant recap from the persisted session log. It does not spend model tokens and also works while a run is active."
+  },
+  {
     name: "context",
     usage: "/context show|files|pins|clear|export",
     description: "Inspect and manage saved session context.",
