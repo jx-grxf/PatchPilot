@@ -56,10 +56,6 @@ export function buildShellRows(lines: LogLine[], width: number): ShellRow[] {
       rows.push({ symbol: "", label: "", text: detail, color: "gray", dim: true });
     }
 
-    if (detailRows.length > 0) {
-      rows.push({ symbol: "", label: "", text: "", color: "gray" });
-    }
-
     return rows;
   });
 }

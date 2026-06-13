@@ -40,6 +40,14 @@ describe("computeExperimentalLayout", () => {
     expect(sum).toBeGreaterThanOrEqual(layout.rootHeight);
   });
 
+  it("returns all approval space to the transcript when no prompt is visible", () => {
+    const withoutApproval = computeExperimentalLayout({ rows: 47, columns: 208, composerInput: "", paletteItemCount: 0, approvalActive: false });
+    const withApproval = computeExperimentalLayout({ rows: 47, columns: 208, composerInput: "", paletteItemCount: 0, approvalActive: true });
+
+    expect(withoutApproval.approvalHeight).toBe(0);
+    expect(withoutApproval.transcriptHeight - withApproval.transcriptHeight).toBe(withApproval.approvalHeight);
+  });
+
   it.each(terminalSizes)("keeps the composer bounded to 3-7 editor rows at %ix%i", (columns, rows) => {
     const longInput = "investigate the repository ".repeat(60);
     const layout = computeExperimentalLayout({
