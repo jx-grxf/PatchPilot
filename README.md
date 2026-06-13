@@ -9,7 +9,7 @@
 [![CI](https://github.com/jx-grxf/PatchPilot/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/jx-grxf/PatchPilot/actions/workflows/ci.yml)
 [![npm](https://img.shields.io/npm/v/@jx-grxf/patchpilot?logo=npm&color=cb3837)](https://www.npmjs.com/package/@jx-grxf/patchpilot)
 [![npm downloads](https://img.shields.io/npm/dm/@jx-grxf/patchpilot?logo=npm&color=0ea5e9)](https://www.npmjs.com/package/@jx-grxf/patchpilot)
-![Status](https://img.shields.io/badge/status-v1.2.0-0ea5e9)
+![Status](https://img.shields.io/badge/status-v1.2.2-0ea5e9)
 ![TypeScript](https://img.shields.io/badge/TypeScript-6.0-3178C6?logo=typescript&logoColor=white)
 ![Node](https://img.shields.io/badge/Node.js-22%2B-339933?logo=node.js&logoColor=white)
 ![Ink](https://img.shields.io/badge/TUI-Ink-111827)
@@ -39,7 +39,7 @@
 PatchPilot is a terminal interface for running coding-agent tasks inside a repository. It shows what the agent is doing, keeps risky actions behind explicit permissions, and supports local Ollama, remote Ollama, Google Gemini, experimental Gemini Web wrapper routing, OpenRouter, NVIDIA NIM-compatible endpoints, and Codex CLI OAuth.
 
 > [!IMPORTANT]
-> PatchPilot v1.2.0 is the large agent-hardening release: default fullscreen shell, context compaction, composable ultra modes, safer shell approvals, first-run risk acceptance, Windows fixes, and refreshed npm dependencies.
+> PatchPilot v1.2.2 improves provider compatibility, reclaims wasted transcript space, adds `/recap` and `/update`, and refreshes dependency security without including the experimental Discord integration.
 
 ---
 
@@ -443,6 +443,8 @@ Release notes are kept in [docs/releases](docs/releases).
 
 | Version | Notes |
 |---|---|
+| `v1.2.2` | [Release notes](docs/releases/v1.2.2.md) |
+| `v1.2.1` | [Release notes](docs/releases/v1.2.1.md) |
 | `v1.2.0` | [Release notes](docs/releases/v1.2.0.md) |
 | `v1.1.0` | [Release notes](docs/releases/v1.1.0.md) |
 | `v1.0.1` | [Release notes](docs/releases/v1.0.1.md) |
