@@ -27,6 +27,8 @@ export type ModelFileAnalysisOptions = {
 export type ModelChatResult = {
   content: string;
   telemetry: ModelTelemetry;
+  /** Provider-side notice worth surfacing (e.g. model fallback, cookie retry). */
+  warning?: string;
 };
 
 export type ModelDescriptor = {

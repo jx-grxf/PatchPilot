@@ -34,6 +34,24 @@ describe("token accounting", () => {
     expect(gemini.estimatedCostUsd).toBeGreaterThan(0);
     expect(estimateComparableApiCost("gemini-wrapper", "gemini-2.5-flash", 1000, 100).source).toBe("api-pricing");
   });
+
+  it("uses current GPT-5.5 and Gemini 3.5 standard rates", () => {
+    const usage = {
+      promptTokens: 1_000_000,
+      cachedPromptTokens: 0,
+      cacheWriteTokens: 0,
+      responseTokens: 1_000_000,
+      totalTokens: 2_000_000,
+      evalTokensPerSecond: null,
+      promptDurationMs: 0,
+      responseDurationMs: 0,
+      totalDurationMs: 0,
+      tokenSource: "provider" as const
+    };
+
+    expect(attachTokenCost(usage, "codex", "gpt-5.5").estimatedCostUsd).toBe(35);
+    expect(attachTokenCost(usage, "gemini", "gemini-3.5-flash").estimatedCostUsd).toBe(10.5);
+  });
 });
 
 function telemetry(overrides: Pick<ModelTelemetry, "estimatedCostUsd" | "costSource">): ModelTelemetry {

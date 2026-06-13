@@ -3,7 +3,7 @@ import { fetchWithTimeout } from "./http.js";
 import { getGeminiThinkingConfig } from "./reasoning.js";
 import { attachTokenCost } from "./tokenAccounting.js";
 
-export const defaultGeminiModel = "gemini-2.5-flash";
+export const defaultGeminiModel = "gemini-3.5-flash";
 export const defaultGeminiBaseUrl = "https://generativelanguage.googleapis.com/v1beta";
 
 type GeminiContent = {
@@ -258,7 +258,7 @@ function toTelemetry(payload: GeminiGenerateContentResponse, durationMs: number,
 
 function isLikelyGeminiAgentModel(model: string): boolean {
   const normalizedModel = model.toLowerCase();
-  if (/(embedding|imagen|veo|tts|aqa|live|bidi|audio|speech)/.test(normalizedModel)) {
+  if (/(embedding|imagen|image|veo|tts|aqa|live|bidi|audio|speech|computer-use|deep-research|robotics)/.test(normalizedModel)) {
     return false;
   }
 

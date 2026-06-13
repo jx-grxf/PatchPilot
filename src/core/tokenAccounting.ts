@@ -8,6 +8,11 @@ type TokenCostRate = {
 };
 
 const codexApiTokenRates: Record<string, TokenCostRate> = {
+  "gpt-5.5": {
+    inputPerMillion: 5,
+    cachedInputPerMillion: 0.5,
+    outputPerMillion: 30
+  },
   "gpt-5.4": {
     inputPerMillion: 2.5,
     cachedInputPerMillion: 0.25,
@@ -57,9 +62,11 @@ const fallbackCloudRates: TokenCostRate = {
 };
 
 const geminiApiTokenRates: Array<{ pattern: RegExp; rate: TokenCostRate }> = [
+  { pattern: /3[._-]?5.*flash/i, rate: { inputPerMillion: 1.5, cachedInputPerMillion: 0.15, outputPerMillion: 9 } },
   { pattern: /(gemini-?3|3\.\d).*pro|gemini-?3-pro/i, rate: { inputPerMillion: 2, cachedInputPerMillion: 0.2, outputPerMillion: 12 } },
   { pattern: /2[._-]?5.*pro|gemini-pro|^pro$/i, rate: { inputPerMillion: 1.25, cachedInputPerMillion: 0.125, outputPerMillion: 10 } },
-  { pattern: /flash[-_ ]?lite/i, rate: { inputPerMillion: 0.1, cachedInputPerMillion: 0.025, outputPerMillion: 0.4 } },
+  { pattern: /3[._-]?1.*flash[-_ ]?lite/i, rate: { inputPerMillion: 0.25, cachedInputPerMillion: 0.025, outputPerMillion: 1.5 } },
+  { pattern: /flash[-_ ]?lite/i, rate: { inputPerMillion: 0.1, cachedInputPerMillion: 0.01, outputPerMillion: 0.4 } },
   { pattern: /flash/i, rate: { inputPerMillion: 0.3, cachedInputPerMillion: 0.075, outputPerMillion: 2.5 } }
 ];
 

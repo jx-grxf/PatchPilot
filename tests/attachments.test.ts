@@ -102,9 +102,11 @@ describe("attachment classification", () => {
 describe("gemini pricing / saved cost", () => {
   it("resolves prices per model tier", () => {
     expect(geminiPriceFor("gemini-2.5-pro")).toEqual({ inputPerMillion: 1.25, outputPerMillion: 10 });
+    expect(geminiPriceFor("gemini-3.5-flash")).toEqual({ inputPerMillion: 1.5, outputPerMillion: 9 });
+    expect(geminiPriceFor("gemini-3.1-flash-lite")).toEqual({ inputPerMillion: 0.25, outputPerMillion: 1.5 });
     expect(geminiPriceFor("gemini-2.5-flash")).toEqual({ inputPerMillion: 0.3, outputPerMillion: 2.5 });
     expect(geminiPriceFor("gemini-2.5-flash-lite")).toEqual({ inputPerMillion: 0.1, outputPerMillion: 0.4 });
-    expect(geminiPriceFor("auto")).toEqual({ inputPerMillion: 0.3, outputPerMillion: 2.5 });
+    expect(geminiPriceFor("auto")).toEqual({ inputPerMillion: 1.5, outputPerMillion: 9 });
   });
 
   it("estimates the paid-API cost the free wrapper saved", () => {

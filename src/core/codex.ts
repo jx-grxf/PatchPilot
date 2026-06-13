@@ -151,20 +151,7 @@ function runCodexExec(options: {
   return new Promise((resolve, reject) => {
     const child = spawn(
       resolveCodexExecutable(),
-      [
-        "exec",
-        "--json",
-        "--model",
-        options.model,
-        ...(options.reasoningEffort && options.reasoningEffort !== "none" ? ["-c", `model_reasoning_effort="${options.reasoningEffort}"`] : []),
-        "--sandbox",
-        "read-only",
-        "--cd",
-        options.workspace,
-        "--output-last-message",
-        options.outputPath,
-        "-"
-      ],
+      buildCodexExecArgs(options),
       {
         cwd: options.workspace,
         stdio: ["pipe", "pipe", "pipe"],
@@ -207,6 +194,24 @@ function runCodexExec(options: {
 
     child.stdin.end(options.prompt);
   });
+}
+
+export function buildCodexExecArgs(options: Pick<Parameters<typeof runCodexExec>[0], "model" | "reasoningEffort" | "workspace" | "outputPath">): string[] {
+  return [
+    "exec",
+    "--ephemeral",
+    "--json",
+    "--model",
+    options.model,
+    ...(options.reasoningEffort && options.reasoningEffort !== "none" ? ["-c", `model_reasoning_effort="${options.reasoningEffort}"`] : []),
+    "--sandbox",
+    "read-only",
+    "--cd",
+    options.workspace,
+    "--output-last-message",
+    options.outputPath,
+    "-"
+  ];
 }
 
 type CodexUsage = {

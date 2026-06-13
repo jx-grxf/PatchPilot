@@ -7,6 +7,28 @@ afterEach(() => {
 });
 
 describe("OpenRouterClient", () => {
+  it("sends requested reasoning before model capabilities have been loaded", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" }
+      })
+    );
+
+    await new OpenRouterClient("test-key").chat({
+      model: "vendor/reasoning-model",
+      reasoningEffort: "high",
+      messages: [{ role: "user", content: "hello" }]
+    });
+
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toMatchObject({
+      reasoning: {
+        effort: "high",
+        exclude: true
+      }
+    });
+  });
+
   it("lists OpenRouter models with auto router first", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(

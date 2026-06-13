@@ -217,6 +217,13 @@ export class AgentRunner {
         metrics: modelResponse.telemetry,
         workState: requestWorkState
       };
+      if (modelResponse.warning) {
+        yield {
+          type: "status",
+          message: modelResponse.warning,
+          workState: requestWorkState
+        };
+      }
 
       let parsedResponse;
       try {

@@ -111,7 +111,7 @@ export class OpenRouterClient {
         messages: options.messages,
         max_tokens: this.runtimeOptions.maxTokens,
         temperature: this.runtimeOptions.temperature,
-        reasoning: this.supportsReasoning(options.model) ? getOpenRouterReasoningConfig(options.reasoningEffort) : undefined,
+        reasoning: this.supportsReasoning(options.model) !== false ? getOpenRouterReasoningConfig(options.reasoningEffort) : undefined,
         response_format: options.formatJson && this.supportsJson(options.model) !== false ? { type: "json_object" } : undefined,
         provider: options.formatJson && this.supportsJson(options.model) !== false ? { require_parameters: true } : undefined
       })),
@@ -163,8 +163,8 @@ export class OpenRouterClient {
     return modelCapabilityCache.get(capabilityKey(this.baseUrl, normalizeOpenRouterModel(model)))?.supportsJson ?? null;
   }
 
-  private supportsReasoning(model: string): boolean {
-    return modelCapabilityCache.get(capabilityKey(this.baseUrl, normalizeOpenRouterModel(model)))?.supportsReasoning === true;
+  private supportsReasoning(model: string): boolean | null {
+    return modelCapabilityCache.get(capabilityKey(this.baseUrl, normalizeOpenRouterModel(model)))?.supportsReasoning ?? null;
   }
 
   private async fetchOpenRouter(path: string, init?: RequestInit): Promise<Response> {

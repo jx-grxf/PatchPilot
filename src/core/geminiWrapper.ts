@@ -7,10 +7,7 @@ import { fetchWithTimeout } from "./http.js";
 import { attachTokenCost, estimateTokens } from "./tokenAccounting.js";
 
 export const defaultGeminiWrapperModel = "auto";
-// Gemini 3 has no flash-lite tier — gemini_webapi 2.0.0 exposes only
-// pro / flash / flash-thinking. Offering "flash-lite" advertised a model that
-// does not exist and hard-failed every request, so it is no longer a shortcut.
-export const geminiWrapperShortcutModels = ["auto", "flash", "pro"] as const;
+export const geminiWrapperShortcutModels = ["auto", "flash-lite", "flash", "pro"] as const;
 export const geminiWrapperLegacyModels = ["thinking"] as const;
 export const geminiWrapperCuratedModels = [...geminiWrapperShortcutModels, ...geminiWrapperLegacyModels] as const;
 export const geminiWebApiVersion = "2.0.0";
@@ -90,6 +87,8 @@ type PythonBridgeInput = {
   secure1psidts?: string;
   proxy?: string;
   timeoutSeconds?: number;
+  /** Request id used by the persistent daemon protocol. */
+  id?: number;
 };
 
 type PythonBridgeOutput = {
@@ -100,6 +99,7 @@ type PythonBridgeOutput = {
   accountStatus?: string;
   model?: string;
   warning?: string;
+  id?: number;
 };
 
 export type GeminiWrapperBrowserCookie = {
@@ -280,7 +280,8 @@ export class GeminiWrapperClient {
 
     return {
       content,
-      telemetry: toEstimatedTelemetry(`${options.prompt}\nFILE:${options.path}`, content, durationMs, result.model ?? options.model)
+      telemetry: toEstimatedTelemetry(`${options.prompt}\nFILE:${options.path}`, content, durationMs, result.model ?? options.model),
+      ...(result.warning ? { warning: result.warning } : {})
     };
   }
 
@@ -362,42 +363,26 @@ export class GeminiWrapperClient {
 
     return {
       content,
-      telemetry: toEstimatedTelemetry(prompt, content, durationMs, result.model ?? options.model)
+      telemetry: toEstimatedTelemetry(prompt, content, durationMs, result.model ?? options.model),
+      ...(result.warning ? { warning: result.warning } : {})
     };
   }
 
   private async runPythonBridge(input: Pick<PythonBridgeInput, "command" | "model" | "prompt" | "files">, signal?: AbortSignal, timeoutMs = getGeminiWrapperBridgeTimeoutMs(input.model, this.runtimeOptions.bridgeTimeoutMs)): Promise<PythonBridgeOutput> {
-    const result = await runThrottledGeminiWebApiBridge(
-      this.pythonCommand,
-      {
-        ...input,
-        cookiesJson: this.cookiesJson || undefined,
-        secure1psid: readGeminiWrapperSecure1psid() || undefined,
-        secure1psidts: readGeminiWrapperSecure1psidts() || undefined,
-        proxy: process.env.HTTPS_PROXY ?? process.env.https_proxy ?? process.env.HTTP_PROXY ?? process.env.http_proxy
-      },
-      signal,
-      this.runtimeOptions.bridgeMinIntervalMs,
-      timeoutMs
-    );
+    const payload: PythonBridgeInput = {
+      ...input,
+      cookiesJson: this.cookiesJson || undefined,
+      secure1psid: readGeminiWrapperSecure1psid() || undefined,
+      secure1psidts: readGeminiWrapperSecure1psidts() || undefined,
+      proxy: process.env.HTTPS_PROXY ?? process.env.https_proxy ?? process.env.HTTP_PROXY ?? process.env.http_proxy
+    };
+    const result = await runGeminiWebApiBridgeRequest(this.pythonCommand, payload, signal, this.runtimeOptions.bridgeMinIntervalMs, timeoutMs);
     if (!isUnauthenticatedGeminiWebError(result.error)) {
       return result;
     }
 
     clearGeminiWrapperCookieCache();
-    return await runThrottledGeminiWebApiBridge(
-      this.pythonCommand,
-      {
-        ...input,
-        cookiesJson: this.cookiesJson || undefined,
-        secure1psid: readGeminiWrapperSecure1psid() || undefined,
-        secure1psidts: readGeminiWrapperSecure1psidts() || undefined,
-        proxy: process.env.HTTPS_PROXY ?? process.env.https_proxy ?? process.env.HTTP_PROXY ?? process.env.http_proxy
-      },
-      signal,
-      this.runtimeOptions.bridgeMinIntervalMs,
-      timeoutMs
-    );
+    return await runGeminiWebApiBridgeRequest(this.pythonCommand, payload, signal, this.runtimeOptions.bridgeMinIntervalMs, timeoutMs);
   }
 
   private async resolveGeminiWrapperBridgeModel(model: string): Promise<string> {
@@ -614,6 +599,9 @@ export function getGeminiWrapperCookieCacheDir(env: NodeJS.ProcessEnv = process.
 }
 
 export function clearGeminiWrapperCookieCache(env: NodeJS.ProcessEnv = process.env): void {
+  // A running daemon holds the old cookies in memory — drop it so the next
+  // request re-reads the refreshed cookie jar.
+  disposeGeminiWrapperBridgeDaemon();
   const cacheDir = getGeminiWrapperCookieCacheDir(env);
   rmSync(cacheDir, {
     recursive: true,
@@ -768,6 +756,11 @@ function mergeGeminiWrapperModelDescriptors(models: ModelDescriptor[]): ModelDes
       description: "Let Gemini Web choose its current default model."
     },
     {
+      id: "flash-lite",
+      displayName: "Flash-Lite",
+      description: "Fastest Gemini Web tier, resolved from live model discovery."
+    },
+    {
       id: "flash",
       displayName: "Flash",
       description: "Gemini 3 Flash — fast tier, resolved from live Gemini Web discovery."
@@ -809,6 +802,10 @@ function descriptorKeys(model: ModelDescriptor): string[] {
 function resolveGeminiWrapperShortcutDescriptor(shortcut: string, descriptors: ModelDescriptor[]): ModelDescriptor | null {
   const dynamicDescriptors = descriptors.filter((descriptor) => !geminiWrapperCuratedModels.includes(descriptor.id as typeof geminiWrapperCuratedModels[number]));
   const matches = (pattern: RegExp) => dynamicDescriptors.filter((descriptor) => pattern.test(formatModelDescriptorSearchText(descriptor)));
+
+  if (shortcut === "flash-lite") {
+    return matches(/flash[-\s]?lite|\blite\b/i)[0] ?? null;
+  }
 
   if (shortcut === "flash") {
     return matches(/\bflash\b/i).find((descriptor) => !/lite|thinking/i.test(formatModelDescriptorSearchText(descriptor))) ?? null;
@@ -912,6 +909,61 @@ function getGeminiWrapperBridgeTimeoutMs(model: string, configuredTimeoutMs = re
   return model.includes("pro") ? Math.max(timeoutMs, 240_000) : timeoutMs;
 }
 
+export function readGeminiWrapperDaemonEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.PATCHPILOT_GEMINI_WRAPPER_DAEMON?.trim() !== "0";
+}
+
+/** Serialize bridge calls and keep the configured minimum interval between them. */
+function enqueueThrottledGeminiBridgeCall<T>(
+  run: () => Promise<T>,
+  signal: AbortSignal | undefined,
+  minIntervalMs: number | undefined
+): Promise<T> {
+  const task = async () => {
+    const intervalMs = minIntervalMs ?? 0;
+    const waitMs = Math.max(0, intervalMs - (Date.now() - lastGeminiBridgeStartedAt));
+    if (waitMs > 0) {
+      await sleep(waitMs, signal);
+    }
+    lastGeminiBridgeStartedAt = Date.now();
+    return await run();
+  };
+
+  const result = geminiBridgeQueue.then(task, task);
+  geminiBridgeQueue = result.catch(() => undefined);
+  return result;
+}
+
+/**
+ * Run one bridge request — through the persistent daemon when enabled, with a
+ * transparent fallback to the one-shot bridge when the daemon cannot start or
+ * dies before answering.
+ */
+async function runGeminiWebApiBridgeRequest(
+  pythonCommand: string,
+  input: PythonBridgeInput,
+  signal: AbortSignal | undefined,
+  minIntervalMs = readGeminiWrapperRuntimeOptions().bridgeMinIntervalMs,
+  timeoutMs = getGeminiWrapperBridgeTimeoutMs(input.model)
+): Promise<PythonBridgeOutput> {
+  if (!readGeminiWrapperDaemonEnabled()) {
+    return runThrottledGeminiWebApiBridge(pythonCommand, input, signal, minIntervalMs, timeoutMs);
+  }
+
+  try {
+    return await enqueueThrottledGeminiBridgeCall(
+      () => getGeminiWrapperBridgeDaemon(pythonCommand, input).request(input, timeoutMs, signal),
+      signal,
+      minIntervalMs
+    );
+  } catch (error) {
+    if (error instanceof GeminiBridgeDaemonUnavailableError && !signal?.aborted) {
+      return runThrottledGeminiWebApiBridge(pythonCommand, input, signal, minIntervalMs, timeoutMs);
+    }
+    throw error;
+  }
+}
+
 function runThrottledGeminiWebApiBridge(
   pythonCommand: string,
   input: PythonBridgeInput,
@@ -919,19 +971,223 @@ function runThrottledGeminiWebApiBridge(
   minIntervalMs = readGeminiWrapperRuntimeOptions().bridgeMinIntervalMs,
   timeoutMs = getGeminiWrapperBridgeTimeoutMs(input.model)
 ): Promise<PythonBridgeOutput> {
-  const run = async () => {
-    const intervalMs = minIntervalMs ?? 0;
-    const waitMs = Math.max(0, intervalMs - (Date.now() - lastGeminiBridgeStartedAt));
-    if (waitMs > 0) {
-      await sleep(waitMs, signal);
-    }
-    lastGeminiBridgeStartedAt = Date.now();
-    return await runGeminiWebApiBridge(pythonCommand, input, timeoutMs, signal);
-  };
+  return enqueueThrottledGeminiBridgeCall(() => runGeminiWebApiBridge(pythonCommand, input, timeoutMs, signal), signal, minIntervalMs);
+}
 
-  const result = geminiBridgeQueue.then(run, run);
-  geminiBridgeQueue = result.catch(() => undefined);
-  return result;
+/** Daemon could not start or died before ever answering — safe to fall back. */
+class GeminiBridgeDaemonUnavailableError extends Error {}
+
+type PendingDaemonRequest = {
+  resolve: (output: PythonBridgeOutput) => void;
+  reject: (error: Error) => void;
+};
+
+/**
+ * Persistent Gemini-API bridge: one Python process that initializes the
+ * GeminiClient once and then serves chat/models/authCheck requests over a
+ * line-delimited JSON protocol. Cuts per-request latency from "Python startup
+ * + full Gemini Web init + request" down to just the request.
+ */
+class GeminiBridgeDaemon {
+  private readonly child: ReturnType<typeof spawn>;
+  private stdoutBuffer = "";
+  private stderrTail = "";
+  private nextRequestId = 1;
+  private readonly pending = new Map<number, PendingDaemonRequest>();
+  private exitError: Error | null = null;
+  private hasResponded = false;
+
+  constructor(readonly signature: string, pythonCommand: string) {
+    const cookieCacheDir = getGeminiWrapperCookieCacheDir();
+    mkdirSync(cookieCacheDir, {
+      recursive: true,
+      mode: 0o700
+    });
+    tryChmod(cookieCacheDir, 0o700);
+
+    this.child = spawn(pythonCommand, ["-c", geminiWebApiDaemonScript], {
+      env: {
+        ...process.env,
+        GEMINI_COOKIE_PATH: cookieCacheDir
+      },
+      stdio: ["pipe", "pipe", "pipe"],
+      detached: process.platform !== "win32",
+      windowsHide: true
+    });
+    this.child.on("error", (error) => {
+      this.handleExit(new GeminiBridgeDaemonUnavailableError(`Gemini-API bridge daemon failed to start: ${error.message}`));
+    });
+    this.child.on("close", () => {
+      const detail = this.stderrTail.trim();
+      const message = `Gemini-API bridge daemon exited.${detail ? ` ${detail}` : ""}`;
+      this.handleExit(this.hasResponded ? new Error(message) : new GeminiBridgeDaemonUnavailableError(message));
+    });
+    this.child.stdout?.on("data", (chunk: Buffer) => {
+      this.handleStdout(chunk.toString("utf8"));
+    });
+    this.child.stderr?.on("data", (chunk: Buffer) => {
+      this.stderrTail = appendClipped(this.stderrTail, chunk.toString("utf8"), 8192);
+    });
+    // The daemon must never keep the Node process alive on its own: requests
+    // hold a ref'd timeout while in flight, and the daemon exits on stdin EOF.
+    this.child.unref();
+    (this.child.stdout as unknown as { unref?: () => void } | null)?.unref?.();
+    (this.child.stderr as unknown as { unref?: () => void } | null)?.unref?.();
+    (this.child.stdin as unknown as { unref?: () => void } | null)?.unref?.();
+  }
+
+  get alive(): boolean {
+    return this.exitError === null;
+  }
+
+  request(input: PythonBridgeInput, timeoutMs: number, signal?: AbortSignal): Promise<PythonBridgeOutput> {
+    return new Promise((resolve, reject) => {
+      if (this.exitError) {
+        reject(this.exitError);
+        return;
+      }
+      if (signal?.aborted) {
+        reject(new Error("Gemini-API bridge request aborted."));
+        return;
+      }
+
+      const id = this.nextRequestId++;
+      let settled = false;
+      const finish = (handler: () => void) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        this.pending.delete(id);
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", abort);
+        handler();
+      };
+      const timer = setTimeout(() => {
+        const error = new Error(`Gemini-API bridge timed out after ${Math.round(timeoutMs / 1000)}s.`);
+        finish(() => reject(error));
+        // The Python side may be stuck mid-generation — replace the process.
+        this.dispose(error);
+      }, timeoutMs);
+      const abort = () => {
+        const error = new Error("Gemini-API bridge request aborted.");
+        finish(() => reject(error));
+        this.dispose(error);
+      };
+      signal?.addEventListener("abort", abort, {
+        once: true
+      });
+
+      this.pending.set(id, {
+        resolve: (output) => finish(() => resolve(output)),
+        reject: (error) => finish(() => reject(error))
+      });
+
+      this.child.stdin?.write(
+        `${JSON.stringify({
+          ...input,
+          id,
+          timeoutSeconds: Math.max(30, Math.min(300, Math.floor(timeoutMs / 1000)))
+        })}\n`,
+        (error) => {
+          if (error) {
+            const unavailable = new GeminiBridgeDaemonUnavailableError(`Gemini-API bridge daemon write failed: ${error.message}`);
+            finish(() => reject(unavailable));
+            this.dispose(unavailable);
+          }
+        }
+      );
+    });
+  }
+
+  dispose(error: Error = new Error("Gemini-API bridge daemon disposed.")): void {
+    if (this.exitError) {
+      return;
+    }
+    this.exitError = error;
+    this.rejectAllPending(error);
+    if (activeGeminiBridgeDaemon === this) {
+      activeGeminiBridgeDaemon = null;
+    }
+    killChildProcess(this.child, "SIGTERM");
+    const killTimer = setTimeout(() => {
+      killChildProcess(this.child, "SIGKILL");
+    }, 1500);
+    killTimer.unref?.();
+  }
+
+  private handleExit(error: Error): void {
+    if (this.exitError) {
+      return;
+    }
+    this.exitError = error;
+    // A daemon that never answered is treated as unavailable so callers fall
+    // back to the one-shot bridge; a crash mid-stream behaves the same way.
+    this.rejectAllPending(error);
+    if (activeGeminiBridgeDaemon === this) {
+      activeGeminiBridgeDaemon = null;
+    }
+  }
+
+  private rejectAllPending(error: Error): void {
+    const requests = [...this.pending.values()];
+    this.pending.clear();
+    for (const request of requests) {
+      request.reject(error);
+    }
+  }
+
+  private handleStdout(chunk: string): void {
+    this.stdoutBuffer = appendClipped(this.stdoutBuffer, chunk, geminiBridgeOutputMaxBytes);
+    let newlineIndex = this.stdoutBuffer.indexOf("\n");
+    while (newlineIndex !== -1) {
+      const line = this.stdoutBuffer.slice(0, newlineIndex).trim();
+      this.stdoutBuffer = this.stdoutBuffer.slice(newlineIndex + 1);
+      if (line) {
+        try {
+          const output = JSON.parse(line) as PythonBridgeOutput;
+          const request = typeof output.id === "number" ? this.pending.get(output.id) : undefined;
+          if (request) {
+            this.hasResponded = true;
+            request.resolve(output);
+          }
+        } catch {
+          // Ignore non-JSON noise on stdout.
+        }
+      }
+      newlineIndex = this.stdoutBuffer.indexOf("\n");
+    }
+  }
+}
+
+let activeGeminiBridgeDaemon: GeminiBridgeDaemon | null = null;
+
+function geminiBridgeDaemonSignature(pythonCommand: string, input: PythonBridgeInput): string {
+  return JSON.stringify([
+    pythonCommand,
+    input.cookiesJson ?? "",
+    input.secure1psid ?? "",
+    input.secure1psidts ?? "",
+    input.proxy ?? "",
+    getGeminiWrapperCookieCacheDir()
+  ]);
+}
+
+function getGeminiWrapperBridgeDaemon(pythonCommand: string, input: PythonBridgeInput): GeminiBridgeDaemon {
+  const signature = geminiBridgeDaemonSignature(pythonCommand, input);
+  if (activeGeminiBridgeDaemon?.alive && activeGeminiBridgeDaemon.signature === signature) {
+    return activeGeminiBridgeDaemon;
+  }
+
+  activeGeminiBridgeDaemon?.dispose();
+  activeGeminiBridgeDaemon = new GeminiBridgeDaemon(signature, pythonCommand);
+  return activeGeminiBridgeDaemon;
+}
+
+/** Stop the persistent bridge daemon (cookie refresh, shutdown, tests). */
+export function disposeGeminiWrapperBridgeDaemon(): void {
+  activeGeminiBridgeDaemon?.dispose();
+  activeGeminiBridgeDaemon = null;
 }
 
 function runGeminiWebApiBridge(pythonCommand: string, input: PythonBridgeInput, timeoutMs: number, signal?: AbortSignal): Promise<PythonBridgeOutput> {
@@ -1249,6 +1505,305 @@ except Exception as exc:
     }))
 `;
 
+/**
+ * Persistent daemon counterpart of geminiWebApiBridgeScript. Reads one JSON
+ * request per line from stdin, answers with one JSON line per request on
+ * stdout, and keeps the initialized GeminiClient warm between requests.
+ * Mirrors the one-shot script's semantics: stale-__Secure-1PSIDTS retries,
+ * unauthenticated-status detection, transient network retries, and the
+ * unknown-model fallback to the Gemini Web default.
+ */
+const geminiWebApiDaemonScript = String.raw`
+import asyncio
+import json
+import os
+import sys
+
+IDLE_SECONDS = float(os.getenv("PATCHPILOT_GEMINI_BRIDGE_IDLE_SECONDS") or 300)
+LINE_LIMIT = 32 * 1024 * 1024
+
+def is_transient_network_error(message):
+    lower = message.lower()
+    return (
+        "curl: (28)" in lower
+        or "curl: (56)" in lower
+        or "connection timed out" in lower
+        or "connection closed abruptly" in lower
+        or "connection reset" in lower
+        or "server returned nothing" in lower
+        or "unexpected eof" in lower
+        or "stream error" in lower
+        or "http/2 stream" in lower
+        or "operation timed out" in lower
+        or "readtimeout" in lower
+        or "timeouterror" in lower
+        or "temporarily unavailable" in lower
+    )
+
+def account_status_name(client):
+    status = getattr(client, "account_status", None)
+    return getattr(status, "name", str(status or ""))
+
+def is_unauthenticated_status(name):
+    lower = (name or "").lower()
+    return "unauth" in lower or "expired" in lower or "invalid" in lower
+
+def expired_cookie_error():
+    return "Gemini web cookies are expired or unauthenticated. Refresh ~/.patchpilot/gemini-cookies.json through Gemini-Wrapper onboarding."
+
+def clear_cookie_cache():
+    cache_dir = os.getenv("GEMINI_COOKIE_PATH")
+    if not cache_dir:
+        return
+    try:
+        for filename in os.listdir(cache_dir):
+            if filename.startswith(".cached_cookies_") and filename.endswith(".json"):
+                os.remove(os.path.join(cache_dir, filename))
+    except OSError:
+        pass
+
+def is_psidts_error(message):
+    return "__Secure-1PSIDTS" in message or "SECURE_1PSIDTS" in message
+
+def load_cookie_payload(payload):
+    cookies = {}
+    cookies_path = payload.get("cookiesJson")
+    if cookies_path:
+        with open(cookies_path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        if isinstance(data, dict) and isinstance(data.get("cookies"), dict):
+            cookies.update(data["cookies"])
+        elif isinstance(data, dict) and isinstance(data.get("cookies"), list):
+            cookies.update({item.get("name"): item.get("value") for item in data["cookies"] if item.get("name") and item.get("value")})
+        elif isinstance(data, list):
+            cookies.update({item.get("name"): item.get("value") for item in data if item.get("name") and item.get("value")})
+        elif isinstance(data, dict):
+            cookies.update({key: value for key, value in data.items() if isinstance(value, str)})
+
+    psid = cookies.get("__Secure-1PSID") or payload.get("secure1psid") or os.getenv("GEMINI_SECURE_1PSID")
+    psidts = cookies.get("__Secure-1PSIDTS") or payload.get("secure1psidts") or os.getenv("GEMINI_SECURE_1PSIDTS") or ""
+    if payload.get("forceEmptyPsidts"):
+        psidts = ""
+    extra = {key: value for key, value in cookies.items() if key not in {"__Secure-1PSID", "__Secure-1PSIDTS"}}
+    return psid, psidts, extra
+
+class BridgeState:
+    def __init__(self):
+        self.client = None
+        self.key = None
+        self.status_name = ""
+        self.init_warning = None
+
+STATE = BridgeState()
+
+async def close_client():
+    client = STATE.client
+    STATE.client = None
+    STATE.key = None
+    if client is not None:
+        try:
+            await client.close()
+        except Exception:
+            pass
+
+async def init_client(psid, psidts, extra, proxy, timeout):
+    from gemini_webapi import GeminiClient
+
+    client = GeminiClient(secure_1psid=psid, secure_1psidts=psidts, cookies=extra or None, proxy=proxy)
+    await client.init(timeout=timeout, auto_close=True, auto_refresh=True, verbose=False)
+    return client
+
+async def ensure_client(payload, attempt_timeout):
+    psid, psidts, extra = load_cookie_payload(payload)
+    if not psid:
+        raise RuntimeError("Missing __Secure-1PSID. Set PATCHPILOT_GEMINI_WRAPPER_COOKIES_JSON or GEMINI_SECURE_1PSID.")
+    proxy = payload.get("proxy")
+    key = json.dumps([psid, psidts, sorted(extra.items()), proxy])
+    if STATE.client is not None and STATE.key == key:
+        return
+
+    await close_client()
+    STATE.init_warning = "Retried without stale __Secure-1PSIDTS." if payload.get("forceEmptyPsidts") else None
+    used_psidts = psidts
+    try:
+        client = await init_client(psid, psidts, extra, proxy, attempt_timeout)
+    except Exception as exc:
+        if used_psidts and is_psidts_error(str(exc)):
+            clear_cookie_cache()
+            used_psidts = ""
+            client = await init_client(psid, "", extra, proxy, attempt_timeout)
+            STATE.init_warning = "Retried without stale __Secure-1PSIDTS."
+        else:
+            raise
+
+    status_name = account_status_name(client)
+    if is_unauthenticated_status(status_name) and used_psidts:
+        try:
+            await client.close()
+        except Exception:
+            pass
+        clear_cookie_cache()
+        client = await init_client(psid, "", extra, proxy, attempt_timeout)
+        status_name = account_status_name(client)
+        STATE.init_warning = "Retried without stale __Secure-1PSIDTS."
+
+    STATE.client = client
+    STATE.key = key
+    STATE.status_name = status_name
+
+async def handle_request(payload, attempt_timeout):
+    await ensure_client(payload, attempt_timeout)
+    client = STATE.client
+    status_name = STATE.status_name
+    init_warning = STATE.init_warning
+    STATE.init_warning = None
+    if is_unauthenticated_status(status_name):
+        await close_client()
+        return {"error": expired_cookie_error(), "accountStatus": status_name}
+
+    command = payload.get("command")
+    if command == "authCheck":
+        return {"content": "ok", "accountStatus": status_name}
+
+    if command == "models":
+        models = []
+        model_descriptors = []
+        for model in client.list_models() or []:
+            if not getattr(model, "is_available", True):
+                continue
+            model_id = getattr(model, "model_id", None) or ""
+            name = getattr(model, "model_name", None) or ""
+            display_name = getattr(model, "display_name", None) or ""
+            description = getattr(model, "description", None) or ""
+            selection_id = name or model_id or display_name
+            if selection_id:
+                descriptor = {
+                    "id": selection_id,
+                    "modelName": name or None,
+                    "displayName": display_name or name or selection_id,
+                    "description": description or None,
+                    "isAvailable": bool(getattr(model, "is_available", True)),
+                    "advancedOnly": bool(getattr(model, "advanced_only", False)),
+                }
+                capacity = getattr(model, "capacity", None)
+                capacity_field = getattr(model, "capacity_field", None)
+                if isinstance(capacity, (int, float)):
+                    descriptor["capacity"] = capacity
+                if isinstance(capacity_field, (int, float)):
+                    descriptor["capacityField"] = capacity_field
+                model_descriptors.append({key: value for key, value in descriptor.items() if value is not None})
+            name = name or display_name or model_id
+            if name:
+                models.append(name)
+        return {"models": models, "modelDescriptors": model_descriptors, "accountStatus": status_name}
+
+    request_model = payload.get("model") or ""
+    request_kwargs = {"temporary": True}
+    if request_model:
+        request_kwargs["model"] = request_model
+    files = payload.get("files") or []
+    if files:
+        request_kwargs["files"] = files
+    used_model = request_model or "auto"
+    model_warning = None
+    prompt_text = payload.get("prompt") or ""
+    try:
+        response = await client.generate_content(prompt_text, **request_kwargs)
+    except ValueError as model_error:
+        # An unknown model name must not fail the whole request — retry on
+        # Gemini Web's default model and report it back.
+        if "model" not in str(model_error).lower():
+            raise
+        request_kwargs.pop("model", None)
+        used_model = "auto"
+        model_warning = f"Requested model '{request_model}' is unavailable; used the Gemini Web default instead."
+        response = await client.generate_content(prompt_text, **request_kwargs)
+    text = getattr(response, "text", None) or str(response)
+    result = {"content": text, "accountStatus": status_name, "model": used_model}
+    warnings = [warning for warning in [init_warning, model_warning] if warning]
+    if warnings:
+        result["warning"] = " ".join(warnings)
+    return result
+
+async def handle_with_retries(payload, attempt_timeout):
+    max_attempts = 2 if payload.get("files") else 3
+    attempt = 0
+    psidts_retry_done = False
+    while True:
+        try:
+            return await asyncio.wait_for(handle_request(payload, attempt_timeout), timeout=attempt_timeout)
+        except asyncio.TimeoutError:
+            await close_client()
+            attempt += 1
+            if attempt >= max_attempts:
+                raise TimeoutError(f"Gemini-API bridge attempt timed out after {attempt_timeout}s.")
+            await asyncio.sleep(1.5 * attempt)
+        except Exception as exc:
+            message = str(exc)
+            if not psidts_retry_done and is_psidts_error(message):
+                psidts_retry_done = True
+                clear_cookie_cache()
+                await close_client()
+                payload = dict(payload)
+                payload["forceEmptyPsidts"] = True
+                continue
+            attempt += 1
+            if attempt >= max_attempts or not is_transient_network_error(message):
+                raise
+            await asyncio.sleep(1.5 * attempt)
+
+async def read_request_line(loop, reader):
+    if reader is not None:
+        try:
+            return await asyncio.wait_for(reader.readline(), timeout=IDLE_SECONDS)
+        except asyncio.TimeoutError:
+            return b""
+    # Windows: no connect_read_pipe for stdin — block in a worker thread.
+    line = await loop.run_in_executor(None, sys.stdin.buffer.readline)
+    return line
+
+async def main():
+    loop = asyncio.get_running_loop()
+    reader = None
+    if os.name != "nt":
+        try:
+            reader = asyncio.StreamReader(limit=LINE_LIMIT)
+            await loop.connect_read_pipe(lambda: asyncio.StreamReaderProtocol(reader), sys.stdin)
+        except Exception:
+            reader = None
+
+    while True:
+        line = await read_request_line(loop, reader)
+        if not line:
+            break
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            payload = json.loads(line)
+        except Exception:
+            continue
+        request_id = payload.get("id")
+        attempt_timeout = max(30, int(payload.get("timeoutSeconds") or 60))
+        try:
+            result = await handle_with_retries(payload, attempt_timeout)
+        except Exception as exc:
+            message = str(exc)
+            if "currently unavailable or the request structure is outdated" in message:
+                message = f"{message} Try /model auto and refresh Gemini-Wrapper cookies if this persists."
+            result = {"error": message}
+        result["id"] = request_id
+        sys.stdout.write(json.dumps(result) + "\n")
+        sys.stdout.flush()
+
+    await close_client()
+
+try:
+    asyncio.run(main())
+except Exception:
+    pass
+`;
+
 const geminiWebApiBridgeScript = String.raw`
 import asyncio
 import json
@@ -1339,7 +1894,7 @@ async def main():
                     name = getattr(model, "model_name", None) or ""
                     display_name = getattr(model, "display_name", None) or ""
                     description = getattr(model, "description", None) or ""
-                    selection_id = model_id or name or display_name
+                    selection_id = name or model_id or display_name
                     if selection_id:
                         descriptor = {
                             "id": selection_id,

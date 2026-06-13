@@ -2,7 +2,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { CodexCliClient, codexOAuthModels, hasCodexCliOAuth, parseCodexUsageFromJsonl } from "../src/core/codex.js";
+import { buildCodexExecArgs, CodexCliClient, codexOAuthModels, hasCodexCliOAuth, parseCodexUsageFromJsonl } from "../src/core/codex.js";
 import { normalizeModelProvider } from "../src/core/modelClient.js";
 
 let tempRoot = "";
@@ -19,6 +19,17 @@ afterEach(async () => {
 });
 
 describe("Codex OAuth provider", () => {
+  it("runs provider calls ephemerally without persisting Codex sessions", () => {
+    expect(
+      buildCodexExecArgs({
+        model: "gpt-5.5",
+        reasoningEffort: "high",
+        workspace: tempRoot,
+        outputPath: path.join(tempRoot, "last-message.txt")
+      })
+    ).toContain("--ephemeral");
+  });
+
   it("detects Codex CLI OAuth tokens without reading them as API keys", async () => {
     const authPath = path.join(tempRoot, "auth.json");
     await writeFile(

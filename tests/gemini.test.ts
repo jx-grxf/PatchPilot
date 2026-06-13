@@ -1,11 +1,15 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { GeminiClient, readGeminiApiKey, readGeminiRuntimeOptions } from "../src/core/gemini.js";
+import { defaultGeminiModel, GeminiClient, readGeminiApiKey, readGeminiRuntimeOptions } from "../src/core/gemini.js";
 
 afterEach(() => {
   vi.restoreAllMocks();
 });
 
 describe("GeminiClient", () => {
+  it("defaults to the current stable Flash model", () => {
+    expect(defaultGeminiModel).toBe("gemini-3.5-flash");
+  });
+
   it("sends generateContent requests with JSON response mode and telemetry", async () => {
     vi.spyOn(Date, "now").mockReturnValueOnce(1_000).mockReturnValueOnce(1_500);
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
@@ -129,6 +133,14 @@ describe("GeminiClient", () => {
             },
             {
               name: "models/imagen-4.0",
+              supportedGenerationMethods: ["generateContent"]
+            },
+            {
+              name: "models/gemini-3.5-flash-image",
+              supportedGenerationMethods: ["generateContent"]
+            },
+            {
+              name: "models/gemini-2.5-computer-use-preview",
               supportedGenerationMethods: ["generateContent"]
             }
           ]
