@@ -12,7 +12,7 @@ import { type Artifact, attachmentSymbol, extractAttachmentPaths, sanitizePasted
 import { ExperimentalBanner } from "./Banner.js";
 import { composerView, deleteComposerText, insertComposerText } from "./composer.js";
 import { CommandPalette } from "./CommandPalette.js";
-import { estimateGeminiCost, formatSavedCost } from "./geminiPricing.js";
+import { estimateCloudEquivalentCost, formatSavedCost } from "./savings.js";
 import { computeExperimentalLayout, windowRows } from "./layout.js";
 import { symbols, workStateColor } from "./theme.js";
 import { buildShellRows, buildTodoDock, truncate } from "./transcriptRows.js";
@@ -190,12 +190,13 @@ function ShellHeader(props: ExperimentalShellProps): React.ReactElement {
   const modeLabel = props.agentMode === "bypass" ? "build+bypass" : props.agentMode;
   const writeLabel = props.allowWrite ? "on" : props.agentMode === "build" ? "approval" : "off";
   const shellLabel = props.allowShell ? "on" : props.agentMode === "build" ? "approval" : "off";
-  // Gemini-Wrapper rides the free Gemini Web route; show what the same tokens
-  // would have cost on the paid Gemini API — i.e. the running saved amount.
-  const savedUsd =
-    props.provider === "gemini-wrapper"
-      ? estimateGeminiCost(props.sessionTelemetry.promptTokens, props.sessionTelemetry.responseTokens, props.model)
-      : null;
+  // Everything runs on local hardware; show what the same tokens would have
+  // cost on a hosted API — i.e. the running saved amount.
+  const savedUsd = estimateCloudEquivalentCost(
+    props.sessionTelemetry.promptTokens,
+    props.sessionTelemetry.responseTokens,
+    props.sessionTelemetry.cachedPromptTokens
+  );
 
   return (
     <Box borderStyle="round" borderColor={accent} flexDirection="column" paddingX={1}>

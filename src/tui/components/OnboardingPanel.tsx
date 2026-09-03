@@ -12,8 +12,6 @@ import {
   type OnboardingPreferences,
 } from "../onboardingPreferences.js";
 
-export type ApiKeyProvider = "gemini" | "gemini-wrapper" | "openrouter" | "nvidia";
-
 export type OnboardingState =
   | {
       step: "welcome";
@@ -32,38 +30,7 @@ export type OnboardingState =
       step: "host-input";
     }
   | {
-      step: "api-key-choice";
-      provider: ApiKeyProvider;
-      hasExistingKey: boolean;
-    }
-  | {
-      step: "gemini-key";
-    }
-  | {
-      step: "gemini-wrapper-url";
-    }
-  | {
-      step: "gemini-wrapper-psid";
-    }
-  | {
-      step: "gemini-wrapper-psidts";
-      secure1psid: string;
-    }
-  | {
-      step: "gemini-wrapper-model-mode";
-    }
-  | {
-      step: "gemini-wrapper-key";
-      baseUrl: string;
-    }
-  | {
-      step: "openrouter-key";
-    }
-  | {
-      step: "nvidia-key";
-    }
-  | {
-      step: "codex-login";
+      step: "local-url";
     }
   | {
       step: "model";
@@ -88,24 +55,8 @@ const entryOptions = [
     description: "Reach Ollama on another LAN or Tailscale machine"
   },
   {
-    label: "Gemini",
-    description: "Google Gemini API — fast hosted models with an API key"
-  },
-  {
-    label: "Gemini-Wrapper",
-    description: "Local Gemini Web bridge driven by pasted browser cookies"
-  },
-  {
-    label: "OpenRouter",
-    description: "One key, many models — including auto-routed and free tiers"
-  },
-  {
-    label: "NVIDIA",
-    description: "NVIDIA NIM OpenAI-compatible inference endpoints"
-  },
-  {
-    label: "Codex",
-    description: "Sign in with your ChatGPT account through the Codex CLI"
+    label: "Local Server",
+    description: "LM Studio, llama.cpp or vLLM over an OpenAI-compatible endpoint"
   }
 ];
 
@@ -132,7 +83,7 @@ export function OnboardingPanel(props: {
       ? 0
       : props.state.step === "host" || props.state.step === "host-input"
         ? 1
-        : props.state.step === "api-key-choice" || props.state.step === "gemini-key" || props.state.step === "gemini-wrapper-url" || props.state.step === "gemini-wrapper-psid" || props.state.step === "gemini-wrapper-psidts" || props.state.step === "gemini-wrapper-model-mode" || props.state.step === "gemini-wrapper-key" || props.state.step === "openrouter-key" || props.state.step === "nvidia-key" || props.state.step === "codex-login"
+        : props.state.step === "local-url"
           ? 2
           : props.state.step === "model"
             ? 3
@@ -219,148 +170,15 @@ export function OnboardingPanel(props: {
           onSubmit={props.onInputSubmit}
         />
       ) : null}
-      {props.state.step === "api-key-choice" ? (
-        <SelectionList
-          title={props.state.provider === "gemini-wrapper" ? "Gemini-Wrapper bridge auth" : `${providerLabel(props.state.provider)} API key`}
-          subtitle={props.state.provider === "gemini-wrapper" ? "Saved cookies stay in PatchPilot config, never the repo." : "Existing keys stay in PatchPilot config, never the repo."}
-          rows={[
-            ...(props.state.hasExistingKey
-              ? [
-                  {
-                    label: props.state.provider === "gemini-wrapper" ? "Use Saved Bridge" : "Use Existing Key",
-                    description: props.state.provider === "gemini-wrapper" ? "Continue with the saved cookie file" : "Continue with the saved key"
-                  }
-                ]
-              : []),
-            ...(props.state.provider === "gemini-wrapper"
-              ? [
-                  {
-                    label: "Import From Browser",
-                    description: "Read Gemini Web cookies locally after this explicit choice"
-                  }
-                ]
-              : []),
-            {
-              label: props.state.provider === "gemini-wrapper" ? "Paste Cookie" : "Enter New Key",
-              description: props.state.provider === "gemini-wrapper" ? "Replace the Gemini Web cookie file in PatchPilot config" : "Replace or add the key in PatchPilot config"
-            }
-          ]}
-          selectedIndex={props.selectedIndex}
-        />
-      ) : null}
-      {props.state.step === "gemini-key" ? (
+      {props.state.step === "local-url" ? (
         <InputStep
-          title="Enter your Gemini API key"
-          description="Stored in PatchPilot's config directory, never in the repository."
-          prompt="key  > "
-          value={props.input}
-          onChange={props.onInputChange}
-          onSubmit={props.onInputSubmit}
-          mask="*"
-        />
-      ) : null}
-      {props.state.step === "gemini-wrapper-url" ? (
-        <InputStep
-          title="Connect Gemini-Wrapper HTTP"
-          description="Optional advanced mode: enter an explicit OpenAI-compatible wrapper URL."
+          title="Connect a local model server"
+          description="LM Studio (including Bionic), llama.cpp or vLLM. Paste the OpenAI-compatible base URL."
           prompt="url  > "
           value={props.input}
           onChange={props.onInputChange}
           onSubmit={props.onInputSubmit}
         />
-      ) : null}
-      {props.state.step === "gemini-wrapper-psid" ? (
-        <InputStep
-          title="Connect Gemini-API bridge"
-          description="Paste __Secure-1PSID. PatchPilot stores it in ~/.patchpilot/gemini-cookies.json with owner-only permissions."
-          prompt="psid > "
-          value={props.input}
-          onChange={props.onInputChange}
-          onSubmit={props.onInputSubmit}
-          mask="*"
-        />
-      ) : null}
-      {props.state.step === "gemini-wrapper-psidts" ? (
-        <InputStep
-          title="Optional Gemini session timestamp"
-          description="Paste __Secure-1PSIDTS if you have it, or press Enter to skip."
-          prompt="ts   > "
-          value={props.input}
-          onChange={props.onInputChange}
-          onSubmit={props.onInputSubmit}
-          mask="*"
-        />
-      ) : null}
-      {props.state.step === "gemini-wrapper-model-mode" ? (
-        <SelectionList
-          title="Gemini-Wrapper model"
-          subtitle="Shortcuts resolve through live Gemini Web discovery; Denkaufwand is not a stable bridge control yet."
-          rows={[
-            {
-              label: "Auto",
-              description: "Let Gemini Web pick the current default model"
-            },
-            {
-              label: "Flash-Lite",
-              description: "Resolve the live Gemini Web Flash-Lite model"
-            },
-            {
-              label: "Flash",
-              description: "Resolve the live Flash model, preferring 3.5 Flash when the bridge lists it"
-            },
-            {
-              label: "Pro",
-              description: "Resolve the live Gemini Web Pro model"
-            },
-            {
-              label: "Manual",
-              description: "Fetch available Gemini Web models and choose one"
-            }
-          ]}
-          selectedIndex={props.selectedIndex}
-        />
-      ) : null}
-      {props.state.step === "gemini-wrapper-key" ? (
-        <InputStep
-          title="Enter Gemini-Wrapper API key"
-          description="Required for remote wrapper URLs. Local wrapper URLs may leave this empty."
-          prompt="key  > "
-          value={props.input}
-          onChange={props.onInputChange}
-          onSubmit={props.onInputSubmit}
-          mask="*"
-        />
-      ) : null}
-      {props.state.step === "openrouter-key" ? (
-        <InputStep
-          title="Enter your OpenRouter API key"
-          description="Stored in PatchPilot's config directory, never in the repository."
-          prompt="key  > "
-          value={props.input}
-          onChange={props.onInputChange}
-          onSubmit={props.onInputSubmit}
-          mask="*"
-        />
-      ) : null}
-      {props.state.step === "nvidia-key" ? (
-        <InputStep
-          title="Enter your NVIDIA API key"
-          description="Stored in PatchPilot's config directory, never in the repository."
-          prompt="key  > "
-          value={props.input}
-          onChange={props.onInputChange}
-          onSubmit={props.onInputSubmit}
-          mask="*"
-        />
-      ) : null}
-      {props.state.step === "codex-login" ? (
-        <Box flexDirection="column" marginTop={1}>
-          <Text color="white" bold>
-            {symbols.arrow} Connect Codex CLI
-          </Text>
-          <Text color="gray">Run `codex login` in another terminal, then press Enter here to continue.</Text>
-          <Text color="gray">{symbols.bullet} esc or left arrow goes back</Text>
-        </Box>
       ) : null}
       {props.state.step === "model" ? (
         <>
@@ -431,10 +249,6 @@ function DisclaimerStep(): React.ReactElement {
       </Box>
     </Box>
   );
-}
-
-function providerLabel(provider: ApiKeyProvider): string {
-  return provider === "openrouter" ? "OpenRouter" : provider === "nvidia" ? "NVIDIA" : provider === "gemini-wrapper" ? "Gemini-Wrapper" : "Gemini";
 }
 
 function PreferencesStep(props: {

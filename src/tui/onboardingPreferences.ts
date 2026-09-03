@@ -1,4 +1,4 @@
-import type { ReasoningSetting } from "../core/reasoning.js";
+import type { ThinkingSetting } from "../core/types.js";
 import type { AgentMode } from "./types.js";
 
 /**
@@ -8,15 +8,15 @@ import type { AgentMode } from "./types.js";
  */
 export type OnboardingPreferences = {
   mode: AgentMode;
-  reasoning: ReasoningSetting | "adaptive";
-  thinking: "fixed" | "adaptive";
+  thinking: ThinkingSetting;
+  stepBudget: "fixed" | "adaptive";
   subagents: boolean;
 };
 
 export const defaultOnboardingPreferences: OnboardingPreferences = {
   mode: "build",
-  reasoning: "medium",
-  thinking: "adaptive",
+  thinking: "auto",
+  stepBudget: "adaptive",
   subagents: false,
 };
 
@@ -35,13 +35,13 @@ export const preferenceRows: PreferenceRow[] = [
     values: ["plan", "build"],
   },
   {
-    key: "reasoning",
-    label: "Reasoning effort",
-    values: ["none", "low", "medium", "high", "xhigh", "adaptive"],
+    key: "thinking",
+    label: "Model thinking",
+    values: ["auto", "on", "off"],
   },
   {
-    key: "thinking",
-    label: "Thinking budget",
+    key: "stepBudget",
+    label: "Step budget",
     values: ["fixed", "adaptive"],
   },
   {
@@ -61,18 +61,18 @@ export function describePreferenceValue(key: keyof OnboardingPreferences, value:
         : "Use /mode bypass after setup when you want trusted-workspace bypass.";
   }
 
-  if (key === "reasoning") {
-    return value === "none"
-      ? "Fastest, cheapest. No extra reasoning budget."
-      : value === "adaptive"
-        ? "The agent scales reasoning to the task. Good general default."
-        : `Fixed ${value} reasoning budget on every step.`;
+  if (key === "thinking") {
+    return value === "auto"
+      ? "Recommended. Each model uses whatever thinking mode it ships with."
+      : value === "on"
+        ? "Force thinking on. Only affects models that support it."
+        : "Force thinking off for the fastest replies.";
   }
 
-  if (key === "thinking") {
+  if (key === "stepBudget") {
     return value === "adaptive"
-      ? "Thinking budget flexes with task difficulty."
-      : "Thinking budget stays fixed for predictable latency.";
+      ? "Step count flexes with task difficulty."
+      : "Step count stays fixed for predictable runs.";
   }
 
   return value === "on"
@@ -113,19 +113,19 @@ export function cyclePreference(
     return { ...prefs, mode: nextValue as AgentMode };
   }
 
-  if (key === "thinking") {
-    return { ...prefs, thinking: nextValue === "adaptive" ? "adaptive" : "fixed" };
+  if (key === "stepBudget") {
+    return { ...prefs, stepBudget: nextValue === "fixed" ? "fixed" : "adaptive" };
   }
 
-  return { ...prefs, reasoning: nextValue as OnboardingPreferences["reasoning"] };
+  return { ...prefs, thinking: nextValue as OnboardingPreferences["thinking"] };
 }
 
 /** Env payload for `savePatchPilotEnvValues` derived from the chosen prefs. */
 export function preferencesEnvValues(prefs: OnboardingPreferences): Record<string, string> {
   return {
     PATCHPILOT_DEFAULT_MODE: prefs.mode,
-    PATCHPILOT_REASONING_EFFORT: prefs.reasoning,
-    PATCHPILOT_THINKING_MODE: prefs.thinking,
+    PATCHPILOT_THINKING: prefs.thinking,
+    PATCHPILOT_STEP_BUDGET: prefs.stepBudget,
     PATCHPILOT_SUBAGENTS: prefs.subagents ? "1" : "0",
   };
 }
@@ -133,22 +133,15 @@ export function preferencesEnvValues(prefs: OnboardingPreferences): Record<strin
 /** Read persisted preferences back into a typed shape, falling back safely. */
 export function readOnboardingPreferences(env: NodeJS.ProcessEnv = process.env): OnboardingPreferences {
   const mode = env.PATCHPILOT_DEFAULT_MODE?.trim().toLowerCase();
-  const reasoning = env.PATCHPILOT_REASONING_EFFORT?.trim().toLowerCase();
-  const thinking = env.PATCHPILOT_THINKING_MODE?.trim().toLowerCase();
+  const thinking = env.PATCHPILOT_THINKING?.trim().toLowerCase();
+  const stepBudget = env.PATCHPILOT_STEP_BUDGET?.trim().toLowerCase();
   const subagents = env.PATCHPILOT_SUBAGENTS?.trim().toLowerCase();
 
   return {
     mode: mode === "plan" || mode === "build" || mode === "bypass" ? mode : defaultOnboardingPreferences.mode,
-    reasoning:
-      reasoning === "none" ||
-      reasoning === "low" ||
-      reasoning === "medium" ||
-      reasoning === "high" ||
-      reasoning === "xhigh" ||
-      reasoning === "adaptive"
-        ? reasoning
-        : defaultOnboardingPreferences.reasoning,
-    thinking: thinking === "fixed" ? "fixed" : thinking === "adaptive" ? "adaptive" : defaultOnboardingPreferences.thinking,
+    thinking:
+      thinking === "auto" || thinking === "on" || thinking === "off" ? thinking : defaultOnboardingPreferences.thinking,
+    stepBudget: stepBudget === "fixed" ? "fixed" : stepBudget === "adaptive" ? "adaptive" : defaultOnboardingPreferences.stepBudget,
     subagents: subagents === undefined ? defaultOnboardingPreferences.subagents : ["1", "true", "yes", "on", "enabled"].includes(subagents),
   };
 }

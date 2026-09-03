@@ -1,24 +1,7 @@
 import { spawn } from "node:child_process";
 import { describeComputeTarget } from "./compute.js";
-import { codexOAuthModels, hasCodexCliOAuth, resolveCodexExecutable } from "./codex.js";
-import { GeminiClient, readGeminiApiKey } from "./gemini.js";
-import {
-  GeminiWrapperClient,
-  ensureGeminiWebApiInstalled,
-  geminiWebApiInstallCommand,
-  geminiWrapperRequiresApiKey,
-  isGeminiBrowserCookieImportInstalled,
-  isGeminiWebApiInstalled,
-  readGeminiWrapperApiKey,
-  readGeminiWrapperBaseUrl,
-  readGeminiWrapperCookiesJson,
-  readGeminiWrapperMode,
-  readGeminiWrapperPythonCommand,
-  readGeminiWrapperSecure1psid
-} from "./geminiWrapper.js";
-import { NvidiaClient, readNvidiaApiKey } from "./nvidia.js";
+import { LocalOpenAIClient, resolveLocalOpenAIBaseUrl } from "./localOpenAI.js";
 import { OllamaClient } from "./ollama.js";
-import { OpenRouterClient, readOpenRouterApiKey } from "./openrouter.js";
 import type { ModelProvider } from "./types.js";
 
 export type DoctorResult = {
@@ -28,46 +11,33 @@ export type DoctorResult = {
   action?: "check" | "fix" | "skipped";
 };
 
-export async function runDoctor(provider: ModelProvider, ollamaUrl: string, model?: string, options: { fix?: boolean } = {}): Promise<DoctorResult[]> {
+export async function runDoctor(
+  provider: ModelProvider,
+  ollamaUrl: string,
+  model?: string,
+  options: { fix?: boolean; localUrl?: string } = {}
+): Promise<DoctorResult[]> {
   const results: DoctorResult[] = [];
 
   results.push(await checkCommand("node", ["--version"]));
   results.push(await checkCommand("git", ["--version"]));
 
-  if (provider === "gemini") {
-    results.push(...(await checkGemini(model)));
+  if (provider === "local-openai") {
+    results.push(...(await checkLocalOpenAI(options.localUrl ?? resolveLocalOpenAIBaseUrl(), model)));
     return results;
   }
 
-  if (provider === "gemini-wrapper") {
-    results.push(...(await checkGeminiWrapper(model, options)));
-    return results;
-  }
+  results.push(...(await checkOllama(ollamaUrl, model)));
+  return results;
+}
 
-  if (provider === "codex") {
-    results.push(...(await checkCodex(model)));
-    return results;
-  }
-
-  if (provider === "openrouter") {
-    results.push(...(await checkOpenRouter(model)));
-    return results;
-  }
-
-  if (provider === "nvidia") {
-    results.push(...(await checkNvidia(model)));
-    return results;
-  }
-
+async function checkOllama(ollamaUrl: string, model?: string): Promise<DoctorResult[]> {
+  const results: DoctorResult[] = [];
   const computeTarget = describeComputeTarget(ollamaUrl);
+
   if (computeTarget.kind === "local") {
     results.push(
-      await checkCommand(
-        "ollama",
-        ["--version"],
-        "ollama-cli",
-        "Install Ollama and ensure the ollama CLI is available on PATH."
-      )
+      await checkCommand("ollama", ["--version"], "ollama-cli", "Install Ollama and ensure the ollama CLI is available on PATH.")
     );
   } else {
     results.push({
@@ -78,293 +48,114 @@ export async function runDoctor(provider: ModelProvider, ollamaUrl: string, mode
   }
 
   const ollama = new OllamaClient(ollamaUrl);
+  let models: string[] = [];
   try {
-    const models = await ollama.listModels();
+    models = await ollama.listModels();
     results.push({
       name: "ollama",
       ok: true,
       details: models.length > 0 ? `available models: ${models.join(", ")}` : "server reachable, no models pulled"
     });
-    if (model) {
-      results.push({
-        name: "ollama-model",
-        ok: models.includes(model),
-        details: models.includes(model) ? `${model} is available` : `${model} is missing. Run: ollama pull ${model}`
-      });
-    }
   } catch (error) {
     results.push({
       name: "ollama",
       ok: false,
       details: error instanceof Error ? error.message : String(error)
     });
-  }
-
-  return results;
-}
-
-async function checkOpenRouter(model?: string): Promise<DoctorResult[]> {
-  const results: DoctorResult[] = [
-    {
-      name: "openrouter-key",
-      ok: Boolean(readOpenRouterApiKey()),
-      details: readOpenRouterApiKey() ? "OPENROUTER_API_KEY is configured" : "missing. Add OPENROUTER_API_KEY to PatchPilot config"
-    }
-  ];
-
-  if (!readOpenRouterApiKey()) {
     return results;
   }
 
-  try {
-    const models = await new OpenRouterClient().listModels();
-    results.push({
-      name: "openrouter",
-      ok: true,
-      details: models.length > 0 ? `available models: ${models.slice(0, 12).join(", ")}` : "API reachable, no models listed"
-    });
-    if (model) {
-      results.push({
-        name: "openrouter-model",
-        ok: models.includes(model),
-        details: models.includes(model) ? `${model} is available` : `${model} is not listed by OpenRouter models API`
-      });
-    }
-  } catch (error) {
-    results.push({
-      name: "openrouter",
-      ok: false,
-      details: error instanceof Error ? error.message : String(error)
-    });
-  }
-
-  return results;
-}
-
-async function checkNvidia(model?: string): Promise<DoctorResult[]> {
-  const results: DoctorResult[] = [
-    {
-      name: "nvidia-key",
-      ok: Boolean(readNvidiaApiKey()),
-      details: readNvidiaApiKey() ? "NVIDIA_API_KEY is configured" : "missing. Add NVIDIA_API_KEY to PatchPilot config"
-    }
-  ];
-
-  if (!readNvidiaApiKey()) {
-    return results;
-  }
-
-  try {
-    const models = await new NvidiaClient().listModels();
-    results.push({
-      name: "nvidia",
-      ok: true,
-      details: models.length > 0 ? `available models: ${models.slice(0, 12).join(", ")}` : "API reachable, no models listed"
-    });
-    if (model) {
-      results.push({
-        name: "nvidia-model",
-        ok: models.includes(model),
-        details: models.includes(model) ? `${model} is available` : `${model} is not listed by NVIDIA models API`
-      });
-    }
-  } catch (error) {
-    results.push({
-      name: "nvidia",
-      ok: false,
-      details: error instanceof Error ? error.message : String(error)
-    });
-  }
-
-  return results;
-}
-
-async function checkCodex(model?: string): Promise<DoctorResult[]> {
-  const cli = await checkCommand(resolveCodexExecutable(), ["--version"], "codex-cli", "Install Codex CLI, then run codex login.");
-  const hasOAuth = hasCodexCliOAuth();
-  const results: DoctorResult[] = [
-    cli,
-    {
-      name: "codex-auth",
-      ok: hasOAuth,
-      details: hasOAuth ? "Codex CLI OAuth tokens are present" : "missing. Run: codex login"
-    }
-  ];
-
-  if (!cli.ok || !hasOAuth) {
-    return results;
-  }
-
-  results.push({
-    name: "codex",
-    ok: true,
-    details: `OAuth backend ready. Models: ${codexOAuthModels.join(", ")}`
-  });
   if (model) {
+    const isAvailable = models.includes(model);
     results.push({
-      name: "codex-model",
-      ok: codexOAuthModels.includes(model),
-      details: codexOAuthModels.includes(model) ? `${model} is available` : `${model} is not in the Codex OAuth model list`
+      name: "ollama-model",
+      ok: isAvailable,
+      details: isAvailable ? `${model} is available` : `${model} is missing. Run: ollama pull ${model}`
     });
   }
 
+  results.push(await checkOllamaContextWindow(ollama, model));
   return results;
 }
 
-async function checkGemini(model?: string): Promise<DoctorResult[]> {
-  const results: DoctorResult[] = [
-    {
-      name: "gemini-key",
-      ok: Boolean(readGeminiApiKey()),
-      details: readGeminiApiKey() ? "GEMINI_API_KEY is configured" : "missing. Add GEMINI_API_KEY to .env"
-    }
-  ];
-
-  if (!readGeminiApiKey()) {
-    return results;
-  }
-
-  const gemini = new GeminiClient();
+/**
+ * The context window the harness sends (`num_ctx`) and the one the runtime
+ * actually loaded can differ — a model loaded by another client keeps whatever
+ * window that client asked for. Reporting the loaded value is the only way to
+ * know how much room the agent really has.
+ */
+async function checkOllamaContextWindow(ollama: OllamaClient, model?: string): Promise<DoctorResult> {
   try {
-    const models = await gemini.listModels();
-    results.push({
-      name: "gemini",
-      ok: true,
-      details: models.length > 0 ? `available models: ${models.slice(0, 12).join(", ")}` : "API reachable, no generateContent models listed"
-    });
-    if (model) {
-      results.push({
-        name: "gemini-model",
-        ok: models.includes(model),
-        details: models.includes(model) ? `${model} is available` : `${model} is not listed by Gemini models API`
-      });
+    const running = await ollama.listRunningModels();
+    if (running.length === 0) {
+      return {
+        name: "context-window",
+        ok: true,
+        details: "no model loaded yet; window is reported once a model is running",
+        action: "skipped"
+      };
     }
+
+    const loaded = model ? running.find((entry) => entry.name === model) ?? running[0] : running[0];
+    if (!loaded) {
+      return { name: "context-window", ok: true, details: "no model loaded", action: "skipped" };
+    }
+
+    return {
+      name: "context-window",
+      ok: true,
+      details:
+        loaded.contextLength === null
+          ? `${loaded.name} is loaded; runtime did not report a context length`
+          : `${loaded.name} loaded with a ${loaded.contextLength.toLocaleString("en-US")} token window`
+    };
   } catch (error) {
-    results.push({
-      name: "gemini",
+    return {
+      name: "context-window",
       ok: false,
       details: error instanceof Error ? error.message : String(error)
-    });
+    };
   }
-
-  return results;
 }
 
-async function checkGeminiWrapper(model?: string, options: { fix?: boolean } = {}): Promise<DoctorResult[]> {
-  const baseUrl = readGeminiWrapperBaseUrl();
-  const apiKey = readGeminiWrapperApiKey();
-  const mode = readGeminiWrapperMode();
-  if (mode === "python" || (!baseUrl && mode === "auto")) {
-    return await checkGeminiApiBridge(model, options);
-  }
-
-  const results: DoctorResult[] = [
-    {
-      name: "gemini-wrapper-url",
-      ok: Boolean(baseUrl),
-      details: baseUrl
-        ? `using explicit wrapper URL ${baseUrl}`
-        : "missing. Set PATCHPILOT_GEMINI_WRAPPER_BASE_URL, or use the Python bridge with explicit cookie auth."
-    }
-  ];
-
-  if (!baseUrl) {
-    return results;
-  }
-
-  results.push({
-    name: "gemini-wrapper-key",
-    ok: !geminiWrapperRequiresApiKey(baseUrl) || Boolean(apiKey),
-    details: apiKey
-      ? "explicit wrapper API key is configured"
-      : geminiWrapperRequiresApiKey(baseUrl)
-        ? "missing for remote wrapper URL. Set PATCHPILOT_GEMINI_WRAPPER_API_KEY or GEMINI_WRAPPER_API_KEY."
-        : "not required for local wrapper URL"
-  });
-
-  if (geminiWrapperRequiresApiKey(baseUrl) && !apiKey) {
-    return results;
-  }
+async function checkLocalOpenAI(baseUrl: string, model?: string): Promise<DoctorResult[]> {
+  const results: DoctorResult[] = [];
+  const client = new LocalOpenAIClient(baseUrl);
 
   try {
-    const models = await new GeminiWrapperClient().listModels();
+    const descriptors = await client.listModelDescriptors();
     results.push({
-      name: "gemini-wrapper",
+      name: "local-server",
       ok: true,
-      details: models.length > 0 ? `available models: ${models.slice(0, 12).join(", ")}` : "wrapper reachable, no models listed"
+      details:
+        descriptors.length > 0
+          ? `${baseUrl} reachable; models: ${descriptors.map((entry) => entry.id).join(", ")}`
+          : `${baseUrl} reachable, but no models are served`
     });
+
     if (model) {
+      const match = descriptors.find((entry) => entry.id === model);
       results.push({
-        name: "gemini-wrapper-model",
-        ok: models.includes(model),
-        details: models.includes(model) ? `${model} is available` : `${model} is not listed by the wrapper models API`
+        name: "local-model",
+        ok: Boolean(match),
+        details: match
+          ? `${model} is available${match.isAvailable === false ? " (not loaded; it will load on first request)" : ""}`
+          : `${model} is not served by ${baseUrl}. Load it in your local server, or pick one of the listed ids.`
+      });
+
+      results.push({
+        name: "context-window",
+        ok: true,
+        details:
+          match?.capacity === undefined
+            ? "server did not report a context length for this model"
+            : `${model} advertises a ${match.capacity.toLocaleString("en-US")} token window`,
+        ...(match?.capacity === undefined ? { action: "skipped" as const } : {})
       });
     }
   } catch (error) {
     results.push({
-      name: "gemini-wrapper",
-      ok: false,
-      details: error instanceof Error ? error.message : String(error)
-    });
-  }
-
-  return results;
-}
-
-async function checkGeminiApiBridge(model?: string, options: { fix?: boolean } = {}): Promise<DoctorResult[]> {
-  const pythonCommand = readGeminiWrapperPythonCommand();
-  const hasExplicitAuth = Boolean(readGeminiWrapperCookiesJson() || readGeminiWrapperSecure1psid());
-  const isInstalledBefore = await isGeminiWebApiInstalled(pythonCommand);
-  const hasCookieImportBefore = await isGeminiBrowserCookieImportInstalled(pythonCommand);
-  const isInstalled = (isInstalledBefore && hasCookieImportBefore) || (options.fix ? await ensureGeminiWebApiInstalled(pythonCommand) : false);
-  const results: DoctorResult[] = [
-    {
-      name: "gemini-api-bridge",
-      ok: isInstalled,
-      details: isInstalled
-        ? `${isInstalledBefore && hasCookieImportBefore ? "gemini_webapi and browser-cookie3 imports work" : "installed pinned gemini_webapi and browser-cookie3 into PatchPilot managed venv"} through ${pythonCommand}`
-        : options.fix
-          ? `missing. PatchPilot tried the managed venv install. Manual fallback: ${geminiWebApiInstallCommand}`
-          : `missing. Run /doctor fix or patchpilot doctor --fix to install the managed bridge. Manual fallback: ${geminiWebApiInstallCommand}`,
-      action: isInstalledBefore && hasCookieImportBefore ? "check" : options.fix && isInstalled ? "fix" : "skipped"
-    },
-    {
-      name: "gemini-api-auth",
-      ok: hasExplicitAuth,
-      details: hasExplicitAuth
-        ? "explicit cookie auth is configured"
-        : "missing. Run `patchpilot gemini-wrapper import-cookies`, set PATCHPILOT_GEMINI_WRAPPER_COOKIES_JSON, or set GEMINI_SECURE_1PSID."
-    }
-  ];
-
-  if (!isInstalled || !hasExplicitAuth) {
-    return results;
-  }
-
-  try {
-    const client = new GeminiWrapperClient();
-    await client.checkBridgeAuth();
-    const models = await client.listModels();
-    results.push({
-      name: "gemini-api-auth-check",
-      ok: true,
-      details: "Gemini-API bridge auth initializes successfully"
-    });
-    results.push({
-      name: "gemini-wrapper",
-      ok: true,
-      details: `Python bridge ready. Models: ${models.join(", ")}`
-    });
-    if (model) {
-      results.push({
-        name: "gemini-wrapper-model",
-        ok: models.includes(model),
-        details: models.includes(model) ? `${model} is available` : `${model} is not in the bridge default model list`
-      });
-    }
-  } catch (error) {
-    results.push({
-      name: "gemini-wrapper",
+      name: "local-server",
       ok: false,
       details: error instanceof Error ? error.message : String(error)
     });

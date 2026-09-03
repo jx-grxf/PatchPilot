@@ -2,7 +2,7 @@
   "name": "@jx-grxf/patchpilot",
   "version": "1.2.2",
   "private": false,
-  "description": "Local-first coding agent TUI for visible, permissioned repo changes.",
+  "description": "Local-only coding agent TUI: a harness that makes local models reliable.",
   "type": "module",
   "bin": {
     "patchpilot": "dist/cli.js"
@@ -11,7 +11,6 @@
     "dist",
     ".env.example",
     "docs/architecture.md",
-    "docs/gemini-wrapper.md",
     "docs/product-context.md",
     "docs/releases",
     "docs/showcase/patchpilot-banner.png",
@@ -45,6 +44,9 @@
   },
   "keywords": [
     "ollama",
+    "lm-studio",
+    "llama-cpp",
+    "local-llm",
     "agent",
     "tui",
     "coding-agent",

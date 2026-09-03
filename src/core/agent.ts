@@ -2,10 +2,9 @@ import { formatParseError, parseAgentResponse } from "./json.js";
 import path from "node:path";
 import { platform, release, type } from "node:os";
 import { createModelClient } from "./modelClient.js";
-import { resolveProviderReasoning } from "./reasoning.js";
 import type { SessionStore } from "./session.js";
 import { formatSubagentContext, runSubagentAdvisors } from "./subagents.js";
-import { MAX_TOOL_CALLS_PER_RESPONSE, type AgentEvent, type AgentTodoItem, type AgentToolName, type AgentWorkState, type ApprovalRequest, type ChatMessage, type ModelChatResult, type ModelClient, type ModelProvider, type PermissionDecision, type ProviderReasoningEffort, type ToolCategory, type ToolResult } from "./types.js";
+import { MAX_TOOL_CALLS_PER_RESPONSE, type AgentEvent, type AgentTodoItem, type AgentToolName, type AgentWorkState, type ApprovalRequest, type ChatMessage, type ModelChatResult, type ModelClient, type ModelProvider, type PermissionDecision, type ThinkingSetting, type ToolCategory, type ToolResult } from "./types.js";
 import { estimateTokens } from "./tokenAccounting.js";
 import { getToolSpec, WorkspaceTools } from "./workspace.js";
 
@@ -19,7 +18,7 @@ export type AgentRunnerOptions = {
   allowShell: boolean;
   maxSteps: number;
   thinkingMode: "fixed" | "adaptive";
-  reasoningEffort: ProviderReasoningEffort | "adaptive";
+  thinking: ThinkingSetting;
   subagents: boolean;
   resumeContext?: string;
   allowExternalFileAnalysis?: boolean;
@@ -81,11 +80,7 @@ export class AgentRunner {
     const workspaceSummary = await buildWorkspaceSummary(this.tools.root);
     const ultramaxx = Boolean(this.options.ultramaxx);
     let maxSteps = resolveMaxSteps(task, this.options.maxSteps, this.options.thinkingMode, ultramaxx);
-    const reasoningEffort = resolveProviderReasoning({
-      provider: this.options.provider,
-      model: this.options.model,
-      requested: ultramaxx ? "xhigh" : resolveReasoningEffort(task, this.options.reasoningEffort)
-    });
+    const thinking = this.options.thinking;
     let stepIndex = 0;
     let repairs = 0;
     let malformedResponses = 0;
@@ -189,7 +184,7 @@ export class AgentRunner {
         const chatAttempts = this.chatWithRetry({
           model: this.options.model,
           messages,
-          reasoningEffort,
+          thinking,
           requestWorkState,
           attemptLabel: `step ${stepIndex + 1}`
         });
@@ -590,7 +585,7 @@ export class AgentRunner {
   private async *chatWithRetry(options: {
     model: string;
     messages: ChatMessage[];
-    reasoningEffort: ProviderReasoningEffort | undefined;
+    thinking: ThinkingSetting | undefined;
     requestWorkState: AgentWorkState;
     attemptLabel: string;
   }): AsyncGenerator<AgentEvent, ModelChatResult> {
@@ -603,7 +598,7 @@ export class AgentRunner {
           model: options.model,
           messages: options.messages,
           formatJson: true,
-          reasoningEffort: options.reasoningEffort,
+          thinking: options.thinking,
           signal: this.options.signal
         });
       } catch (error) {
@@ -809,9 +804,6 @@ function buildSystemPrompt(
       ? "Experimental shell metacharacters are enabled: run_shell may use pipes, &&, and ;. Redirects, shell expansion, background jobs, OR chains, and multiline commands still require explicit approval even in bypass."
       : "Experimental shell metacharacters are disabled: run_shell may use simple commands and pipes only.",
     "You can reach the web with the fetch_url tool. Never claim you cannot access the internet; if you need a specific page, call fetch_url with a public http(s) URL.",
-    providerHasNativeWebSearch(permissions.provider)
-      ? "You are backed by Gemini, which has live web search and grounding. For questions about current events, real-world facts, public package names, or people, answer from your built-in web knowledge instead of refusing. Separate web-sourced claims from verified workspace facts, and use fetch_url when you need the exact contents of a specific page."
-      : "",
     workspaceSummary ? ["", "Workspace context:", workspaceSummary].join("\n") : "",
     resumeContext
       ? [
@@ -883,13 +875,6 @@ function buildSystemPrompt(
     "In final answers, separate verified facts from remaining risks.",
     "Keep tool requests and final answers compact."
   ].join("\n");
-}
-
-function providerHasNativeWebSearch(provider: ModelProvider): boolean {
-  // The Gemini-Wrapper bridges the browser Gemini app, which performs real
-  // grounded web search. The plain Gemini API has no grounding unless tools are
-  // configured, so only the wrapper gets the native web-search claim here.
-  return provider === "gemini-wrapper";
 }
 
 function looksLikeClarification(message: string): boolean {
@@ -1296,23 +1281,6 @@ function shouldExtendAdaptiveRun(
 function todoMetadataHasCompletedItem(metadata: Record<string, unknown> | undefined): boolean {
   const items = Array.isArray(metadata?.items) ? metadata.items : [];
   return items.some((item) => isRecord(item) && item.status === "completed");
-}
-
-function resolveReasoningEffort(task: string, effort: AgentRunnerOptions["reasoningEffort"]): ProviderReasoningEffort {
-  if (effort !== "adaptive") {
-    return effort;
-  }
-
-  const wordCount = task.trim().split(/\s+/).filter(Boolean).length;
-  if (wordCount > 40 || /\b(large|complex|refactor|architecture|architektur|debug|provider|pipeline|performance|security|release)\b/i.test(task)) {
-    return "high";
-  }
-
-  if (wordCount < 8 && !shouldUseSubagents(task)) {
-    return "low";
-  }
-
-  return "medium";
 }
 
 function clipPromptValue(value: string, maxLength: number): string {

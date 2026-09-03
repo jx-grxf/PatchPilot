@@ -3,34 +3,18 @@ import { statSync } from "node:fs";
 import { Box, Text, useApp, useInput, useStdout } from "ink";
 import { AgentRunner, type AgentRunnerOptions } from "../core/agent.js";
 import { cleanupPatchPilot, readCleanupTarget } from "../core/cleanup.js";
-import { defaultCodexModel, hasCodexCliOAuth } from "../core/codex.js";
 import { describeComputeTarget } from "../core/compute.js";
 import { ContextStore } from "../core/contextStore.js";
 import { runDoctor } from "../core/doctor.js";
 import { savePatchPilotEnvValues } from "../core/env.js";
-import { defaultGeminiModel, readGeminiApiKey } from "../core/gemini.js";
-import {
-  defaultGeminiWrapperModel,
-  geminiWrapperCuratedModels,
-  geminiWrapperShortcutModels,
-  geminiWrapperRequiresApiKey,
-  readGeminiWrapperApiKey,
-  readGeminiWrapperBaseUrl,
-  readGeminiWrapperCookiesJson,
-  readGeminiWrapperMode,
-  readGeminiWrapperPythonCommand,
-  importGeminiWrapperBrowserCookies,
-  saveGeminiWrapperCookieFile
-} from "../core/geminiWrapper.js";
 import { createModelClient } from "../core/modelClient.js";
-import { defaultNvidiaModel, readNvidiaApiKey } from "../core/nvidia.js";
+import { defaultLocalOpenAIModel, resolveLocalOpenAIBaseUrl } from "../core/localOpenAI.js";
 import { defaultOllamaModel, OllamaClient } from "../core/ollama.js";
-import { defaultOpenRouterModel, isOpenRouterFreeModel, readOpenRouterApiKey } from "../core/openrouter.js";
 import { ensurePatchPilotGitignore, patchPilotInitPrompt } from "../core/projectInit.js";
-import { formatReasoningSupport, type ReasoningSetting } from "../core/reasoning.js";
+import { formatThinkingSupport } from "../core/reasoning.js";
 import { buildSessionRecap, buildSessionResumeContext, listWorkspaceSessions, loadSessionSummary, SessionStore } from "../core/session.js";
-import { addTelemetryToSession, emptySessionTelemetry, estimateComparableApiCost, estimateTokens } from "../core/tokenAccounting.js";
-import type { AgentEvent, AgentTodoItem, AgentToolName, AgentWorkState, ApprovalRequest, ModelDescriptor, ModelProvider, ModelTelemetry, PermissionDecision, SessionTelemetry } from "../core/types.js";
+import { addTelemetryToSession, emptySessionTelemetry, estimateCloudEquivalentCost, estimateTokens } from "../core/tokenAccounting.js";
+import type { ThinkingSetting, AgentEvent, AgentTodoItem, AgentToolName, AgentWorkState, ApprovalRequest, ModelDescriptor, ModelProvider, ModelTelemetry, PermissionDecision, SessionTelemetry } from "../core/types.js";
 import { checkForPatchPilotUpdate, installPatchPilotUpdate, type UpdateCheckResult } from "../core/updateCheck.js";
 import { getToolSpec, WorkspaceTools } from "../core/workspace.js";
 import { ApprovalPanel } from "./components/ApprovalPanel.js";
@@ -45,7 +29,7 @@ import { type Artifact, attachmentKindForPath, attachmentLabel, attachmentTypeFo
 import { describeUltraModes, parseUltraModes } from "./experimental/ultraModes.js";
 import { formatCompletionSummary } from "./runStatus.js";
 import { Header } from "./components/Header.js";
-import { OnboardingPanel, type ApiKeyProvider, type OnboardingState } from "./components/OnboardingPanel.js";
+import { OnboardingPanel, type OnboardingState } from "./components/OnboardingPanel.js";
 import { Sidebar } from "./components/Sidebar.js";
 import { Transcript } from "./components/Transcript.js";
 import { filterSlashCommands, formatCommandDetail, formatCommandHelp } from "./commands.js";
@@ -95,13 +79,6 @@ const themeOptions: Array<{ value: UiTheme; label: string; description: string }
 
 function readUiTheme(): UiTheme {
   return process.env.PATCHPILOT_UI_THEME?.trim().toLowerCase() === "legacy" ? "legacy" : "new";
-}
-
-/** Heuristic: does this Gemini-Wrapper error look like expired/invalid cookies? */
-function isGeminiCookieError(message: string): boolean {
-  return /cookie|secure_1psid|psidts|expired|sign[ -]?in|auth(?:enticat|oriz)|401|403|session.*(?:invalid|expired)/i.test(
-    message
-  );
 }
 
 const modelCacheTtlMs = 5 * 60_000;
@@ -174,8 +151,6 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   const [themePickerOpen, setThemePickerOpen] = useState(false);
   const [themePickerIndex, setThemePickerIndex] = useState(0);
   const [ultramaxxRun, setUltramaxxRun] = useState(false);
-  const [reauthPrompt, setReauthPrompt] = useState<{ task: string } | null>(null);
-  const [reauthBusy, setReauthBusy] = useState(false);
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
   const artifactsRef = useRef<Artifact[]>([]);
   const pendingAttachmentsRef = useRef<string[]>([]);
@@ -203,7 +178,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
     allowShell: props.allowShell,
     maxSteps: props.maxSteps,
     thinkingMode: props.thinkingMode,
-    reasoningEffort: props.reasoningEffort,
+    thinking: props.thinking,
     subagents: props.subagents
   });
   const draftTokens = estimateTokens(input);
@@ -211,7 +186,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   // resize event, which would otherwise collapse the whole layout.
   const terminalRows = stdout.rows || 40;
   const terminalColumns = stdout.columns || 120;
-  const reauthPromptActive = Boolean(reauthPrompt || reauthBusy);
+  const reauthPromptActive = false;
   const updatePromptActive = !reauthPromptActive && Boolean(updatePrompt || updateBusy);
   const approvalPromptActive = !reauthPromptActive && !updatePromptActive && Boolean(pendingApproval || bypassConfirmation);
   const blockingPromptActive = reauthPromptActive || updatePromptActive || approvalPromptActive;
@@ -291,7 +266,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           tone: "warning",
           label: "attach",
           text: warning,
-          detail: "For Gemini/Gemini-Wrapper, send large batches in smaller prompts or ask PatchPilot to inspect the files in separate calls."
+          detail: "Send large batches in smaller prompts, or ask PatchPilot to inspect the files in separate calls."
         });
       }
       return label;
@@ -729,15 +704,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
             text:
               provider === "ollama"
                 ? "No Ollama models found on that host."
-                : provider === "gemini"
-                  ? "No Gemini models listed. Check the API key."
-                  : provider === "gemini-wrapper"
-                    ? "No Gemini-Wrapper models listed. Check the bridge install and cookie setup."
-                  : provider === "openrouter"
-                    ? "No OpenRouter models listed. Check the API key."
-                    : provider === "nvidia"
-                      ? "No NVIDIA models listed. Check the API key."
-                      : "No Codex OAuth models listed.",
+                : "No models served by that local endpoint. Load one in your local server, then retry.",
             detail: "Use the back key to choose another provider or retry after fixing the provider setup."
           });
           return;
@@ -794,16 +761,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         setOnboarding(null);
         return;
       case "host":
-      case "api-key-choice":
-      case "gemini-key":
-      case "gemini-wrapper-url":
-      case "gemini-wrapper-psid":
-      case "gemini-wrapper-psidts":
-      case "gemini-wrapper-model-mode":
-      case "gemini-wrapper-key":
-      case "openrouter-key":
-      case "nvidia-key":
-      case "codex-login":
+      case "local-url":
         setOnboarding({
           step: "entry"
         });
@@ -815,12 +773,6 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         });
         return;
       case "preferences":
-        if (onboarding.provider === "gemini-wrapper") {
-          setOnboarding({
-            step: "gemini-wrapper-model-mode"
-          });
-          return;
-        }
         void openModelSelection(onboarding.provider, { currentModel: onboarding.model });
         return;
       case "model":
@@ -832,31 +784,9 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           return;
         }
 
-        if (onboarding.provider === "gemini") {
-          openApiKeyChoice("gemini", setOnboarding, setOnboardingIndex);
-          return;
-        }
-
-        if (onboarding.provider === "gemini-wrapper") {
+        if (onboarding.provider === "local-openai") {
           setOnboarding({
-            step: "gemini-wrapper-model-mode"
-          });
-          return;
-        }
-
-        if (onboarding.provider === "nvidia") {
-          openApiKeyChoice("nvidia", setOnboarding, setOnboardingIndex);
-          return;
-        }
-
-        if (onboarding.provider === "openrouter") {
-          openApiKeyChoice("openrouter", setOnboarding, setOnboardingIndex);
-          return;
-        }
-
-        if (onboarding.provider === "codex" && !hasCodexCliOAuth()) {
-          setOnboarding({
-            step: "codex-login"
+            step: "local-url"
           });
           return;
         }
@@ -958,19 +888,9 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           return;
         }
 
-        if (selection === "gemini" || selection === "gemini-wrapper" || selection === "openrouter" || selection === "nvidia") {
-          openApiKeyChoice(selection, setOnboarding, setOnboardingIndex);
-          return;
-        }
-
-        if (!hasCodexCliOAuth()) {
-          setOnboarding({
-            step: "codex-login"
-          });
-          return;
-        }
-
-        await openModelSelection("codex");
+        setOnboarding({
+          step: "local-url"
+        });
         return;
       }
 
@@ -1049,336 +969,20 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         return;
       }
 
-      if (onboarding.step === "api-key-choice") {
-        const choice = readIndexedSelection(value, onboardingIndex);
-        if (choice === null) {
-          return;
-        }
-
-        if (onboarding.provider === "gemini-wrapper") {
-          if (choice === 0 && onboarding.hasExistingKey) {
-            setOnboarding({
-              step: "gemini-wrapper-model-mode"
-            });
-            setOnboardingInput("");
-            setOnboardingIndex(0);
-            return;
-          }
-
-          const importChoice = onboarding.hasExistingKey ? 1 : 0;
-          if (choice === importChoice) {
-            setOnboardingBusyMessage("Importing Gemini browser cookies...");
-            try {
-              const result = await importGeminiWrapperBrowserCookies();
-              process.env.PATCHPILOT_GEMINI_WRAPPER_MODE = "python";
-              process.env.PATCHPILOT_GEMINI_WRAPPER_COOKIES_JSON = result.cookiesPath;
-              savePatchPilotEnvValues({
-                PATCHPILOT_PROVIDER: "gemini-wrapper",
-                PATCHPILOT_MODEL: defaultGeminiWrapperModel,
-                PATCHPILOT_GEMINI_WRAPPER_MODE: "python",
-                PATCHPILOT_GEMINI_WRAPPER_COOKIES_JSON: result.cookiesPath
-              });
-              setOnboardingNotice({
-                tone: "success",
-                text: `Imported ${result.cookieCount} Gemini browser cookies from ${result.source}.`,
-                detail: `${result.cookiesPath} was written with owner-only permissions. Secret values were not printed.`
-              });
-              setOnboarding({
-                step: "gemini-wrapper-model-mode"
-              });
-              setOnboardingInput("");
-              setOnboardingIndex(0);
-            } catch (error) {
-              setOnboardingNotice({
-                tone: "warning",
-                text: "Gemini browser cookie import failed.",
-                detail: error instanceof Error ? error.message : String(error)
-              });
-            } finally {
-              setOnboardingBusyMessage(null);
-            }
-            return;
-          }
-
-          setOnboarding({
-            step: "gemini-wrapper-psid"
-          });
-          setOnboardingInput("");
-          setOnboardingIndex(0);
-          return;
-        }
-
-        if (choice === 0 && onboarding.hasExistingKey) {
-          await openModelSelection(onboarding.provider, {
-            currentModel: defaultModelForProvider(onboarding.provider, settings.model)
-          });
-          return;
-        }
-
-        setOnboarding({
-          step: `${onboarding.provider}-key` as "gemini-key" | "openrouter-key" | "nvidia-key"
-        });
-        setOnboardingInput("");
-        setOnboardingIndex(0);
-        return;
-      }
-
-      if (onboarding.step === "gemini-key") {
-        const apiKey = value.trim();
-        if (!apiKey) {
-          setOnboardingNotice({
-            tone: "warning",
-            text: "Gemini API key cannot be empty."
-          });
-          return;
-        }
-
-        process.env.GEMINI_API_KEY = apiKey;
+      if (onboarding.step === "local-url") {
+        const url = value.trim() || resolveLocalOpenAIBaseUrl();
+        process.env.PATCHPILOT_PROVIDER = "local-openai";
+        process.env.PATCHPILOT_LOCAL_URL = url;
         savePatchPilotEnvValues({
-          PATCHPILOT_PROVIDER: "gemini",
-          PATCHPILOT_MODEL: defaultGeminiModel,
-          GEMINI_API_KEY: apiKey
+          PATCHPILOT_PROVIDER: "local-openai",
+          PATCHPILOT_LOCAL_URL: url
         });
         setOnboardingNotice({
           tone: "success",
-          text: "Gemini API key saved to PatchPilot config."
+          text: `Using the local model server at ${url}.`,
+          detail: "Models are listed straight from that server."
         });
-        await openModelSelection("gemini", {
-          currentModel: defaultGeminiModel
-        });
-        return;
-      }
-
-      if (onboarding.step === "gemini-wrapper-psid") {
-        const secure1psid = value.trim();
-        if (!secure1psid) {
-          setOnboardingNotice({
-            tone: "warning",
-            text: "__Secure-1PSID cannot be empty.",
-            detail: "Paste the cookie value manually. PatchPilot will not scan browser profiles."
-          });
-          return;
-        }
-
-        setOnboarding({
-          step: "gemini-wrapper-psidts",
-          secure1psid
-        });
-        setOnboardingInput("");
-        setOnboardingIndex(0);
-        return;
-      }
-
-      if (onboarding.step === "gemini-wrapper-psidts") {
-        const secure1psidts = value.trim();
-        const cookiesPath = saveGeminiWrapperCookieFile({
-          secure1psid: onboarding.secure1psid,
-          secure1psidts
-        });
-
-        process.env.PATCHPILOT_GEMINI_WRAPPER_MODE = "python";
-        process.env.PATCHPILOT_GEMINI_WRAPPER_COOKIES_JSON = cookiesPath;
-        savePatchPilotEnvValues({
-          PATCHPILOT_PROVIDER: "gemini-wrapper",
-          PATCHPILOT_MODEL: defaultGeminiWrapperModel,
-          PATCHPILOT_GEMINI_WRAPPER_MODE: "python",
-          PATCHPILOT_GEMINI_WRAPPER_COOKIES_JSON: cookiesPath
-        });
-        setOnboardingNotice({
-          tone: "success",
-          text: "Gemini-API bridge cookies saved to PatchPilot config.",
-          detail: `${cookiesPath} was written with owner-only permissions. PatchPilot will run gemini_webapi through python3.`
-        });
-        setOnboarding({
-          step: "gemini-wrapper-model-mode"
-        });
-        setOnboardingInput("");
-        setOnboardingIndex(0);
-        return;
-      }
-
-      if (onboarding.step === "gemini-wrapper-model-mode") {
-        const choice = readIndexedSelection(value, onboardingIndex);
-        if (choice === null) {
-          return;
-        }
-
-        const curatedModel = geminiWrapperShortcutModels[choice];
-        if (curatedModel) {
-          setTelemetry(null);
-          const shortcutDescriptors = geminiWrapperShortcutModels.map((model) => ({ id: model, displayName: model }));
-          rememberModelDescriptors(shortcutDescriptors);
-          setModelOptions([...geminiWrapperShortcutModels]);
-          setSettings((currentSettings) => ({
-            ...currentSettings,
-            provider: "gemini-wrapper",
-            model: curatedModel
-          }));
-          savePatchPilotEnvValues({
-            PATCHPILOT_PROVIDER: "gemini-wrapper",
-            PATCHPILOT_MODEL: curatedModel,
-            PATCHPILOT_GEMINI_WRAPPER_MODE: "python"
-          });
-          setOnboarding({
-            step: "preferences",
-            provider: "gemini-wrapper",
-            model: curatedModel,
-            preferences: readOnboardingPreferences()
-          });
-          setOnboardingInput("");
-          setOnboardingIndex(preferenceRows.length);
-          return;
-        }
-
-        await openModelSelection("gemini-wrapper", {
-          currentModel: settings.model
-        });
-        return;
-      }
-
-      if (onboarding.step === "gemini-wrapper-url") {
-        const baseUrl = value.trim().replace(/\/$/, "");
-        if (!baseUrl) {
-          setOnboardingNotice({
-            tone: "warning",
-            text: "Gemini-Wrapper URL cannot be empty."
-          });
-          return;
-        }
-
-        try {
-          new URL(baseUrl);
-        } catch {
-          setOnboardingNotice({
-            tone: "warning",
-            text: "Gemini-Wrapper URL must be a valid URL.",
-            detail: "Example: http://localhost:8787/v1"
-          });
-          return;
-        }
-
-        process.env.PATCHPILOT_GEMINI_WRAPPER_BASE_URL = baseUrl;
-        process.env.PATCHPILOT_GEMINI_WRAPPER_MODE = "http";
-        savePatchPilotEnvValues({
-          PATCHPILOT_PROVIDER: "gemini-wrapper",
-          PATCHPILOT_MODEL: defaultGeminiWrapperModel,
-          PATCHPILOT_GEMINI_WRAPPER_BASE_URL: baseUrl,
-          PATCHPILOT_GEMINI_WRAPPER_MODE: "http"
-        });
-        setOnboardingNotice({
-          tone: "success",
-          text: "Gemini-Wrapper URL saved to PatchPilot config.",
-          detail: "PatchPilot uses only this explicit URL and never reads browser cookies."
-        });
-        if (geminiWrapperRequiresApiKey(baseUrl) && !readGeminiWrapperApiKey()) {
-          setOnboarding({
-            step: "gemini-wrapper-key",
-            baseUrl
-          });
-          setOnboardingInput("");
-          setOnboardingIndex(0);
-          return;
-        }
-
-        await openModelSelection("gemini-wrapper", {
-          currentModel: defaultGeminiWrapperModel
-        });
-        return;
-      }
-
-      if (onboarding.step === "gemini-wrapper-key") {
-        const apiKey = value.trim();
-        if (geminiWrapperRequiresApiKey(onboarding.baseUrl) && !apiKey) {
-          setOnboardingNotice({
-            tone: "warning",
-            text: "Gemini-Wrapper API key cannot be empty for remote wrapper URLs."
-          });
-          return;
-        }
-
-        process.env.PATCHPILOT_GEMINI_WRAPPER_API_KEY = apiKey;
-        savePatchPilotEnvValues({
-          PATCHPILOT_PROVIDER: "gemini-wrapper",
-          PATCHPILOT_MODEL: defaultGeminiWrapperModel,
-          PATCHPILOT_GEMINI_WRAPPER_BASE_URL: onboarding.baseUrl,
-          PATCHPILOT_GEMINI_WRAPPER_MODE: "http",
-          ...(apiKey ? { PATCHPILOT_GEMINI_WRAPPER_API_KEY: apiKey } : {})
-        });
-        setOnboardingNotice({
-          tone: "success",
-          text: apiKey ? "Gemini-Wrapper API key saved to PatchPilot config." : "Gemini-Wrapper local URL saved without an API key."
-        });
-        await openModelSelection("gemini-wrapper", {
-          currentModel: defaultGeminiWrapperModel
-        });
-        return;
-      }
-
-      if (onboarding.step === "openrouter-key") {
-        const apiKey = value.trim();
-        if (!apiKey) {
-          setOnboardingNotice({
-            tone: "warning",
-            text: "OpenRouter API key cannot be empty."
-          });
-          return;
-        }
-
-        process.env.OPENROUTER_API_KEY = apiKey;
-        savePatchPilotEnvValues({
-          PATCHPILOT_PROVIDER: "openrouter",
-          PATCHPILOT_MODEL: defaultOpenRouterModel,
-          OPENROUTER_API_KEY: apiKey
-        });
-        setOnboardingNotice({
-          tone: "success",
-          text: "OpenRouter API key saved to PatchPilot config."
-        });
-        await openModelSelection("openrouter", {
-          currentModel: defaultOpenRouterModel
-        });
-        return;
-      }
-
-      if (onboarding.step === "nvidia-key") {
-        const apiKey = value.trim();
-        if (!apiKey) {
-          setOnboardingNotice({
-            tone: "warning",
-            text: "NVIDIA API key cannot be empty."
-          });
-          return;
-        }
-
-        process.env.NVIDIA_API_KEY = apiKey;
-        savePatchPilotEnvValues({
-          PATCHPILOT_PROVIDER: "nvidia",
-          PATCHPILOT_MODEL: defaultNvidiaModel,
-          NVIDIA_API_KEY: apiKey
-        });
-        setOnboardingNotice({
-          tone: "success",
-          text: "NVIDIA API key saved to PatchPilot config."
-        });
-        await openModelSelection("nvidia", {
-          currentModel: defaultNvidiaModel
-        });
-        return;
-      }
-
-      if (onboarding.step === "codex-login") {
-        if (!hasCodexCliOAuth()) {
-          setOnboardingNotice({
-            tone: "warning",
-            text: "Codex OAuth is still missing.",
-            detail: "Run `codex login` in another terminal, then press Enter to retry."
-          });
-          return;
-        }
-
-        await openModelSelection("codex", {
-          currentModel: defaultCodexModel
-        });
+        await openModelSelection("local-openai", { currentModel: defaultLocalOpenAIModel });
         return;
       }
 
@@ -1401,8 +1005,8 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           model: onboarding.model,
           allowWrite: permissions.allowWrite,
           allowShell: permissions.allowShell,
-          thinkingMode: prefs.thinking,
-          reasoningEffort: prefs.reasoning,
+          thinkingMode: prefs.stepBudget,
+          thinking: prefs.thinking,
           subagents: prefs.subagents
         }));
         savePatchPilotEnvValues({
@@ -1417,23 +1021,15 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           tone: "success",
           label: "onboarding",
           text: `ready: ${onboarding.provider} using ${onboarding.model}`,
-          detail: `mode ${prefs.mode} · reasoning ${prefs.reasoning} · thinking ${prefs.thinking} · subagents ${prefs.subagents ? "on" : "off"}`
+          detail: `mode ${prefs.mode} · thinking ${prefs.thinking} · steps ${prefs.stepBudget} · subagents ${prefs.subagents ? "on" : "off"}`
         });
-        if (onboarding.provider === "openrouter" && isOpenRouterFreeModel(onboarding.model)) {
-          appendLine({
-            tone: "warning",
-            label: "openrouter",
-            text: "Free OpenRouter models are rate-limited.",
-            detail: "OpenRouter documents 20 requests/minute for :free models, plus daily limits depending on account credits."
-          });
-        }
         closeOnboarding();
         return;
       }
 
       const visibleModels = selectableModels(onboardingInput, onboarding.models, formatModelLabel);
       const selectedModel = visibleModels[onboardingIndex] ?? selectModelFromInput(value, visibleModels, onboardingIndex, {
-        allowManual: onboarding.provider !== "ollama" && onboarding.provider !== "gemini-wrapper"
+        allowManual: onboarding.provider !== "ollama"
       });
       if (!selectedModel) {
         setOnboardingNotice({
@@ -1545,11 +1141,6 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       let turnAttachmentPaths: string[] = [];
       try {
         const runnableSettings = await resolveRunnableSettings(settings, modelOptions, appendLine, setModelOptions, (message) => {
-          if (settings.provider === "gemini-wrapper" && isGeminiCookieError(message)) {
-            setReauthPrompt({ task });
-            setStatus("gemini cookies expired");
-            setWorkState("waiting_approval");
-          }
         });
         if (!runnableSettings) {
           return;
@@ -1607,7 +1198,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
               : ultraLean
                 ? Math.min(runnableSettings.maxSteps, 12)
                 : runnableSettings.maxSteps,
-          reasoningEffort: ultramaxx ? "xhigh" : ultraLean ? "low" : runnableSettings.reasoningEffort,
+          thinking: ultramaxx ? "on" : ultraLean ? "off" : runnableSettings.thinking,
           thinkingMode: ultramaxx || ultraloop ? "adaptive" : ultraLean ? "fixed" : runnableSettings.thinkingMode,
           subagents: ultramaxx || ultraloop ? true : ultraLean ? false : runnableSettings.subagents,
           ultramaxx,
@@ -1727,17 +1318,6 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
             setToolTelemetry((currentTools) => addApprovalTelemetry(currentTools, event.decision));
           }
 
-          // Expired Gemini-Wrapper cookies arrive as an error event (the run
-          // does not throw) — offer the y/n re-auth prompt here too.
-          if (
-            event.type === "error" &&
-            settings.provider === "gemini-wrapper" &&
-            isGeminiCookieError(event.message)
-          ) {
-            setReauthPrompt({ task });
-            setWorkState("waiting_approval");
-          }
-
           setStatus(eventToStatus(event));
           appendLine(eventToLine(event));
         }
@@ -1761,13 +1341,6 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           text: message,
           workState: "error"
         });
-        // Expired Gemini-Wrapper cookies: offer a one-key re-auth + retry
-        // instead of making the user restart and re-type the prompt.
-        if (settings.provider === "gemini-wrapper" && isGeminiCookieError(message)) {
-          setReauthPrompt({ task });
-          setStatus("gemini cookies expired");
-          setWorkState("waiting_approval");
-        }
       } finally {
         abortControllerRef.current = null;
         setIsRunning(false);
@@ -1804,61 +1377,6 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       }
     },
     [agentMode, appendLine, experimentalFlags, isRunning, modelOptions, registerCreatedArtifact, resumeContext, settings]
-  );
-
-  const resolveReauthPrompt = useCallback(
-    async (accept: boolean): Promise<void> => {
-      const pending = reauthPrompt;
-      if (!pending || reauthBusy) {
-        return;
-      }
-
-      if (!accept) {
-        setReauthPrompt(null);
-        setStatus("idle");
-        setWorkState("idle");
-        appendLine({
-          tone: "warning",
-          label: "gemini",
-          text: "Cookie refresh declined.",
-          detail: "Run /onboarding to re-authenticate Gemini-Wrapper when you are ready."
-        });
-        return;
-      }
-
-      // Keep the panel on screen and show the busy animation while the
-      // browser cookies are imported.
-      setReauthBusy(true);
-      try {
-        const result = await importGeminiWrapperBrowserCookies();
-        process.env.PATCHPILOT_GEMINI_WRAPPER_MODE = "python";
-        process.env.PATCHPILOT_GEMINI_WRAPPER_COOKIES_JSON = result.cookiesPath;
-        savePatchPilotEnvValues({
-          PATCHPILOT_GEMINI_WRAPPER_MODE: "python",
-          PATCHPILOT_GEMINI_WRAPPER_COOKIES_JSON: result.cookiesPath
-        });
-        setReauthBusy(false);
-        setReauthPrompt(null);
-        appendLine({
-          tone: "success",
-          label: "gemini",
-          text: `Imported ${result.cookieCount} fresh cookies from ${result.source}. Retrying your task...`
-        });
-        await runTask(pending.task);
-      } catch (error) {
-        setReauthBusy(false);
-        setReauthPrompt(null);
-        setStatus("idle");
-        setWorkState("idle");
-        appendLine({
-          tone: "danger",
-          label: "gemini",
-          text: error instanceof Error ? error.message : String(error),
-          detail: "Cookie refresh failed. Sign in to Gemini in your browser, then retry the prompt."
-        });
-      }
-    },
-    [appendLine, reauthBusy, reauthPrompt, runTask]
   );
 
   const handleSlashCommand = useCallback(
@@ -1913,11 +1431,12 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           return;
         case "provider": {
           const nextProvider = args[0]?.toLowerCase();
-          if (nextProvider !== "ollama" && nextProvider !== "gemini" && nextProvider !== "gemini-wrapper" && nextProvider !== "codex" && nextProvider !== "openrouter" && nextProvider !== "nvidia") {
+          if (nextProvider !== "ollama" && nextProvider !== "local-openai") {
             appendLine({
               tone: "accent",
               label: "provider",
-              text: `current ${settings.provider}. Use /provider ollama, gemini, gemini-wrapper, openrouter, nvidia, or codex.`
+              text: `current ${settings.provider}. Use /provider ollama or local-openai.`,
+              detail: "local-openai covers LM Studio, llama.cpp and vLLM over an OpenAI-compatible endpoint."
             });
             return;
           }
@@ -1934,16 +1453,10 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
             PATCHPILOT_PROVIDER: nextProvider,
             PATCHPILOT_MODEL: nextModel
           });
-          if (needsApiKey(nextProvider) && !hasApiKey(nextProvider)) {
-            openApiKeyChoice(nextProvider, setOnboarding, setOnboardingIndex);
-          }
           appendLine({
-            tone: needsApiKey(nextProvider) && !hasApiKey(nextProvider) ? "warning" : "success",
+            tone: "success",
             label: "provider",
-            text:
-              needsApiKey(nextProvider) && !hasApiKey(nextProvider)
-                ? `${nextProvider} needs setup. Setup opened.`
-                : `switched to ${nextProvider} using ${nextModel}`
+            text: `switched to ${nextProvider} using ${nextModel}`
           });
           return;
         }
@@ -1996,28 +1509,30 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           });
           return;
         }
-        case "reasoning": {
-          const nextEffort = args[0]?.toLowerCase();
-          if (!isReasoningEffort(nextEffort)) {
+        case "think":
+        case "thinking": {
+          const nextThinking = args[0]?.toLowerCase();
+          if (nextThinking !== "auto" && nextThinking !== "on" && nextThinking !== "off") {
             appendLine({
               tone: "accent",
-              label: "reasoning",
-              text: `current ${settings.reasoningEffort}. Use /reasoning none, low, medium, high, xhigh, or adaptive.`
+              label: "thinking",
+              text: `current ${settings.thinking}. Use /thinking auto, on, or off.`,
+              detail: formatThinkingSupport(settings.provider, settings.model, settings.thinking)
             });
             return;
           }
 
           setSettings((currentSettings) => ({
             ...currentSettings,
-            reasoningEffort: nextEffort
+            thinking: nextThinking
           }));
           savePatchPilotEnvValues({
-            PATCHPILOT_REASONING_EFFORT: nextEffort
+            PATCHPILOT_THINKING: nextThinking
           });
           appendLine({
             tone: "success",
-            label: "reasoning",
-            text: formatReasoningSupport(settings.provider, settings.model, nextEffort === "adaptive" ? undefined : nextEffort)
+            label: "thinking",
+            text: formatThinkingSupport(settings.provider, settings.model, nextThinking)
           });
           return;
         }
@@ -2064,7 +1579,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           const requestedModel = normalizeModelAlias(args.join(" ").trim());
           if (!requestedModel) {
             const models = await loadKnownOrAvailableModels(settings.provider, settings.ollamaUrl, modelOptions, setModelOptions, appendLine, {
-              refresh: settings.provider === "gemini-wrapper"
+              refresh: false
             });
             if (!models) {
               return;
@@ -2081,7 +1596,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
 
           {
             const models = await loadKnownOrAvailableModels(settings.provider, settings.ollamaUrl, modelOptions, setModelOptions, appendLine, {
-              refresh: settings.provider === "gemini-wrapper"
+              refresh: false
             });
             if (!models) {
               return;
@@ -2106,7 +1621,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           const requestedModel = args.join(" ").trim();
           if (requestedModel) {
             const installedModels = await loadKnownOrAvailableModels(settings.provider, settings.ollamaUrl, modelOptions, setModelOptions, appendLine, {
-              refresh: settings.provider === "gemini-wrapper"
+              refresh: false
             });
             if (!installedModels) {
               return;
@@ -2144,15 +1659,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
                 detail:
                   settings.provider === "ollama"
                     ? "Pull a model on the selected host first."
-                    : settings.provider === "gemini"
-                      ? "Check GEMINI_API_KEY in PatchPilot config."
-                      : settings.provider === "gemini-wrapper"
-                        ? "Check gemini_webapi install and PATCHPILOT_GEMINI_WRAPPER_COOKIES_JSON in PatchPilot config."
-                        : settings.provider === "openrouter"
-                          ? "Check OPENROUTER_API_KEY in PatchPilot config."
-                          : settings.provider === "nvidia"
-                            ? "Check NVIDIA_API_KEY in PatchPilot config."
-                            : "Run codex login first."
+                    : "Load a model in your local server, or check PATCHPILOT_LOCAL_URL."
               });
               return;
             }
@@ -2186,7 +1693,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
               agentMode,
               subagents: settings.subagents,
               thinkingMode: settings.thinkingMode,
-              reasoningEffort: settings.reasoningEffort,
+              thinking: settings.thinking,
               workspace: settings.workspace,
               ollamaUrl: settings.ollamaUrl,
               sessionId: sessionStoreRef.current.sessionId,
@@ -2969,10 +2476,6 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       }
     }
 
-    if (reauthBusy) {
-      return;
-    }
-
     if (updateBusy) {
       return;
     }
@@ -2986,21 +2489,6 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
 
       if (normalizedInput === "n" || key.escape) {
         void resolveUpdatePrompt(false);
-        return;
-      }
-
-      return;
-    }
-
-    if (reauthPrompt) {
-      const normalizedInput = inputValue.toLowerCase();
-      if (normalizedInput === "y") {
-        void resolveReauthPrompt(true);
-        return;
-      }
-
-      if (normalizedInput === "n" || key.escape) {
-        void resolveReauthPrompt(false);
         return;
       }
 
@@ -3117,11 +2605,6 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
 
       if (optionCount > 0 && key.return) {
         void handleOnboardingSubmit(String(onboardingIndex + 1));
-        return;
-      }
-
-      if (onboarding.step === "codex-login" && key.return) {
-        void handleOnboardingSubmit("");
         return;
       }
 
@@ -3323,8 +2806,8 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         bypassConfirmation={bypassConfirmation}
         updatePrompt={updatePrompt}
         updateBusy={updateBusy}
-        reauthActive={Boolean(reauthPrompt) || reauthBusy}
-        reauthBusy={reauthBusy}
+        reauthActive={false}
+        reauthBusy={false}
         transcriptScrollOffset={transcriptScrollOffset}
         input={input}
         paletteItems={paletteItems}
@@ -3353,7 +2836,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         agentMode={agentMode}
         subagents={settings.subagents}
         thinkingMode={settings.thinkingMode}
-        reasoningEffort={settings.reasoningEffort}
+        thinking={settings.thinking}
         ollamaUrl={settings.ollamaUrl}
         telemetry={telemetry}
         sessionTelemetry={sessionTelemetry}
@@ -3421,7 +2904,6 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
               workState={workState}
               isApprovalWaiting={blockingPromptActive}
             />
-            <ReauthPromptPanel active={reauthPromptActive} busy={reauthBusy} />
             <UpdatePromptPanel prompt={updatePromptActive ? updatePrompt : null} busy={updatePromptActive && updateBusy} />
             <ApprovalPanel request={approvalPromptActive ? pendingApproval : null} bypassConfirmation={approvalPromptActive && bypassConfirmation} />
             <Composer
@@ -3481,17 +2963,7 @@ function modelCacheKey(provider: ModelProvider, ollamaUrl: string): string {
     return `${provider}:${ollamaUrl}`;
   }
 
-  if (provider === "gemini-wrapper") {
-    return [
-      provider,
-      readGeminiWrapperMode(),
-      readGeminiWrapperBaseUrl() || "python",
-      readGeminiWrapperPythonCommand(),
-      readGeminiWrapperCookiesJson()
-    ].join(":");
-  }
-
-  return `${provider}:default`;
+  return `${provider}:${resolveLocalOpenAIBaseUrl()}`;
 }
 
 function rememberModelDescriptors(descriptors: ModelDescriptor[]): void {
@@ -3554,7 +3026,7 @@ async function switchModel(
     return;
   }
 
-  if (!installedModels.includes(nextModel) && !canUseUnverifiedCloudModel(provider, nextModel)) {
+  if (!installedModels.includes(nextModel) && !canUseUnverifiedModel(provider, nextModel)) {
     appendLine({
       tone: "warning",
       label: "model",
@@ -3562,15 +3034,9 @@ async function switchModel(
       detail:
         installedModels.length > 0
           ? `Use /models and pick one of:\n${formatModelOptions(installedModels, currentModel)}`
-      : provider === "ollama"
-        ? "No models installed on the selected host."
-        : provider === "gemini"
-          ? "Check GEMINI_API_KEY in PatchPilot config."
-            : provider === "gemini-wrapper"
-              ? "Check PATCHPILOT_GEMINI_WRAPPER_BASE_URL in PatchPilot config."
-            : provider === "openrouter"
-            ? "Check OPENROUTER_API_KEY in PatchPilot config."
-            : "Run codex login first."
+          : provider === "ollama"
+            ? "No models installed on the selected host."
+            : "No models served. Load one in your local server, or check PATCHPILOT_LOCAL_URL."
     });
     return;
   }
@@ -3590,14 +3056,6 @@ async function switchModel(
     text: installedModels.includes(nextModel) ? `switched to ${formatModelLabel(nextModel)}` : `switched to unverified ${provider} model ${nextModel}`,
     detail: installedModels.includes(nextModel) ? undefined : "The provider did not list this model in discovery. PatchPilot will try it and surface the provider error if it is unavailable."
   });
-  if (provider === "openrouter" && isOpenRouterFreeModel(nextModel)) {
-    appendLine({
-      tone: "warning",
-      label: "openrouter",
-      text: "Free OpenRouter models are rate-limited.",
-      detail: "OpenRouter documents 20 requests/minute for :free models, plus daily limits depending on account credits."
-    });
-  }
 }
 
 async function resolveRunnableSettings(
@@ -3623,7 +3081,7 @@ async function resolveRunnableSettings(
     return null;
   }
 
-  if (installedModels.includes(settings.model) || canUseUnverifiedCloudModel(settings.provider, settings.model)) {
+  if (installedModels.includes(settings.model) || canUseUnverifiedModel(settings.provider, settings.model)) {
     if (!installedModels.includes(settings.model)) {
       appendLine({
         tone: "warning",
@@ -3644,13 +3102,7 @@ async function resolveRunnableSettings(
         ? `Pick an installed model first:\n${formatModelOptions(installedModels, settings.model)}`
         : settings.provider === "ollama"
           ? "No models installed on the selected host."
-          : settings.provider === "gemini"
-            ? "No Gemini models listed. Check GEMINI_API_KEY in PatchPilot config."
-            : settings.provider === "gemini-wrapper"
-              ? "No Gemini-Wrapper models listed. Check gemini_webapi install and PATCHPILOT_GEMINI_WRAPPER_COOKIES_JSON in PatchPilot config."
-            : settings.provider === "openrouter"
-              ? "No OpenRouter models listed. Check OPENROUTER_API_KEY in PatchPilot config."
-              : "Codex OAuth is not ready. Run codex login."
+          : "No models served. Load one in your local server, or check PATCHPILOT_LOCAL_URL."
   });
   return null;
 }
@@ -3742,16 +3194,11 @@ function getOnboardingOptionCount(onboarding: OnboardingState): number {
     case "disclaimer":
       return 0;
     case "entry":
-      return 7;
+      return 3;
     case "host":
       return onboarding.hosts.length + 1;
-    case "api-key-choice":
-      if (onboarding.provider === "gemini-wrapper") {
-        return onboarding.hasExistingKey ? 3 : 2;
-      }
-      return onboarding.hasExistingKey ? 2 : 1;
-    case "gemini-wrapper-model-mode":
-      return geminiWrapperShortcutModels.length + 1;
+    case "local-url":
+      return 0;
     case "model":
       return onboarding.models.length;
     case "preferences":
@@ -3761,10 +3208,10 @@ function getOnboardingOptionCount(onboarding: OnboardingState): number {
   }
 }
 
-function readEntrySelection(value: string, selectedIndex: number): "local" | "host" | "gemini" | "gemini-wrapper" | "openrouter" | "nvidia" | "codex" | null {
+function readEntrySelection(value: string, selectedIndex: number): "local" | "host" | "local-openai" | null {
   const normalizedValue = value.trim().toLowerCase();
   if (!normalizedValue) {
-    return ["local", "host", "gemini", "gemini-wrapper", "openrouter", "nvidia", "codex"][selectedIndex] as "local" | "host" | "gemini" | "gemini-wrapper" | "openrouter" | "nvidia" | "codex";
+    return ["local", "host", "local-openai"][selectedIndex] as "local" | "host" | "local-openai";
   }
 
   if (normalizedValue === "1" || normalizedValue === "local" || normalizedValue === "this device") {
@@ -3775,24 +3222,17 @@ function readEntrySelection(value: string, selectedIndex: number): "local" | "ho
     return "host";
   }
 
-  if (normalizedValue === "3" || normalizedValue === "gemini" || normalizedValue === "google") {
-    return "gemini";
-  }
-
-  if (normalizedValue === "4" || normalizedValue === "gemini-wrapper" || normalizedValue === "geminiwrapper" || normalizedValue === "google-wrapper") {
-    return "gemini-wrapper";
-  }
-
-  if (normalizedValue === "5" || normalizedValue === "openrouter" || normalizedValue === "open-router") {
-    return "openrouter";
-  }
-
-  if (normalizedValue === "6" || normalizedValue === "nvidia" || normalizedValue === "nim") {
-    return "nvidia";
-  }
-
-  if (normalizedValue === "7" || normalizedValue === "codex") {
-    return "codex";
+  if (
+    normalizedValue === "3" ||
+    normalizedValue === "local-openai" ||
+    normalizedValue === "local server" ||
+    normalizedValue === "lmstudio" ||
+    normalizedValue === "lm studio" ||
+    normalizedValue === "bionic" ||
+    normalizedValue === "llamacpp" ||
+    normalizedValue === "vllm"
+  ) {
+    return "local-openai";
   }
 
   return null;
@@ -3895,71 +3335,23 @@ function isPlausibleCloudModelId(value: string): boolean {
   return /^[A-Za-z0-9][A-Za-z0-9._:/+-]*$/.test(value) && value.length >= 3;
 }
 
-function canUseUnverifiedCloudModel(provider: ModelProvider, model: string): boolean {
+/**
+ * Ollama can only run what it has pulled, so an unlisted id is always wrong.
+ * An OpenAI-compatible server may load a model on demand, so a plausible id is
+ * worth attempting rather than refusing.
+ */
+function canUseUnverifiedModel(provider: ModelProvider, model: string): boolean {
   return provider !== "ollama" && isPlausibleCloudModelId(model);
 }
 
 function defaultModelForProvider(provider: ModelProvider, currentModel: string): string {
-  if (provider === "nvidia") {
-    return currentModel.includes("/") && !currentModel.startsWith("openrouter/") ? currentModel : defaultNvidiaModel;
+  if (provider === "local-openai") {
+    return modelDescriptorIndex.has(currentModel) ? currentModel : defaultLocalOpenAIModel;
   }
 
-  if (provider === "openrouter") {
-    return currentModel.includes("/") ? currentModel : defaultOpenRouterModel;
-  }
-
-  if (provider === "gemini-wrapper") {
-    return geminiWrapperCuratedModels.includes(currentModel as typeof geminiWrapperCuratedModels[number]) || currentModel.startsWith("gemini-") || modelDescriptorIndex.has(currentModel) ? currentModel : defaultGeminiWrapperModel;
-  }
-
-  if (provider === "gemini") {
-    return currentModel.startsWith("gemini-") ? currentModel : defaultGeminiModel;
-  }
-
-  if (provider === "codex") {
-    return currentModel.includes("codex") || currentModel === "codex-mini-latest" ? currentModel : defaultCodexModel;
-  }
-
-  return currentModel.startsWith("gemini-") || currentModel.includes("codex") || currentModel.includes("/") ? defaultOllamaModel : currentModel;
+  return currentModel.includes("/") ? defaultOllamaModel : currentModel;
 }
 
-function openApiKeyChoice(
-  provider: ApiKeyProvider,
-  setOnboarding: React.Dispatch<React.SetStateAction<OnboardingState | null>>,
-  setOnboardingIndex: React.Dispatch<React.SetStateAction<number>>
-): void {
-  setOnboarding({
-    step: "api-key-choice",
-    provider,
-    hasExistingKey: hasApiKey(provider)
-  });
-  setOnboardingIndex(0);
-}
-
-function needsApiKey(provider: ModelProvider): provider is ApiKeyProvider {
-  return provider === "gemini" || provider === "gemini-wrapper" || provider === "openrouter" || provider === "nvidia";
-}
-
-function hasApiKey(provider: ApiKeyProvider): boolean {
-  if (provider === "gemini") {
-    return Boolean(readGeminiApiKey());
-  }
-
-  if (provider === "gemini-wrapper") {
-    const baseUrl = readGeminiWrapperBaseUrl();
-    if (readGeminiWrapperMode() === "http") {
-      return !geminiWrapperRequiresApiKey(baseUrl) || Boolean(readGeminiWrapperApiKey());
-    }
-
-    return Boolean(readGeminiWrapperCookiesJson());
-  }
-
-  if (provider === "openrouter") {
-    return Boolean(readOpenRouterApiKey());
-  }
-
-  return Boolean(readNvidiaApiKey());
-}
 
 async function unloadUsedOllamaModels(usedModels: Set<string>): Promise<void> {
   const entries = [...usedModels];
@@ -4012,10 +3404,6 @@ async function ejectOllamaModels(options: {
   return ejected;
 }
 
-function isReasoningEffort(value: string | undefined): value is AgentRunnerOptions["reasoningEffort"] {
-  return value === "none" || value === "low" || value === "medium" || value === "high" || value === "xhigh" || value === "adaptive";
-}
-
 function upsertAdvisorNote(notes: AdvisorNote[], nextNote: AdvisorNote): AdvisorNote[] {
   const nextNotes = notes.filter((note) => note.role !== nextNote.role);
   return [...nextNotes, nextNote].slice(-2);
@@ -4055,44 +3443,6 @@ function UpdatePromptPanel(props: {
               [n / esc]
             </Text>
             <Text color="gray"> skip</Text>
-          </Text>
-        </>
-      )}
-    </Box>
-  );
-}
-
-function ReauthPromptPanel(props: {
-  active: boolean;
-  busy: boolean;
-}): React.ReactElement | null {
-  if (!props.active) {
-    return null;
-  }
-
-  return (
-    <Box borderStyle="double" borderColor="yellow" flexDirection="column" paddingX={1}>
-      <Text color="yellow" bold>
-        GEMINI COOKIES EXPIRED
-      </Text>
-      {props.busy ? (
-        <>
-          <Text color="cyan">Refreshing Gemini browser cookies...</Text>
-          <Text color="gray">PatchPilot will retry the prompt automatically on success.</Text>
-        </>
-      ) : (
-        <>
-          <Text color="white">Refresh Gemini browser cookies and retry the last prompt?</Text>
-          <Text color="gray">Secret cookie values are imported from your signed-in browser and are not printed.</Text>
-          <Text>
-            <Text color="green" bold>
-              [y]
-            </Text>
-            <Text color="gray"> refresh & retry   </Text>
-            <Text color="red" bold>
-              [n / esc]
-            </Text>
-            <Text color="gray"> dismiss</Text>
           </Text>
         </>
       )}
@@ -4143,7 +3493,7 @@ function formatStatusDock(options: {
   agentMode: AgentMode;
   subagents: boolean;
   thinkingMode: string;
-  reasoningEffort: ReasoningSetting | "adaptive";
+  thinking: ThinkingSetting;
   workspace: string;
   ollamaUrl: string;
   sessionId: string;
@@ -4158,14 +3508,8 @@ function formatStatusDock(options: {
   const hostLine = isOllama
     ? `${options.activeHost?.host.deviceName ?? "ollama"}  ${options.activeHost?.host.url ?? options.ollamaUrl}`
     : `${options.provider} api`;
-  const computeKind = isOllama ? describeComputeTarget(options.ollamaUrl).kind : "cloud";
-  const reasoning = isOllama
-    ? `think ${options.thinkingMode}`
-    : `think ${options.thinkingMode} · reasoning ${formatReasoningSupport(
-        options.provider,
-        options.model,
-        options.reasoningEffort === "adaptive" ? undefined : options.reasoningEffort,
-      )}`;
+  const computeKind = isOllama ? describeComputeTarget(options.ollamaUrl).kind : "local";
+  const reasoning = `steps ${options.thinkingMode} · ${formatThinkingSupport(options.provider, options.model, options.thinking)}`;
   const toolCounters = Object.entries(options.toolTelemetry.byTool)
     .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
     .slice(0, 6)
@@ -4201,7 +3545,7 @@ function formatUsageSummary(options: {
 }): string {
   const session = options.sessionTelemetry;
   const cost = formatCost(session.estimatedCostUsd);
-  const saved = estimateSessionSavings(options.provider, options.model, session);
+  const saved = estimateSessionSavings(session);
   const pricingNote = pricingSourceLabel(session.costSource, saved.source);
   return [
     `${session.requests} request${session.requests === 1 ? "" : "s"}`,
@@ -4222,7 +3566,7 @@ function formatUsageDetail(options: {
   toolTelemetry: ToolTelemetry;
 }): string {
   const session = options.sessionTelemetry;
-  const saved = estimateSessionSavings(options.provider, options.model, session);
+  const saved = estimateSessionSavings(session);
   const toolRows = Object.entries(options.toolTelemetry.byTool)
     .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
     .map(([tool, count]) => `${tool}: ${count}`)
@@ -4246,11 +3590,14 @@ function formatUsageDetail(options: {
     .join("\n");
 }
 
-function estimateSessionSavings(provider: ModelProvider, model: string, session: SessionTelemetry): {
+function estimateSessionSavings(session: SessionTelemetry): {
   costUsd: number | null;
   source: "api-pricing" | "fallback-pricing" | "unknown";
 } {
-  return estimateComparableApiCost(provider, model, session.promptTokens, session.responseTokens, session.cachedPromptTokens);
+  return {
+    costUsd: estimateCloudEquivalentCost(session.promptTokens, session.responseTokens, session.cachedPromptTokens),
+    source: "fallback-pricing"
+  };
 }
 
 function pricingSourceLabel(costSource: SessionTelemetry["costSource"], savedSource: "api-pricing" | "fallback-pricing" | "unknown"): string {
@@ -4270,14 +3617,18 @@ function pricingSourceLabel(costSource: SessionTelemetry["costSource"], savedSou
 }
 
 const bytesPerMiB = 1024 * 1024;
-const geminiAppsPromptFileLimit = 10;
-const geminiNonVideoFileLimitBytes = 100 * bytesPerMiB;
-const geminiApiPdfLimitBytes = 50 * bytesPerMiB;
-const geminiPdfCautionBytes = 20 * bytesPerMiB;
-const geminiInlineRequestWarnBytes = 25 * bytesPerMiB;
+/**
+ * Local models are bounded by context window and VRAM rather than by an API's
+ * upload rules, so these thresholds are about what a local run can actually
+ * hold, not what a service will accept.
+ */
+const promptFileLimit = 8;
+const largeFileBytes = 32 * bytesPerMiB;
+const largePdfBytes = 8 * bytesPerMiB;
+const totalPromptWarnBytes = 16 * bytesPerMiB;
 
 function attachmentLimitWarning(paths: string[], provider: ModelProvider): string | null {
-  if (paths.length === 0 || (provider !== "gemini" && provider !== "gemini-wrapper")) {
+  if (paths.length === 0) {
     return null;
   }
 
@@ -4286,33 +3637,24 @@ function attachmentLimitWarning(paths: string[], provider: ModelProvider): strin
     type: attachmentTypeForPath(filePath),
     size: readFileSize(filePath)
   }));
-  const knownTotalBytes = files.reduce((total, file) => total + (file.size ?? 0), 0);
-  const tooLargePdf = files.find((file) => file.type === "PDF" && typeof file.size === "number" && file.size > geminiApiPdfLimitBytes);
-  const largePdf = files.find((file) => file.type === "PDF" && typeof file.size === "number" && file.size > geminiPdfCautionBytes);
-  const tooLargeFile = files.find((file) => typeof file.size === "number" && file.size > geminiNonVideoFileLimitBytes);
+  const knownTotalBytes = files.reduce((total, file) => total + (typeof file.size === "number" ? file.size : 0), 0);
+  const largePdf = files.find((file) => file.type === "PDF" && typeof file.size === "number" && file.size > largePdfBytes);
+  const largeFile = files.find((file) => typeof file.size === "number" && file.size > largeFileBytes);
 
-  if (paths.length > geminiAppsPromptFileLimit) {
-    return `Attached ${paths.length} files; Gemini web-style uploads are capped around ${geminiAppsPromptFileLimit} files per prompt. Split this into smaller batches.`;
+  if (paths.length > promptFileLimit) {
+    return `Attached ${paths.length} files. A local model holds far less context than a hosted one \u2014 split this into batches of ${promptFileLimit} or fewer.`;
   }
 
-  if (tooLargePdf) {
-    return `${attachmentTypeForPath(tooLargePdf.path)} file ${attachmentBasename(tooLargePdf.path)} is over 50 MiB; Gemini API PDF input can reject it.`;
-  }
-
-  if (tooLargeFile) {
-    return `${attachmentTypeForPath(tooLargeFile.path)} file ${attachmentBasename(tooLargeFile.path)} is over 100 MiB; Gemini file prompts may reject it.`;
+  if (largeFile) {
+    return `${attachmentTypeForPath(largeFile.path)} file ${attachmentBasename(largeFile.path)} is over ${formatMiB(largeFileBytes)}; it will very likely overflow the model's context window.`;
   }
 
   if (largePdf) {
-    return `${attachmentTypeForPath(largePdf.path)} file ${attachmentBasename(largePdf.path)} is over 20 MiB; Gemini PDF analysis can be slow or incomplete.`;
+    return `${attachmentTypeForPath(largePdf.path)} file ${attachmentBasename(largePdf.path)} is over ${formatMiB(largePdfBytes)}; extraction may be slow and incomplete on local hardware.`;
   }
 
-  if (knownTotalBytes > geminiInlineRequestWarnBytes) {
-    return `Attached files total about ${formatMiB(knownTotalBytes)}; Gemini analysis is more reliable in smaller batches.`;
-  }
-
-  if (paths.length > 3) {
-    return `Attached ${paths.length} files; PatchPilot will reference them, but Gemini/Gemini-Wrapper is more reliable if you split large batches.`;
+  if (knownTotalBytes > totalPromptWarnBytes) {
+    return `Attached files total about ${formatMiB(knownTotalBytes)}; run /doctor to check the loaded context window before sending.`;
   }
 
   return null;

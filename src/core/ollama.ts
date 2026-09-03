@@ -76,7 +76,7 @@ export class OllamaClient {
         messages: options.messages,
         stream: false,
         keep_alive: this.runtimeOptions.keepAlive,
-        think: getOllamaThinkValue(options.model, options.reasoningEffort),
+        think: getOllamaThinkValue(options.model, options.thinking),
         options: {
           num_ctx: this.runtimeOptions.numCtx,
           num_predict: this.runtimeOptions.numPredict,

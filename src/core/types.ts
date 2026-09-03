@@ -5,15 +5,15 @@ export type ChatMessage = {
   content: string;
 };
 
-export type ModelProvider = "ollama" | "gemini" | "gemini-wrapper" | "codex" | "openrouter" | "nvidia";
-export type ReasoningEffort = "low" | "medium" | "high" | "xhigh";
-export type ProviderReasoningEffort = ReasoningEffort | "none";
+export type ModelProvider = "ollama" | "local-openai";
+/** Thinking is either left to the model ("auto") or forced on/off. */
+export type ThinkingSetting = "auto" | "on" | "off";
 
 export type ModelChatOptions = {
   model: string;
   messages: ChatMessage[];
   formatJson?: boolean;
-  reasoningEffort?: ProviderReasoningEffort;
+  thinking?: ThinkingSetting;
   signal?: AbortSignal;
 };
 
