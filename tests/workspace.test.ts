@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { deflateRawSync } from "node:zlib";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { WorkspaceTools } from "../src/core/workspace.js";
 
 const execFileAsync = promisify(execFile);
@@ -1505,6 +1505,139 @@ describe("WorkspaceTools", () => {
       recursive: true,
       force: true
     });
+  });
+});
+
+describe("WorkspaceTools fetch_url", () => {
+  let fetchRoot = "";
+
+  beforeEach(async () => {
+    fetchRoot = await mkdtemp(path.join(tmpdir(), "patchpilot-fetch-"));
+  });
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    await rm(fetchRoot, { recursive: true, force: true });
+  });
+
+  function fetchTools(
+    overrides: { allowShell?: boolean; approvalHandler?: ConstructorParameters<typeof WorkspaceTools>[0]["approvalHandler"] } = {}
+  ): WorkspaceTools {
+    // Default allowShell:true models build+bypass so the network gate is open.
+    return new WorkspaceTools({
+      root: fetchRoot,
+      allowWrite: false,
+      allowShell: overrides.allowShell ?? true,
+      approvalHandler: overrides.approvalHandler
+    });
+  }
+
+  it("rejects non-http(s) schemes", async () => {
+    const result = await fetchTools().execute({ name: "fetch_url", arguments: { url: "file:///etc/passwd" } });
+    expect(result.ok).toBe(false);
+    expect(result.summary).toMatch(/only allows http/i);
+  });
+
+  it("blocks loopback and private hosts before making a request", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    for (const url of ["http://127.0.0.1/", "http://localhost/", "http://169.254.169.254/latest/meta-data", "http://192.168.1.1/"]) {
+      const result = await fetchTools().execute({ name: "fetch_url", arguments: { url } });
+      expect(result.ok, url).toBe(false);
+      expect(result.summary, url).toMatch(/blocked/i);
+    }
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("fetches a public URL and converts HTML to readable text", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response("<html><head><style>x{}</style></head><body><h1>Title</h1><p>Hello world</p></body></html>", {
+        status: 200,
+        headers: { "content-type": "text/html; charset=utf-8" }
+      })
+    );
+
+    // IP literal avoids real DNS resolution while passing the public-host guard.
+    const result = await fetchTools().execute({ name: "fetch_url", arguments: { url: "https://93.184.216.34/" } });
+
+    expect(result.ok).toBe(true);
+    expect(result.content).toContain("Title");
+    expect(result.content).toContain("Hello world");
+    expect(result.content).not.toContain("<p>");
+    expect(result.content).not.toContain("x{}");
+  });
+
+  it("recovers a URL from Markdown link / angle-bracket / bare-domain shapes", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response("ok", { status: 200, headers: { "content-type": "text/plain" } })
+    );
+
+    for (const input of [
+      "[https://93.184.216.34/](https://93.184.216.34/)",
+      "<https://93.184.216.34/>",
+      "`https://93.184.216.34/`",
+      "93.184.216.34"
+    ]) {
+      const result = await fetchTools().execute({ name: "fetch_url", arguments: { url: input } });
+      expect(result.ok, input).toBe(true);
+    }
+
+    for (const call of fetchSpy.mock.calls) {
+      expect(String(call[0])).toMatch(/^https:\/\/93\.184\.216\.34\//);
+    }
+  });
+
+  it("reports redirects instead of following them", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(null, { status: 302, headers: { location: "https://example.org/moved" } })
+    );
+
+    const result = await fetchTools().execute({ name: "fetch_url", arguments: { url: "https://93.184.216.34/" } });
+
+    expect(result.ok).toBe(true);
+    expect(result.summary).toMatch(/redirect/i);
+    expect(result.content).toContain("https://example.org/moved");
+  });
+
+  it("requires network approval when shell is not trusted (build mode)", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    const approvalHandler = vi.fn(async () => "deny" as const);
+
+    const result = await fetchTools({ allowShell: false, approvalHandler }).execute({
+      name: "fetch_url",
+      arguments: { url: "https://93.184.216.34/" }
+    });
+
+    expect(approvalHandler).toHaveBeenCalledTimes(1);
+    expect(approvalHandler.mock.calls[0][0].permission).toBe("network");
+    expect(result.ok).toBe(false);
+    expect(result.summary).toMatch(/denied by permission policy/i);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("fetches after the network approval is granted", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response("ok", { status: 200, headers: { "content-type": "text/plain" } })
+    );
+    const approvalHandler = vi.fn(async () => "allow_once" as const);
+
+    const result = await fetchTools({ allowShell: false, approvalHandler }).execute({
+      name: "fetch_url",
+      arguments: { url: "https://93.184.216.34/" }
+    });
+
+    expect(approvalHandler).toHaveBeenCalledTimes(1);
+    expect(result.ok).toBe(true);
+  });
+
+  it("denies fetch with no approval handler (plan mode)", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    const result = await fetchTools({ allowShell: false }).execute({
+      name: "fetch_url",
+      arguments: { url: "https://93.184.216.34/" }
+    });
+
+    expect(result.ok).toBe(false);
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 });
 

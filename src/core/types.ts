@@ -70,6 +70,7 @@ export const AGENT_TOOL_NAMES = [
   "read_range",
   "file_info",
   "search_text",
+  "fetch_url",
   "inspect_document",
   "memory_remember",
   "memory_search",
@@ -105,7 +106,7 @@ export type ToolRisk = "low" | "medium" | "high";
 
 export type ToolSideEffect = "none" | "write" | "shell";
 
-export type ToolPermission = "none" | "write" | "shell" | "external_file";
+export type ToolPermission = "none" | "write" | "shell" | "external_file" | "network";
 
 export type ToolCategory = "state" | "read" | "search" | "write" | "shell" | "git" | "test" | "document" | "memory";
 

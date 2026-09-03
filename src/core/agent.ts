@@ -139,6 +139,7 @@ export class AgentRunner {
       {
           role: "system",
         content: buildSystemPrompt(this.tools.root, subagentContext, workspaceSummary, this.options.resumeContext ?? "", {
+          provider: this.options.provider,
           mode: this.options.mode ?? (this.options.allowWrite || this.options.allowShell ? "bypass" : "plan"),
           allowWrite: this.options.allowWrite,
           allowShell: this.options.allowShell,
@@ -736,6 +737,7 @@ function buildSystemPrompt(
   workspaceSummary: string,
   resumeContext: string,
   permissions: {
+    provider: ModelProvider;
     mode: "plan" | "build" | "bypass";
     allowWrite: boolean;
     allowShell: boolean;
@@ -806,6 +808,10 @@ function buildSystemPrompt(
     experimental.allowShellMetacharacters
       ? "Experimental shell metacharacters are enabled: run_shell may use pipes, &&, and ;. Redirects, shell expansion, background jobs, OR chains, and multiline commands still require explicit approval even in bypass."
       : "Experimental shell metacharacters are disabled: run_shell may use simple commands and pipes only.",
+    "You can reach the web with the fetch_url tool. Never claim you cannot access the internet; if you need a specific page, call fetch_url with a public http(s) URL.",
+    providerHasNativeWebSearch(permissions.provider)
+      ? "You are backed by Gemini, which has live web search and grounding. For questions about current events, real-world facts, public package names, or people, answer from your built-in web knowledge instead of refusing. Separate web-sourced claims from verified workspace facts, and use fetch_url when you need the exact contents of a specific page."
+      : "",
     workspaceSummary ? ["", "Workspace context:", workspaceSummary].join("\n") : "",
     resumeContext
       ? [
@@ -843,6 +849,7 @@ function buildSystemPrompt(
     "- read_range: {\"path\":\"src/index.ts\",\"start\":1,\"end\":80}",
     "- file_info: {\"path\":\"src/index.ts\"}",
     "- search_text: {\"query\":\"functionName\"}",
+    "- fetch_url: {\"url\":\"https://example.com/page\",\"max_chars\":20000} to fetch a public web page or HTTP API and read it as text. Keyless and available to every model. Pass a plain URL (no Markdown link syntax). Network access needs approval in build mode and is blocked in plan mode; private/loopback hosts are blocked and redirects are not auto-followed.",
     "- inspect_document: {\"path\":\"docs/spec.pdf\",\"mode\":\"auto\"} for pdf, docx, images, and text/code files. Use mode \"local\" or \"ocr\" only when the user explicitly asks for local text/OCR extraction.",
     ...(experimental.memoryEnabled
       ? [
@@ -876,6 +883,13 @@ function buildSystemPrompt(
     "In final answers, separate verified facts from remaining risks.",
     "Keep tool requests and final answers compact."
   ].join("\n");
+}
+
+function providerHasNativeWebSearch(provider: ModelProvider): boolean {
+  // The Gemini-Wrapper bridges the browser Gemini app, which performs real
+  // grounded web search. The plain Gemini API has no grounding unless tools are
+  // configured, so only the wrapper gets the native web-search claim here.
+  return provider === "gemini-wrapper";
 }
 
 function looksLikeClarification(message: string): boolean {
