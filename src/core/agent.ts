@@ -5,6 +5,7 @@ import { createModelClient } from "./modelClient.js";
 import type { SessionStore } from "./session.js";
 import { formatSubagentContext, runSubagentAdvisors } from "./subagents.js";
 import { MAX_TOOL_CALLS_PER_RESPONSE, type AgentEvent, type AgentTodoItem, type AgentToolName, type AgentWorkState, type ApprovalRequest, type ChatMessage, type ModelChatResult, type ModelClient, type ModelProvider, type PermissionDecision, type ThinkingSetting, type ToolCategory, type ToolResult } from "./types.js";
+import { StreamTimer } from "./stream.js";
 import { estimateTokens } from "./tokenAccounting.js";
 import { getToolSpec, WorkspaceTools } from "./workspace.js";
 
@@ -594,13 +595,14 @@ export class AgentRunner {
 
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       try {
-        return await this.client.chat({
-          model: options.model,
-          messages: options.messages,
-          formatJson: true,
-          thinking: options.thinking,
-          signal: this.options.signal
-        });
+        const attempt = this.streamChat(options);
+        for (;;) {
+          const next = await attempt.next();
+          if (next.done) {
+            return next.value;
+          }
+          yield next.value;
+        }
       } catch (error) {
         lastError = error;
         if (this.options.signal?.aborted || attempt >= maxAttempts || !isRetryableModelError(error)) {
@@ -618,7 +620,102 @@ export class AgentRunner {
 
     throw lastError;
   }
+
+  /**
+   * Bridges the provider's push-based delta callback into this pull-based
+   * generator. Progress events are throttled and coalesced: one per token
+   * would flood the transcript and cost more to render than to generate.
+   */
+  private async *streamChat(options: {
+    model: string;
+    messages: ChatMessage[];
+    thinking: ThinkingSetting | undefined;
+    requestWorkState: AgentWorkState;
+  }): AsyncGenerator<AgentEvent, ModelChatResult> {
+    const timer = new StreamTimer();
+    let pendingThinking = "";
+    let tokens = 0;
+    let wake: (() => void) | null = null;
+    let finished = false;
+
+    const nudge = (): void => {
+      wake?.();
+      wake = null;
+    };
+
+    const chat = this.client
+      .chat({
+        model: options.model,
+        messages: options.messages,
+        formatJson: true,
+        thinking: options.thinking,
+        signal: this.options.signal,
+        onDelta: (delta) => {
+          if (delta.content) {
+            timer.markFirstToken();
+            tokens += estimateTokens(delta.content);
+          }
+          if (delta.thinking) {
+            timer.markFirstToken();
+            pendingThinking += delta.thinking;
+          }
+          nudge();
+        }
+      })
+      .finally(() => {
+        finished = true;
+        nudge();
+      });
+
+    // Surface progress on a fixed cadence rather than per delta, so a fast
+    // model and a slow one produce the same update rate.
+    while (!finished) {
+      await Promise.race([
+        chat.catch(() => undefined),
+        new Promise<void>((resolve) => {
+          wake = resolve;
+          setTimeout(resolve, streamProgressIntervalMs).unref?.();
+        })
+      ]);
+
+      if (finished) {
+        break;
+      }
+
+      if (pendingThinking.trim()) {
+        yield {
+          type: "thinking",
+          message: pendingThinking.trim(),
+          workState: options.requestWorkState
+        };
+        pendingThinking = "";
+      }
+
+      const generating = timer.timeToFirstTokenMs !== null;
+      yield {
+        type: "stream",
+        phase: generating ? "generating" : "prompt",
+        elapsedMs: timer.elapsedMs,
+        tokens,
+        tokensPerSecond: generating && timer.generationMs > 0 ? tokens / (timer.generationMs / 1000) : null,
+        workState: options.requestWorkState
+      };
+    }
+
+    if (pendingThinking.trim()) {
+      yield {
+        type: "thinking",
+        message: pendingThinking.trim(),
+        workState: options.requestWorkState
+      };
+    }
+
+    return await chat;
+  }
 }
+
+/** How often streaming progress is reported, in milliseconds. */
+const streamProgressIntervalMs = 120;
 
 export function recoverMalformedToolResponse(rawContent: string): { action: "tools"; message: string; tool_calls: Array<{ name: "write_file"; arguments: { path: string; content: string } }> } | null {
   const targetPath = readWriteFileToolPath(rawContent);

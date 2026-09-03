@@ -15,6 +15,8 @@ export const symbols = {
   // available" never reads like a destructive-action gate.
   update: "⬆",
   reauth: "↻",
+  // Thinking gets a quieter glyph than the answer it precedes.
+  thinking: "∴",
   info: "ℹ",
   error: "✗",
   final: "✓",
@@ -41,6 +43,8 @@ export function blockSymbol(kind: TranscriptBlockKind): string {
       return symbols.user;
     case "assistant":
       return symbols.assistant;
+    case "thinking":
+      return symbols.thinking;
     case "tool":
       return symbols.tool;
     case "diff":
@@ -63,6 +67,8 @@ export function blockColor(kind: TranscriptBlockKind, danger: boolean): InkColor
       return "white";
     case "assistant":
       return "cyan";
+    case "thinking":
+      return "gray";
     case "tool":
       return danger ? "red" : "green";
     case "diff":

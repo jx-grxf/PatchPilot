@@ -14,6 +14,7 @@ import { composerView, deleteComposerText, insertComposerText } from "./composer
 import { CommandPalette } from "./CommandPalette.js";
 import { estimateCloudEquivalentCost, formatSavedCost } from "./savings.js";
 import { computeExperimentalLayout, windowRows } from "./layout.js";
+import type { StreamProgress } from "../App.js";
 import { symbols, workStateColor } from "./theme.js";
 import { buildShellRows, buildTodoDock, truncate } from "./transcriptRows.js";
 import { hasUltraMode, splitUltraSegments, type UltraMode } from "./ultraModes.js";
@@ -30,6 +31,7 @@ export type ExperimentalShellProps = {
   workState: AgentWorkState;
   status: string;
   isRunning: boolean;
+  streamProgress: StreamProgress | null;
   ultramaxxRun: boolean;
   telemetry: ModelTelemetry | null;
   sessionTelemetry: SessionTelemetry;
@@ -110,6 +112,7 @@ export function ExperimentalShell(props: ExperimentalShellProps): React.ReactEle
       <ShellComposer
         input={props.input}
         isRunning={props.isRunning}
+        streamProgress={props.streamProgress}
         ultramaxxRun={props.ultramaxxRun}
         approvalActive={approvalActive}
         workState={props.workState}
@@ -540,6 +543,7 @@ function ShellReauth(props: { busy: boolean }): React.ReactElement {
 function ShellComposer(props: {
   input: string;
   isRunning: boolean;
+  streamProgress: StreamProgress | null;
   ultramaxxRun: boolean;
   approvalActive: boolean;
   workState: AgentWorkState;
@@ -720,14 +724,37 @@ function ShellComposer(props: {
             {parts.state}
             {parts.detail ? ` · ${parts.detail}` : ""}
           </Text>
-          <Text color="gray">
-            {"  ("}
-            {formatElapsed(elapsedMs)}
-            {" · "}
-            <Text color="cyan">↑ {formatCompactTokens(runInputTokens)}</Text>
-            <Text color="gray"> ↓ {formatCompactTokens(runOutputTokens)} tokens</Text>
-            {")"}
-          </Text>
+          {props.streamProgress ? (
+            // While a call is in flight the live figures are more informative
+            // than session totals, which only update once the call returns.
+            <Text color="gray">
+              {"  ("}
+              {props.streamProgress.phase === "prompt" ? (
+                <Text color="yellow">reading prompt</Text>
+              ) : (
+                <>
+                  <Text color="green">
+                    {props.streamProgress.tokensPerSecond === null
+                      ? "writing"
+                      : `${props.streamProgress.tokensPerSecond.toFixed(1)} tok/s`}
+                  </Text>
+                  <Text color="gray"> · ↓ {formatCompactTokens(props.streamProgress.tokens)}</Text>
+                </>
+              )}
+              {" · "}
+              {formatElapsed(props.streamProgress.elapsedMs)}
+              {")"}
+            </Text>
+          ) : (
+            <Text color="gray">
+              {"  ("}
+              {formatElapsed(elapsedMs)}
+              {" · "}
+              <Text color="cyan">↑ {formatCompactTokens(runInputTokens)}</Text>
+              <Text color="gray"> ↓ {formatCompactTokens(runOutputTokens)} tokens</Text>
+              {")"}
+            </Text>
+          )}
         </Box>,
       );
     } else if (!props.isRunning && props.approvalActive && index === 0) {

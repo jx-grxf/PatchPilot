@@ -4,7 +4,7 @@ export type AgentMode = "plan" | "build" | "bypass";
 
 export type LogTone = "muted" | "normal" | "success" | "warning" | "danger" | "accent";
 
-export type TranscriptBlockKind = "user" | "assistant" | "tool" | "diff" | "approval" | "error" | "final" | "status";
+export type TranscriptBlockKind = "user" | "assistant" | "thinking" | "tool" | "diff" | "approval" | "error" | "final" | "status";
 
 export type LogLine = {
   id: number;

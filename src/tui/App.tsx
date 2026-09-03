@@ -121,6 +121,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   const [verbTick, setVerbTick] = useState(0);
   const [isRunning, setIsRunning] = useState(false);
   const [status, setStatus] = useState("idle");
+  const [streamProgress, setStreamProgress] = useState<StreamProgress | null>(null);
   const [workState, setWorkState] = useState<AgentWorkState>("idle");
   const [pendingApproval, setPendingApproval] = useState<ApprovalRequest | null>(null);
   const [updatePrompt, setUpdatePrompt] = useState<UpdatePromptState | null>(null);
@@ -1318,6 +1319,18 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
             setToolTelemetry((currentTools) => addApprovalTelemetry(currentTools, event.decision));
           }
 
+          if (event.type === "stream") {
+            setStreamProgress({
+              phase: event.phase,
+              elapsedMs: event.elapsedMs,
+              tokens: event.tokens,
+              tokensPerSecond: event.tokensPerSecond
+            });
+            setStatus(eventToStatus(event));
+            continue;
+          }
+
+          setStreamProgress(null);
           setStatus(eventToStatus(event));
           appendLine(eventToLine(event));
         }
@@ -2795,6 +2808,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         workState={workState}
         status={status}
         isRunning={isRunning}
+        streamProgress={streamProgress}
         ultramaxxRun={ultramaxxRun}
         telemetry={telemetry}
         sessionTelemetry={sessionTelemetry}
@@ -3695,6 +3709,46 @@ function formatAttachmentDigestPath(filePath: string): string {
   return JSON.stringify(filePath.split(/[\\/]/).filter(Boolean).at(-1) ?? filePath);
 }
 
+/** Live progress within the current model call, or null when idle. */
+export type StreamProgress = {
+  phase: "prompt" | "generating";
+  elapsedMs: number;
+  tokens: number;
+  tokensPerSecond: number | null;
+};
+
+/**
+ * Prompt evaluation and generation are different waits and deserve different
+ * words: during the first there is nothing to show but elapsed time, during
+ * the second the throughput is the interesting number.
+ */
+export function formatStreamProgress(
+  phase: "prompt" | "generating",
+  elapsedMs: number,
+  tokens: number,
+  tokensPerSecond: number | null
+): string {
+  if (phase === "prompt") {
+    return `reading prompt · ${formatDuration(elapsedMs)}`;
+  }
+
+  const rate = tokensPerSecond === null ? null : `${tokensPerSecond.toFixed(1)} tok/s`;
+  return [`writing · ${tokens} tok`, rate, formatDuration(elapsedMs)].filter(Boolean).join(" · ");
+}
+
+function formatDuration(elapsedMs: number): string {
+  const seconds = elapsedMs / 1000;
+  if (seconds < 10) {
+    return `${seconds.toFixed(1)}s`;
+  }
+
+  if (seconds < 60) {
+    return `${Math.round(seconds)}s`;
+  }
+
+  return `${Math.floor(seconds / 60)}m${String(Math.round(seconds % 60)).padStart(2, "0")}s`;
+}
+
 function randomLegacyVerbIndex(): number {
   return Math.floor(Math.random() * 1_000_000);
 }
@@ -3715,6 +3769,23 @@ function eventToLine(event: AgentEvent): LogLineInput {
         tone: "accent",
         label: "pilot",
         text: event.message,
+        workState: event.workState
+      };
+    case "thinking":
+      return {
+        kind: "thinking",
+        tone: "muted",
+        label: "thinking",
+        text: event.message,
+        workState: event.workState
+      };
+    case "stream":
+      // Handled as live status, never appended; this keeps the switch total.
+      return {
+        kind: "status",
+        tone: "muted",
+        label: event.workState,
+        text: formatStreamProgress(event.phase, event.elapsedMs, event.tokens, event.tokensPerSecond),
         workState: event.workState
       };
     case "subagent":
@@ -3800,6 +3871,14 @@ function previewToolContent(content: string | undefined): string | undefined {
 function eventToStatus(event: AgentEvent): string {
   if (event.type === "status") {
     return event.message;
+  }
+
+  if (event.type === "stream") {
+    return formatStreamProgress(event.phase, event.elapsedMs, event.tokens, event.tokensPerSecond);
+  }
+
+  if (event.type === "thinking") {
+    return "thinking";
   }
 
   if (event.type === "tool") {

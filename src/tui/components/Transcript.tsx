@@ -241,6 +241,8 @@ function markerForBlock(line: LogLine): string {
       return ">";
     case "assistant":
       return "<";
+    case "thinking":
+      return ":";
     case "tool":
       return "#";
     case "diff":
@@ -270,6 +272,8 @@ function colorForBlock(line: LogLine): InkColor {
       return "white";
     case "assistant":
       return "cyan";
+    case "thinking":
+      return "gray";
     case "tool":
       return line.tone === "danger" || line.tone === "warning" ? toneToColor(line.tone) : "green";
     case "diff":

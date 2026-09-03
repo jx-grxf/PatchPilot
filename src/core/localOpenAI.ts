@@ -1,5 +1,6 @@
-import type { ModelChatOptions, ModelChatResult, ModelDescriptor, ModelTelemetry } from "./types.js";
+import type { ModelChatOptions, ModelChatResult, ModelDescriptor, ModelStreamDelta, ModelTelemetry } from "./types.js";
 import { fetchWithTimeout } from "./http.js";
+import { readServerSentJson, StreamTimer } from "./stream.js";
 import { attachTokenCost } from "./tokenAccounting.js";
 
 /**
@@ -18,6 +19,13 @@ export const defaultLocalOpenAIPort = 1234;
 type ChatCompletionResponse = {
   choices?: Array<{
     message?: { content?: string };
+    /** Streaming frames carry a delta instead of a full message. */
+    delta?: {
+      content?: string;
+      /** Servers disagree on the field name for reasoning text. */
+      reasoning_content?: string;
+      reasoning?: string;
+    };
     finish_reason?: string;
   }>;
   usage?: {
@@ -55,14 +63,17 @@ export class LocalOpenAIClient {
   }
 
   async chat(options: ModelChatOptions): Promise<ModelChatResult> {
-    const startedAt = Date.now();
+    const streaming = Boolean(options.onDelta);
+    const timer = new StreamTimer();
     const response = await this.fetchLocal("/chat/completions", {
       method: "POST",
       headers: this.buildHeaders(),
       body: JSON.stringify({
         model: options.model,
         messages: options.messages,
-        stream: false,
+        stream: streaming,
+        // Without this, most servers omit usage entirely from a stream.
+        ...(streaming ? { stream_options: { include_usage: true } } : {}),
         max_tokens: this.runtimeOptions.maxTokens,
         temperature: this.runtimeOptions.temperature,
         response_format: options.formatJson ? { type: "json_object" } : undefined
@@ -70,33 +81,81 @@ export class LocalOpenAIClient {
       signal: options.signal
     });
 
-    const payload = (await readJsonSafely(response)) as ChatCompletionResponse;
     if (!response.ok) {
+      const errorPayload = (await readJsonSafely(response)) as ChatCompletionResponse;
       throw new Error(
-        `Local model server rejected model "${options.model}" at ${this.baseUrl}: HTTP ${response.status}.${formatServerError(payload)}`
+        `Local model server rejected model "${options.model}" at ${this.baseUrl}: HTTP ${response.status}.${formatServerError(errorPayload)}`
       );
     }
+
+    const { payload, content, finishReason } = streaming
+      ? await this.consumeStream(response, options, timer)
+      : await readBufferedResponse(response);
 
     const serverError = formatServerError(payload);
     if (serverError) {
       throw new Error(serverError.trim());
     }
 
-    const choice = payload.choices?.[0];
-    const content = choice?.message?.content?.trim() ?? "";
-    if (isTruncatedFinishReason(choice?.finish_reason)) {
+    if (isTruncatedFinishReason(finishReason)) {
       throw new Error(
         `Local model response for "${options.model}" was truncated by max_tokens (${this.runtimeOptions.maxTokens}).`
       );
     }
-    if (!content) {
+    if (!content.trim()) {
       throw new Error(`Local model server returned an empty response for "${options.model}".`);
     }
 
     return {
-      content,
-      telemetry: toTelemetry(payload, options.model, Date.now() - startedAt)
+      content: content.trim(),
+      telemetry: toTelemetry(payload, options.model, timer.elapsedMs, streaming ? timer.timeToFirstTokenMs : null)
     };
+  }
+
+  /**
+   * SSE frames carry deltas; usage arrives in a final frame with an empty
+   * choices array, so the last payload that reports usage wins.
+   */
+  private async consumeStream(
+    response: Response,
+    options: ModelChatOptions,
+    timer: StreamTimer
+  ): Promise<{ payload: ChatCompletionResponse; content: string; finishReason: string | undefined }> {
+    let content = "";
+    let finishReason: string | undefined;
+    let usagePayload: ChatCompletionResponse = {};
+
+    for await (const frame of readServerSentJson(response, options.signal)) {
+      const payload = frame as ChatCompletionResponse;
+      if (payload.error) {
+        return { payload, content, finishReason };
+      }
+      if (payload.usage) {
+        usagePayload = payload;
+      }
+
+      const choice = payload.choices?.[0];
+      if (choice?.finish_reason) {
+        finishReason = choice.finish_reason;
+      }
+
+      const thinking = choice?.delta?.reasoning_content ?? choice?.delta?.reasoning;
+      const delta: ModelStreamDelta = {};
+      if (choice?.delta?.content) {
+        content += choice.delta.content;
+        delta.content = choice.delta.content;
+      }
+      if (thinking) {
+        delta.thinking = thinking;
+      }
+
+      if (delta.content || delta.thinking) {
+        timer.markFirstToken();
+        emitDelta(options.onDelta, delta);
+      }
+    }
+
+    return { payload: usagePayload, content, finishReason };
   }
 
   async listModels(): Promise<string[]> {
@@ -166,6 +225,23 @@ export class LocalOpenAIClient {
     } catch (error) {
       throw new Error(formatLocalConnectionError(this.baseUrl, error));
     }
+  }
+}
+
+async function readBufferedResponse(
+  response: Response
+): Promise<{ payload: ChatCompletionResponse; content: string; finishReason: string | undefined }> {
+  const payload = (await readJsonSafely(response)) as ChatCompletionResponse;
+  const choice = payload.choices?.[0];
+  return { payload, content: choice?.message?.content ?? "", finishReason: choice?.finish_reason };
+}
+
+/** A renderer that throws must never take the model call down with it. */
+function emitDelta(onDelta: ModelChatOptions["onDelta"], delta: ModelStreamDelta): void {
+  try {
+    onDelta?.(delta);
+  } catch {
+    // Rendering is best-effort; the response still matters.
   }
 }
 
@@ -250,6 +326,11 @@ function readTemperature(value: string | undefined, fallback: number): number {
   return Number.isFinite(parsedValue) && parsedValue >= 0 ? parsedValue : fallback;
 }
 
+function readTokensPerSecond(responseTokens: number, elapsedMs: number, timeToFirstTokenMs: number | null): number | null {
+  const generationMs = timeToFirstTokenMs === null ? elapsedMs : elapsedMs - timeToFirstTokenMs;
+  return responseTokens > 0 && generationMs > 0 ? responseTokens / (generationMs / 1000) : null;
+}
+
 function readNullableFiniteNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
@@ -264,7 +345,12 @@ function formatLocalConnectionError(baseUrl: string, error: unknown): string {
  * client-side. That includes queueing and transport, which makes it slightly
  * pessimistic next to Ollama's `eval_duration`.
  */
-function toTelemetry(payload: ChatCompletionResponse, model: string, elapsedMs: number): ModelTelemetry {
+function toTelemetry(
+  payload: ChatCompletionResponse,
+  model: string,
+  elapsedMs: number,
+  timeToFirstTokenMs: number | null
+): ModelTelemetry {
   const promptTokens = payload.usage?.prompt_tokens ?? 0;
   const responseTokens = payload.usage?.completion_tokens ?? 0;
   const cachedPromptTokens = payload.usage?.prompt_tokens_details?.cached_tokens ?? 0;
@@ -276,8 +362,11 @@ function toTelemetry(payload: ChatCompletionResponse, model: string, elapsedMs: 
       cacheWriteTokens: 0,
       responseTokens,
       totalTokens: payload.usage?.total_tokens ?? promptTokens + responseTokens,
-      evalTokensPerSecond: responseTokens > 0 && elapsedMs > 0 ? responseTokens / (elapsedMs / 1000) : null,
-      promptDurationMs: 0,
+      // Measure generation against the post-TTFT window when streaming, so the
+      // figure reflects decode speed rather than prompt evaluation.
+      evalTokensPerSecond: readTokensPerSecond(responseTokens, elapsedMs, timeToFirstTokenMs),
+      timeToFirstTokenMs,
+      promptDurationMs: timeToFirstTokenMs ?? 0,
       responseDurationMs: elapsedMs,
       totalDurationMs: elapsedMs,
       tokenSource: payload.usage ? "provider" : "estimated"

@@ -9,12 +9,26 @@ export type ModelProvider = "ollama" | "local-openai";
 /** Thinking is either left to the model ("auto") or forced on/off. */
 export type ThinkingSetting = "auto" | "on" | "off";
 
+/** Incremental output from a streaming response. */
+export type ModelStreamDelta = {
+  /** Visible assistant output. */
+  content?: string;
+  /** Reasoning text, where the runtime reports it separately from content. */
+  thinking?: string;
+};
+
 export type ModelChatOptions = {
   model: string;
   messages: ChatMessage[];
   formatJson?: boolean;
   thinking?: ThinkingSetting;
   signal?: AbortSignal;
+  /**
+   * Called as tokens arrive. Providing it enables streaming; omitting it
+   * requests a single buffered response. The callback must not throw — a
+   * failing renderer should never abort a model call.
+   */
+  onDelta?: (delta: ModelStreamDelta) => void;
 };
 
 export type ModelFileAnalysisOptions = {
@@ -165,6 +179,27 @@ export type AgentEvent =
     }
   | {
       type: "assistant";
+      message: string;
+      workState: AgentWorkState;
+    }
+  /**
+   * Live progress within a single model call. `prompt` covers the wait before
+   * the first token — on local hardware that is prompt evaluation, and it is
+   * most of the perceived latency on a long context. `generating` starts at
+   * the first token and carries a running throughput figure.
+   */
+  | {
+      type: "stream";
+      phase: "prompt" | "generating";
+      elapsedMs: number;
+      /** Tokens emitted so far; only meaningful while generating. */
+      tokens: number;
+      tokensPerSecond: number | null;
+      workState: AgentWorkState;
+    }
+  /** Reasoning text, where the runtime reports it apart from the answer. */
+  | {
+      type: "thinking";
       message: string;
       workState: AgentWorkState;
     }
@@ -322,6 +357,12 @@ export type ModelTelemetry = {
   responseTokens: number;
   totalTokens: number;
   evalTokensPerSecond: number | null;
+  /**
+   * Time until the first token arrived. Null for non-streaming responses.
+   * Kept separate from promptDurationMs because on local hardware prompt
+   * evaluation is what a user actually waits through.
+   */
+  timeToFirstTokenMs: number | null;
   promptDurationMs: number;
   responseDurationMs: number;
   totalDurationMs: number;

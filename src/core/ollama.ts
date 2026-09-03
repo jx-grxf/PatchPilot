@@ -1,5 +1,6 @@
-import type { ModelChatOptions, ModelChatResult, ModelTelemetry } from "./types.js";
+import type { ModelChatOptions, ModelChatResult, ModelStreamDelta, ModelTelemetry } from "./types.js";
 import { fetchWithTimeout } from "./http.js";
+import { readNewlineDelimitedJson, StreamTimer } from "./stream.js";
 import { getOllamaThinkValue } from "./reasoning.js";
 import { attachTokenCost } from "./tokenAccounting.js";
 
@@ -10,7 +11,9 @@ export const defaultOllamaPort = 11434;
 type OllamaChatResponse = {
   message?: {
     content?: string;
+    thinking?: string;
   };
+  done?: boolean;
   error?: string;
   done_reason?: string;
   total_duration?: number;
@@ -66,6 +69,8 @@ export class OllamaClient {
   }
 
   async chat(options: ModelChatOptions): Promise<ModelChatResult> {
+    const streaming = Boolean(options.onDelta);
+    const timer = new StreamTimer();
     const response = await this.fetchOllama("/api/chat", {
       method: "POST",
       headers: {
@@ -74,7 +79,7 @@ export class OllamaClient {
       body: JSON.stringify({
         model: options.model,
         messages: options.messages,
-        stream: false,
+        stream: streaming,
         keep_alive: this.runtimeOptions.keepAlive,
         think: getOllamaThinkValue(options.model, options.thinking),
         options: {
@@ -87,28 +92,71 @@ export class OllamaClient {
       signal: options.signal
     });
 
-    const payload = (await readJsonSafely(response)) as OllamaChatResponse;
     if (!response.ok) {
-      const reason = payload.error ? ` ${payload.error}` : "";
+      const errorPayload = (await readJsonSafely(response)) as OllamaChatResponse;
+      const reason = errorPayload.error ? ` ${errorPayload.error}` : "";
       throw new Error(`Ollama chat failed for model "${options.model}" at ${this.baseUrl}: HTTP ${response.status}.${reason}`);
     }
+
+    const { payload, content } = streaming
+      ? await this.consumeStream(response, options, timer)
+      : await readBufferedResponse(response);
 
     if (payload.error) {
       throw new Error(payload.error);
     }
 
-    const content = payload.message?.content?.trim() ?? "";
     if (isTruncatedDoneReason(payload.done_reason)) {
       throw new Error(`Ollama response for model "${options.model}" was truncated by num_predict (${this.runtimeOptions.numPredict}).`);
     }
-    if (!content) {
+    if (!content.trim()) {
       throw new Error(`Ollama returned an empty response for model "${options.model}".`);
     }
 
     return {
-      content,
-      telemetry: toTelemetry(payload, options.model)
+      content: content.trim(),
+      telemetry: toTelemetry(payload, options.model, streaming ? timer.timeToFirstTokenMs : null)
     };
+  }
+
+  /**
+   * Ollama emits one JSON object per chunk and repeats the cumulative counters
+   * on the final `done` object, so the last payload carries the telemetry.
+   */
+  private async consumeStream(
+    response: Response,
+    options: ModelChatOptions,
+    timer: StreamTimer
+  ): Promise<{ payload: OllamaChatResponse; content: string }> {
+    let content = "";
+    let finalPayload: OllamaChatResponse = {};
+
+    for await (const chunk of readNewlineDelimitedJson(response, options.signal)) {
+      const payload = chunk as OllamaChatResponse;
+      if (payload.error) {
+        return { payload, content };
+      }
+
+      const delta: ModelStreamDelta = {};
+      if (payload.message?.content) {
+        content += payload.message.content;
+        delta.content = payload.message.content;
+      }
+      if (payload.message?.thinking) {
+        delta.thinking = payload.message.thinking;
+      }
+
+      if (delta.content || delta.thinking) {
+        timer.markFirstToken();
+        emitDelta(options.onDelta, delta);
+      }
+
+      if (payload.done) {
+        finalPayload = payload;
+      }
+    }
+
+    return { payload: finalPayload, content };
   }
 
   async listModels(): Promise<string[]> {
@@ -182,6 +230,20 @@ export class OllamaClient {
   }
 }
 
+async function readBufferedResponse(response: Response): Promise<{ payload: OllamaChatResponse; content: string }> {
+  const payload = (await readJsonSafely(response)) as OllamaChatResponse;
+  return { payload, content: payload.message?.content ?? "" };
+}
+
+/** A renderer that throws must never take the model call down with it. */
+function emitDelta(onDelta: ModelChatOptions["onDelta"], delta: ModelStreamDelta): void {
+  try {
+    onDelta?.(delta);
+  } catch {
+    // Rendering is best-effort; the response still matters.
+  }
+}
+
 async function readJsonSafely(response: Response): Promise<unknown> {
   try {
     return await response.json();
@@ -251,7 +313,7 @@ function formatOllamaConnectionError(baseUrl: string, error: unknown): string {
   return `Cannot reach Ollama at ${baseUrl}. Start Ollama, or run "ollama serve", then try /doctor.${suffix}`;
 }
 
-function toTelemetry(payload: OllamaChatResponse, model: string): ModelTelemetry {
+function toTelemetry(payload: OllamaChatResponse, model: string, timeToFirstTokenMs: number | null): ModelTelemetry {
   const promptTokens = payload.prompt_eval_count ?? 0;
   const responseTokens = payload.eval_count ?? 0;
   const responseDurationMs = nanosToMillis(payload.eval_duration ?? 0);
@@ -265,6 +327,7 @@ function toTelemetry(payload: OllamaChatResponse, model: string): ModelTelemetry
       totalTokens: promptTokens + responseTokens,
       evalTokensPerSecond:
         responseTokens > 0 && responseDurationMs > 0 ? responseTokens / (responseDurationMs / 1000) : null,
+      timeToFirstTokenMs,
       promptDurationMs: nanosToMillis(payload.prompt_eval_duration ?? 0),
       responseDurationMs,
       totalDurationMs: nanosToMillis(payload.total_duration ?? 0),
