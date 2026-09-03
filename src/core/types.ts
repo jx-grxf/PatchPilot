@@ -17,10 +17,27 @@ export type ModelStreamDelta = {
   thinking?: string;
 };
 
+/** A tool advertised to the runtime, in the shape both providers accept. */
+export type ProviderTool = {
+  type: "function";
+  function: { name: string; description: string; parameters: unknown };
+};
+
+/** A tool call as the runtime reported it, before any repair. */
+export type RawToolCall = {
+  name: unknown;
+  arguments: unknown;
+};
+
 export type ModelChatOptions = {
   model: string;
   messages: ChatMessage[];
   formatJson?: boolean;
+  /**
+   * Tools to advertise. Passing these enables native tool calling and, where
+   * the runtime supports it, grammar-constrained decoding against each schema.
+   */
+  tools?: ProviderTool[];
   thinking?: ThinkingSetting;
   signal?: AbortSignal;
   /**
@@ -40,6 +57,8 @@ export type ModelFileAnalysisOptions = {
 
 export type ModelChatResult = {
   content: string;
+  /** Native tool calls, when the runtime emitted any. */
+  toolCalls?: RawToolCall[];
   telemetry: ModelTelemetry;
   /** Provider-side notice worth surfacing (e.g. model fallback, cookie retry). */
   warning?: string;

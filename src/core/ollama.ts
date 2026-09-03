@@ -1,4 +1,4 @@
-import type { ModelChatOptions, ModelChatResult, ModelStreamDelta, ModelTelemetry } from "./types.js";
+import type { ModelChatOptions, ModelChatResult, ModelStreamDelta, ModelTelemetry, RawToolCall } from "./types.js";
 import { fetchWithTimeout } from "./http.js";
 import { readNewlineDelimitedJson, StreamTimer } from "./stream.js";
 import { getOllamaThinkValue } from "./reasoning.js";
@@ -12,6 +12,7 @@ type OllamaChatResponse = {
   message?: {
     content?: string;
     thinking?: string;
+    tool_calls?: Array<{ function?: { name?: string; arguments?: unknown } }>;
   };
   done?: boolean;
   error?: string;
@@ -87,7 +88,13 @@ export class OllamaClient {
           num_predict: this.runtimeOptions.numPredict,
           temperature: this.runtimeOptions.temperature
         },
-        format: options.formatJson ? "json" : undefined
+        // Advertising tools switches Ollama to grammar-constrained decoding
+        // against each schema, which is what makes malformed calls impossible
+        // rather than merely repairable.
+        tools: options.tools,
+        // json format and tools are mutually exclusive: asking for both makes
+        // the model emit a JSON blob describing a call instead of calling.
+        format: options.tools ? undefined : options.formatJson ? "json" : undefined
       }),
       signal: options.signal
     });
@@ -109,12 +116,15 @@ export class OllamaClient {
     if (isTruncatedDoneReason(payload.done_reason)) {
       throw new Error(`Ollama response for model "${options.model}" was truncated by num_predict (${this.runtimeOptions.numPredict}).`);
     }
-    if (!content.trim()) {
+    // A tool call with no prose is a complete, valid response.
+    if (!content.trim() && readToolCalls(payload).length === 0) {
       throw new Error(`Ollama returned an empty response for model "${options.model}".`);
     }
 
+    const toolCalls = readToolCalls(payload);
     return {
       content: content.trim(),
+      ...(toolCalls.length > 0 ? { toolCalls } : {}),
       telemetry: toTelemetry(payload, options.model, streaming ? timer.timeToFirstTokenMs : null)
     };
   }
@@ -130,6 +140,7 @@ export class OllamaClient {
   ): Promise<{ payload: OllamaChatResponse; content: string }> {
     let content = "";
     let finalPayload: OllamaChatResponse = {};
+    const streamedToolCalls: NonNullable<NonNullable<OllamaChatResponse["message"]>["tool_calls"]> = [];
 
     for await (const chunk of readNewlineDelimitedJson(response, options.signal)) {
       const payload = chunk as OllamaChatResponse;
@@ -151,9 +162,17 @@ export class OllamaClient {
         emitDelta(options.onDelta, delta);
       }
 
+      if (payload.message?.tool_calls?.length) {
+        streamedToolCalls.push(...payload.message.tool_calls);
+      }
+
       if (payload.done) {
         finalPayload = payload;
       }
+    }
+
+    if (streamedToolCalls.length > 0) {
+      finalPayload = { ...finalPayload, message: { ...finalPayload.message, tool_calls: streamedToolCalls } };
     }
 
     return { payload: finalPayload, content };
@@ -228,6 +247,13 @@ export class OllamaClient {
       throw new Error(formatOllamaConnectionError(this.baseUrl, error));
     }
   }
+}
+
+function readToolCalls(payload: OllamaChatResponse): RawToolCall[] {
+  return (payload.message?.tool_calls ?? []).map((call) => ({
+    name: call.function?.name,
+    arguments: call.function?.arguments
+  }));
 }
 
 async function readBufferedResponse(response: Response): Promise<{ payload: OllamaChatResponse; content: string }> {

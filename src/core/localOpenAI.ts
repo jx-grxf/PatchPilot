@@ -1,4 +1,4 @@
-import type { ModelChatOptions, ModelChatResult, ModelDescriptor, ModelStreamDelta, ModelTelemetry } from "./types.js";
+import type { ModelChatOptions, ModelChatResult, ModelDescriptor, ModelStreamDelta, ModelTelemetry, RawToolCall } from "./types.js";
 import { fetchWithTimeout } from "./http.js";
 import { readServerSentJson, StreamTimer } from "./stream.js";
 import { attachTokenCost } from "./tokenAccounting.js";
@@ -18,13 +18,14 @@ export const defaultLocalOpenAIPort = 1234;
 
 type ChatCompletionResponse = {
   choices?: Array<{
-    message?: { content?: string };
+    message?: { content?: string; tool_calls?: ToolCallFrame[] };
     /** Streaming frames carry a delta instead of a full message. */
     delta?: {
       content?: string;
       /** Servers disagree on the field name for reasoning text. */
       reasoning_content?: string;
       reasoning?: string;
+      tool_calls?: ToolCallFrame[];
     };
     finish_reason?: string;
   }>;
@@ -35,6 +36,12 @@ type ChatCompletionResponse = {
     prompt_tokens_details?: { cached_tokens?: number };
   };
   error?: { message?: string } | string;
+};
+
+/** Streamed tool calls arrive in fragments keyed by index. */
+type ToolCallFrame = {
+  index?: number;
+  function?: { name?: string; arguments?: string };
 };
 
 type ModelsResponse = {
@@ -72,11 +79,14 @@ export class LocalOpenAIClient {
         model: options.model,
         messages: options.messages,
         stream: streaming,
+        tools: options.tools,
         // Without this, most servers omit usage entirely from a stream.
         ...(streaming ? { stream_options: { include_usage: true } } : {}),
         max_tokens: this.runtimeOptions.maxTokens,
         temperature: this.runtimeOptions.temperature,
-        response_format: options.formatJson ? { type: "json_object" } : undefined
+        // Requesting a JSON object alongside tools makes most servers describe
+        // a call in prose instead of emitting one.
+        response_format: options.tools ? undefined : options.formatJson ? { type: "json_object" } : undefined
       }),
       signal: options.signal
     });
@@ -88,7 +98,7 @@ export class LocalOpenAIClient {
       );
     }
 
-    const { payload, content, finishReason } = streaming
+    const { payload, content, finishReason, toolCalls } = streaming
       ? await this.consumeStream(response, options, timer)
       : await readBufferedResponse(response);
 
@@ -102,12 +112,14 @@ export class LocalOpenAIClient {
         `Local model response for "${options.model}" was truncated by max_tokens (${this.runtimeOptions.maxTokens}).`
       );
     }
-    if (!content.trim()) {
+    // A tool call with no prose is a complete, valid response.
+    if (!content.trim() && toolCalls.length === 0) {
       throw new Error(`Local model server returned an empty response for "${options.model}".`);
     }
 
     return {
       content: content.trim(),
+      ...(toolCalls.length > 0 ? { toolCalls } : {}),
       telemetry: toTelemetry(payload, options.model, timer.elapsedMs, streaming ? timer.timeToFirstTokenMs : null)
     };
   }
@@ -120,15 +132,18 @@ export class LocalOpenAIClient {
     response: Response,
     options: ModelChatOptions,
     timer: StreamTimer
-  ): Promise<{ payload: ChatCompletionResponse; content: string; finishReason: string | undefined }> {
+  ): Promise<{ payload: ChatCompletionResponse; content: string; finishReason: string | undefined; toolCalls: RawToolCall[] }> {
     let content = "";
     let finishReason: string | undefined;
     let usagePayload: ChatCompletionResponse = {};
+    // Streamed tool calls arrive as fragments; the name lands in the first
+    // frame and the argument JSON accumulates across later ones.
+    const partialCalls = new Map<number, { name: string; arguments: string }>();
 
     for await (const frame of readServerSentJson(response, options.signal)) {
       const payload = frame as ChatCompletionResponse;
       if (payload.error) {
-        return { payload, content, finishReason };
+        return { payload, content, finishReason, toolCalls: assembleToolCalls(partialCalls) };
       }
       if (payload.usage) {
         usagePayload = payload;
@@ -137,6 +152,15 @@ export class LocalOpenAIClient {
       const choice = payload.choices?.[0];
       if (choice?.finish_reason) {
         finishReason = choice.finish_reason;
+      }
+
+      for (const [position, fragment] of (choice?.delta?.tool_calls ?? []).entries()) {
+        const index = fragment.index ?? position;
+        const existing = partialCalls.get(index) ?? { name: "", arguments: "" };
+        partialCalls.set(index, {
+          name: fragment.function?.name ?? existing.name,
+          arguments: existing.arguments + (fragment.function?.arguments ?? "")
+        });
       }
 
       const thinking = choice?.delta?.reasoning_content ?? choice?.delta?.reasoning;
@@ -155,7 +179,7 @@ export class LocalOpenAIClient {
       }
     }
 
-    return { payload: usagePayload, content, finishReason };
+    return { payload: usagePayload, content, finishReason, toolCalls: assembleToolCalls(partialCalls) };
   }
 
   async listModels(): Promise<string[]> {
@@ -230,10 +254,26 @@ export class LocalOpenAIClient {
 
 async function readBufferedResponse(
   response: Response
-): Promise<{ payload: ChatCompletionResponse; content: string; finishReason: string | undefined }> {
+): Promise<{ payload: ChatCompletionResponse; content: string; finishReason: string | undefined; toolCalls: RawToolCall[] }> {
   const payload = (await readJsonSafely(response)) as ChatCompletionResponse;
   const choice = payload.choices?.[0];
-  return { payload, content: choice?.message?.content ?? "", finishReason: choice?.finish_reason };
+  return {
+    payload,
+    content: choice?.message?.content ?? "",
+    finishReason: choice?.finish_reason,
+    toolCalls: (choice?.message?.tool_calls ?? []).map((call) => ({
+      name: call.function?.name,
+      arguments: call.function?.arguments
+    }))
+  };
+}
+
+/** Arguments stay strings here; the repair ladder parses and validates them. */
+function assembleToolCalls(partial: Map<number, { name: string; arguments: string }>): RawToolCall[] {
+  return [...partial.entries()]
+    .sort(([left], [right]) => left - right)
+    .filter(([, call]) => call.name)
+    .map(([, call]) => ({ name: call.name, arguments: call.arguments }));
 }
 
 /** A renderer that throws must never take the model call down with it. */
