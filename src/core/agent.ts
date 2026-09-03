@@ -694,13 +694,16 @@ export class AgentRunner {
         break;
       }
 
-      if (pendingThinking.trim()) {
+      // Reasoning arrives token by token. Flushing on every tick would emit
+      // one transcript line per word, so it is buffered into readable blocks.
+      if (pendingThinking.length >= thinkingFlushChars) {
+        const boundary = lastSentenceBoundary(pendingThinking);
         yield {
           type: "thinking",
-          message: pendingThinking.trim(),
+          message: pendingThinking.slice(0, boundary).trim(),
           workState: options.requestWorkState
         };
-        pendingThinking = "";
+        pendingThinking = pendingThinking.slice(boundary);
       }
 
       const generating = timer.timeToFirstTokenMs !== null;
@@ -728,6 +731,15 @@ export class AgentRunner {
 
 /** How often streaming progress is reported, in milliseconds. */
 const streamProgressIntervalMs = 120;
+
+/** Reasoning is buffered to at least this many characters before it is shown. */
+const thinkingFlushChars = 280;
+
+/** Prefers to break reasoning at a sentence end rather than mid-word. */
+function lastSentenceBoundary(value: string): number {
+  const match = value.slice(0, thinkingFlushChars * 2).match(/^[\s\S]*[.!?\n]\s/);
+  return match ? match[0].length : value.length;
+}
 
 export function recoverMalformedToolResponse(rawContent: string): { action: "tools"; message: string; tool_calls: Array<{ name: "write_file"; arguments: { path: string; content: string } }> } | null {
   const targetPath = readWriteFileToolPath(rawContent);

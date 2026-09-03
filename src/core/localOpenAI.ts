@@ -65,6 +65,8 @@ type LocalOpenAIRuntimeOptions = {
 export class LocalOpenAIClient {
   private readonly baseUrl: string;
   private readonly runtimeOptions: LocalOpenAIRuntimeOptions;
+  /** Cleared for the process once a server rejects response_format. */
+  private jsonFormatSupported = true;
 
   constructor(baseUrl = defaultLocalOpenAIUrl, runtimeOptions = readLocalOpenAIRuntimeOptions()) {
     this.baseUrl = normalizeLocalOpenAIBaseUrl(baseUrl);
@@ -72,6 +74,23 @@ export class LocalOpenAIClient {
   }
 
   async chat(options: ModelChatOptions): Promise<ModelChatResult> {
+    try {
+      return await this.requestChat(options, this.jsonFormatSupported);
+    } catch (error) {
+      // Servers disagree on response_format: OpenAI accepts json_object, LM
+      // Studio accepts only json_schema or text. Rather than hard-coding which
+      // is which, drop the constraint on rejection and let the repair ladder
+      // handle the looser output. The answer matters more than the envelope.
+      if (this.jsonFormatSupported && isResponseFormatRejection(error)) {
+        this.jsonFormatSupported = false;
+        return await this.requestChat(options, false);
+      }
+
+      throw error;
+    }
+  }
+
+  private async requestChat(options: ModelChatOptions, allowJsonFormat: boolean): Promise<ModelChatResult> {
     const streaming = Boolean(options.onDelta);
     const timer = new StreamTimer();
     const response = await this.fetchLocal("/chat/completions", {
@@ -88,7 +107,7 @@ export class LocalOpenAIClient {
         temperature: this.runtimeOptions.temperature,
         // Requesting a JSON object alongside tools makes most servers describe
         // a call in prose instead of emitting one.
-        response_format: options.tools ? undefined : options.formatJson ? { type: "json_object" } : undefined
+        response_format: options.tools || !options.formatJson || !allowJsonFormat ? undefined : { type: "json_object" }
       }),
       signal: options.signal
     });
@@ -293,6 +312,11 @@ function describeModelSubstitution(requested: string, served: string | undefined
   }
 
   return `Requested "${requested}" but the server answered with "${served}". Results describe ${served}, not the model you selected.`;
+}
+
+/** A 400 naming response_format means the server wants a different shape. */
+function isResponseFormatRejection(error: unknown): boolean {
+  return error instanceof Error && /response_format/i.test(error.message);
 }
 
 function normalizeModelId(value: string): string {
