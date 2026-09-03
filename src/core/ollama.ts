@@ -9,6 +9,8 @@ export const defaultOllamaUrl = "http://127.0.0.1:11434";
 export const defaultOllamaPort = 11434;
 
 type OllamaChatResponse = {
+  /** What the server actually ran, which is not always what was requested. */
+  model?: string;
   message?: {
     content?: string;
     thinking?: string;
@@ -122,9 +124,14 @@ export class OllamaClient {
     }
 
     const toolCalls = readToolCalls(payload);
+    const substitution =
+      payload.model && payload.model.trim().toLowerCase() !== options.model.trim().toLowerCase()
+        ? `Requested "${options.model}" but Ollama answered with "${payload.model}".`
+        : null;
     return {
       content: content.trim(),
       ...(toolCalls.length > 0 ? { toolCalls } : {}),
+      ...(substitution ? { warning: substitution } : {}),
       telemetry: toTelemetry(payload, options.model, streaming ? timer.timeToFirstTokenMs : null)
     };
   }

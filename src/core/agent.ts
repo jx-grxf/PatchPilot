@@ -6,6 +6,7 @@ import type { SessionStore } from "./session.js";
 import { formatSubagentContext, runSubagentAdvisors } from "./subagents.js";
 import { MAX_TOOL_CALLS_PER_RESPONSE, type AgentEvent, type AgentTodoItem, type AgentToolName, type AgentWorkState, type ApprovalRequest, type ChatMessage, type ModelChatResult, type ModelClient, type ModelProvider, type PermissionDecision, type ThinkingSetting, type ToolCategory, type ToolResult } from "./types.js";
 import { StreamTimer } from "./stream.js";
+import { pruneToolResults } from "./contextWindow.js";
 import { estimateTokens } from "./tokenAccounting.js";
 import { getToolSpec, WorkspaceTools } from "./workspace.js";
 
@@ -540,7 +541,18 @@ export class AgentRunner {
         role: "user",
         content: formatToolResultsForPrompt(toolResults)
       });
-      compactTranscript(messages);
+      // Prune old tool output before anything else: it is what actually
+      // floods a small window, and it is the cheapest thing to discard.
+      const pruned = pruneToolResults(messages);
+      if (pruned.prunedCount > 0) {
+        messages.length = 0;
+        messages.push(...pruned.messages);
+        yield {
+          type: "status",
+          message: `pruned ${pruned.prunedCount} older tool result${pruned.prunedCount === 1 ? "" : "s"} (~${pruned.prunedTokens} tokens)`,
+          workState: "verifying"
+        };
+      }
 
       stepIndex += 1;
       if (this.options.shouldStopAfterStep?.()) {

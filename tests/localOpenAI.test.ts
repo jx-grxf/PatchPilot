@@ -169,6 +169,52 @@ describe("LocalOpenAIClient streaming", () => {
   });
 });
 
+describe("LocalOpenAIClient model substitution", () => {
+  it("warns when the server answers with a different model than requested", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(
+      async () =>
+        new Response(JSON.stringify({ model: "prism-ml/bonsai-27b", choices: [{ message: { content: "hi" } }] }), {
+          status: 200
+        })
+    );
+
+    const result = await new LocalOpenAIClient().chat({
+      model: "text-embedding-nomic-embed-text-v1.5",
+      messages: [{ role: "user", content: "hi" }]
+    });
+
+    expect(result.warning).toContain("prism-ml/bonsai-27b");
+    expect(result.warning).toContain("not the model you selected");
+  });
+
+  it("stays quiet when the server echoes the requested model", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(
+      async () => new Response(JSON.stringify({ model: "Qwen3-8B", choices: [{ message: { content: "hi" } }] }), { status: 200 })
+    );
+
+    const result = await new LocalOpenAIClient().chat({
+      model: "qwen3-8b",
+      messages: [{ role: "user", content: "hi" }]
+    });
+
+    expect(result.warning).toBeUndefined();
+  });
+
+  it("catches a substitution reported mid-stream", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      sse([{ model: "other-model", choices: [{ delta: { content: "hi" } }] }])
+    );
+
+    const result = await new LocalOpenAIClient().chat({
+      model: "asked-for",
+      messages: [{ role: "user", content: "hi" }],
+      onDelta: () => undefined
+    });
+
+    expect(result.warning).toContain("other-model");
+  });
+});
+
 describe("LocalOpenAIClient model discovery", () => {
   it("marks unloaded models and carries the advertised context window", async () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(

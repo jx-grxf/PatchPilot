@@ -17,6 +17,8 @@ export const defaultLocalOpenAIUrl = "http://127.0.0.1:1234/v1";
 export const defaultLocalOpenAIPort = 1234;
 
 type ChatCompletionResponse = {
+  /** What the server actually ran, which is not always what was requested. */
+  model?: string;
   choices?: Array<{
     message?: { content?: string; tool_calls?: ToolCallFrame[] };
     /** Streaming frames carry a delta instead of a full message. */
@@ -117,9 +119,11 @@ export class LocalOpenAIClient {
       throw new Error(`Local model server returned an empty response for "${options.model}".`);
     }
 
+    const substitution = describeModelSubstitution(options.model, payload.model);
     return {
       content: content.trim(),
       ...(toolCalls.length > 0 ? { toolCalls } : {}),
+      ...(substitution ? { warning: substitution } : {}),
       telemetry: toTelemetry(payload, options.model, timer.elapsedMs, streaming ? timer.timeToFirstTokenMs : null)
     };
   }
@@ -136,6 +140,7 @@ export class LocalOpenAIClient {
     let content = "";
     let finishReason: string | undefined;
     let usagePayload: ChatCompletionResponse = {};
+    let servedModel: string | undefined;
     // Streamed tool calls arrive as fragments; the name lands in the first
     // frame and the argument JSON accumulates across later ones.
     const partialCalls = new Map<number, { name: string; arguments: string }>();
@@ -148,6 +153,7 @@ export class LocalOpenAIClient {
       if (payload.usage) {
         usagePayload = payload;
       }
+      servedModel ??= payload.model;
 
       const choice = payload.choices?.[0];
       if (choice?.finish_reason) {
@@ -179,7 +185,12 @@ export class LocalOpenAIClient {
       }
     }
 
-    return { payload: usagePayload, content, finishReason, toolCalls: assembleToolCalls(partialCalls) };
+    return {
+      payload: { ...usagePayload, model: usagePayload.model ?? servedModel },
+      content,
+      finishReason,
+      toolCalls: assembleToolCalls(partialCalls)
+    };
   }
 
   async listModels(): Promise<string[]> {
@@ -266,6 +277,26 @@ async function readBufferedResponse(
       arguments: call.function?.arguments
     }))
   };
+}
+
+/**
+ * Servers may quietly answer with a model other than the one requested — LM
+ * Studio does this when just-in-time loading cannot serve the asked-for id,
+ * including routing a chat request at an embedding model to a chat model. The
+ * answer is then about a different model than the caller believes, which
+ * silently invalidates capability probes and per-model tuning, so it is
+ * surfaced rather than ignored.
+ */
+function describeModelSubstitution(requested: string, served: string | undefined): string | null {
+  if (!served || normalizeModelId(served) === normalizeModelId(requested)) {
+    return null;
+  }
+
+  return `Requested "${requested}" but the server answered with "${served}". Results describe ${served}, not the model you selected.`;
+}
+
+function normalizeModelId(value: string): string {
+  return value.trim().toLowerCase();
 }
 
 /** Arguments stay strings here; the repair ladder parses and validates them. */
