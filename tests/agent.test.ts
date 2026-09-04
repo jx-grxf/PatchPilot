@@ -225,3 +225,21 @@ describe("final message unwrapping", () => {
     expect(readFinalMessage('{"action":"final"}')).toBe("Done.");
   });
 });
+
+describe("todo item shapes", () => {
+  it("accepts the title key the tool schema asks for", () => {
+    const items = normalizeTodoItems({ items: [{ title: "Read the parser", status: "in_progress" }] });
+    expect(items).toEqual([{ id: "read-the-parser", content: "Read the parser", status: "in_progress" }]);
+  });
+
+  it("still accepts the shapes models reach for unprompted", () => {
+    for (const key of ["content", "text", "task", "description"]) {
+      const items = normalizeTodoItems({ items: [{ [key]: "Do the thing", status: "pending" }] });
+      expect(items[0]?.content).toBe("Do the thing");
+    }
+  });
+
+  it("drops items with no usable text rather than showing a blank row", () => {
+    expect(normalizeTodoItems({ items: [{ status: "pending" }, { title: "  " }] })).toEqual([]);
+  });
+});

@@ -113,6 +113,7 @@ export class AgentRunner {
     const contextLimitTokens = await this.resolveContextLimit();
     let sawPermissionRequest = false;
     let pendingSubagents: SubagentRequest[] = [];
+    const completedTools: string[] = [];
 
     yield {
       type: "status",
@@ -306,7 +307,9 @@ export class AgentRunner {
         pendingSubagents = resolved.subagents;
         parsedResponse = {
           action: "tools" as const,
-          message: rawResponse.trim() || "working",
+          // The step message is narration, not an answer; it must never
+          // survive to become the final message shown to the user.
+          message: rawResponse.trim(),
           tool_calls: resolved.toolCalls
         };
 
@@ -430,15 +433,18 @@ export class AgentRunner {
           continue;
         }
 
+        // A model that stops without saying anything still did work; report
+        // that rather than showing the user an empty answer.
+        const finalMessage = parsedResponse.message.trim() || describeCompletedWork(completedTools);
         yield {
           type: "final",
-          message: parsedResponse.message,
+          message: finalMessage,
           workState: "done"
         };
         await this.options.sessionStore?.append({
           type: "run.completed",
           runId,
-          message: parsedResponse.message,
+          message: finalMessage,
           completedAt: new Date().toISOString()
         });
         return;
@@ -633,6 +639,10 @@ export class AgentRunner {
           if (failedCall) {
             loopBreaker.recordFailure(failedCall.name as never, failedCall.arguments);
           }
+        }
+
+        if (toolResult.ok) {
+          completedTools.push(toolResult.tool);
         }
 
         if (isWriteToolResult(toolResult)) {
@@ -1005,6 +1015,25 @@ export class AgentRunner {
 
     return await chat;
   }
+}
+
+/** A last-resort answer built from what actually ran. */
+function describeCompletedWork(tools: string[]): string {
+  if (tools.length === 0) {
+    return "No changes were made.";
+  }
+
+  const counts = new Map<string, number>();
+  for (const tool of tools) {
+    counts.set(tool, (counts.get(tool) ?? 0) + 1);
+  }
+
+  const summary = [...counts.entries()]
+    .sort(([, left], [, right]) => right - left)
+    .map(([tool, count]) => (count === 1 ? tool : `${tool} ×${count}`))
+    .join(", ");
+
+  return `Done. Tools used: ${summary}.`;
 }
 
 function firstNonEmpty<T>(...candidates: T[][]): T[] {
@@ -1398,7 +1427,14 @@ export function normalizeTodoItems(argumentsValue: Record<string, unknown>, exis
     if (!isRecord(rawItem)) {
       continue;
     }
-    const content = readTodoString(rawItem.content) || readTodoString(rawItem.text) || readTodoString(rawItem.task);
+    // "title" is what the nine-tool schema asks for; the rest are shapes
+    // models reach for unprompted.
+    const content =
+      readTodoString(rawItem.content) ||
+      readTodoString(rawItem.title) ||
+      readTodoString(rawItem.text) ||
+      readTodoString(rawItem.task) ||
+      readTodoString(rawItem.description);
     if (!content) {
       continue;
     }

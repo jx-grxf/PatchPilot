@@ -1,7 +1,7 @@
 import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { lookup } from "node:dns/promises";
-import { constants } from "node:fs";
+import { constants, realpathSync } from "node:fs";
 import { access, lstat, mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { isIP } from "node:net";
 import { homedir, platform, tmpdir } from "node:os";
@@ -2778,8 +2778,30 @@ function wordXmlToText(xml: string): string {
     .trim();
 }
 
+/**
+ * A workspace-relative path for display.
+ *
+ * The root as configured and the path as resolved can differ by a symlink —
+ * on macOS /tmp is /private/tmp — which produces a relative path of a dozen
+ * "../" segments for a file that is plainly inside the workspace. Resolving
+ * both ends through realpath before giving up keeps the display honest.
+ */
 function normalizeRelative(root: string, filePath: string): string {
-  return path.relative(root, filePath).split(path.sep).join("/");
+  const direct = path.relative(root, filePath);
+  if (!direct.startsWith("..")) {
+    return direct.split(path.sep).join("/");
+  }
+
+  try {
+    const resolved = path.relative(realpathSync(root), realpathSync(filePath));
+    if (!resolved.startsWith("..")) {
+      return resolved.split(path.sep).join("/");
+    }
+  } catch {
+    // Fall through: a path that cannot be resolved is shown as-is.
+  }
+
+  return direct.split(path.sep).join("/");
 }
 
 function normalizeSlashPath(value: string): string {
