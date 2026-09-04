@@ -151,7 +151,7 @@ function CodeBlock(props: { language: string; lines: string[]; width: number; op
   return (
     <Box flexDirection="column" marginY={1}>
       {props.language ? (
-        <Text color="gray" dimColor>
+        <Text color="gray">
           {"  "}
           {props.language}
           {props.open ? " ·" : ""}

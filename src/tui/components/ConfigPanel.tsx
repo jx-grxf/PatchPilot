@@ -54,14 +54,14 @@ export function ConfigPanel(props: ConfigPanelProps): React.ReactElement {
         <Text color="cyan" bold>
           settings{" "}
         </Text>
-        <Text color="gray" dimColor>
+        <Text color="gray">
           {props.query ? `“${props.query}” · ` : ""}
           {settings.length} of {settingsForProvider(props.provider).length}
         </Text>
       </Box>
 
       {settings.length === 0 ? (
-        <Text color="gray" dimColor>
+        <Text color="gray">
           {"  "}nothing matches — try a shorter word, or the env key
         </Text>
       ) : null}
@@ -77,7 +77,7 @@ export function ConfigPanel(props: ConfigPanelProps): React.ReactElement {
         return (
           <Box key={setting.key} flexDirection="column">
             {groupHeader && !props.query ? (
-              <Text color="gray" dimColor>
+              <Text color="gray">
                 {"  "}
                 {groupHeader}
               </Text>
@@ -108,7 +108,7 @@ export function ConfigPanel(props: ConfigPanelProps): React.ReactElement {
             {"  "}
             {settings[props.selectedIndex]?.description}
           </Text>
-          <Text color="gray" dimColor>
+          <Text color="gray">
             {"  "}
             {settings[props.selectedIndex]?.key}
             {settings[props.selectedIndex]?.appliesNextRun ? " · applies to the next run" : ""}
@@ -123,7 +123,7 @@ export function ConfigPanel(props: ConfigPanelProps): React.ReactElement {
         </Text>
       ) : null}
 
-      <Text color="gray" dimColor>
+      <Text color="gray">
         {"  ↑↓ move · ⏎ toggle or edit · type to filter · esc closes"}
       </Text>
     </Box>

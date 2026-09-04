@@ -1,5 +1,6 @@
 import type { ModelChatOptions, ModelChatResult, ModelStreamDelta, ModelTelemetry, RawToolCall } from "./types.js";
 import { fetchWithTimeout } from "./http.js";
+import { stripTemplateTokens } from "./localOpenAI.js";
 import { readNewlineDelimitedJson, StreamTimer } from "./stream.js";
 import { getOllamaThinkValue } from "./reasoning.js";
 import { attachTokenCost } from "./tokenAccounting.js";
@@ -136,7 +137,7 @@ export class OllamaClient {
         ? `Requested "${options.model}" but Ollama answered with "${payload.model}".`
         : null;
     return {
-      content: content.trim(),
+      content: stripTemplateTokens(content).trim(),
       ...(toolCalls.length > 0 ? { toolCalls } : {}),
       ...(substitution ? { warning: substitution } : {}),
       telemetry: toTelemetry(payload, options.model, streaming ? timer.timeToFirstTokenMs : null)

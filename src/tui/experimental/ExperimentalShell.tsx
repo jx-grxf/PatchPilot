@@ -18,6 +18,7 @@ import { computeExperimentalLayout, windowRows } from "./layout.js";
 import type {ContextUsageView, } from "../App.js";
 import type { StreamProgress } from "../transcriptEvents.js";
 import { resolveLocalOpenAIBaseUrl } from "../../core/localOpenAI.js";
+import { Markdown } from "../components/Markdown.js";
 import { FlowShell } from "./FlowShell.js";
 import { symbols, workStateColor } from "./theme.js";
 import { formatCompact, pressureColor, shimmerIndex, smoothBar, sparkline, trackedBar } from "../motion.js";
@@ -37,6 +38,8 @@ export type ExperimentalShellProps = {
   status: string;
   isRunning: boolean;
   streamProgress: StreamProgress | null;
+  /** The answer as it is being written, before it becomes a transcript entry. */
+  streamingText: string;
   contextUsage: ContextUsageView | null;
   /** Render history into native terminal scrollback instead of a fixed pager. */
   flow?: boolean;
@@ -96,6 +99,12 @@ export function ExperimentalShell(props: ExperimentalShellProps): React.ReactEle
     hasArtifacts: props.artifacts.length > 0,
   });
 
+  // Two rows per entry is a deliberate under-estimate: padding slightly too
+  // little leaves a small gap, padding too much pushes the prompt off screen.
+  const printedRows = props.lines.length * 2;
+  const liveRows = 10 + (props.todos.length > 0 ? props.todos.length + 1 : 0);
+  const bottomPad = Math.max(0, props.rows - printedRows - liveRows);
+
   if (props.flow) {
     // Static must be the first child and must sit outside any height-bounded
     // box: Ink prints those rows above the live frame, into the terminal's own
@@ -103,6 +112,12 @@ export function ExperimentalShell(props: ExperimentalShellProps): React.ReactEle
     return (
       <>
         <FlowShell lines={props.lines} transcriptEpoch={props.transcriptEpoch} columns={props.columns} />
+        {/* Hold the live region against the bottom of the viewport while the
+            transcript is still shorter than a screen. Without this a fresh
+            session renders its prompt at the very top with the terminal empty
+            beneath it, which reads as unfinished. Once enough has scrolled by,
+            the pad is zero and the terminal's own scrolling takes over. */}
+        {bottomPad > 0 ? <Box height={bottomPad} /> : null}
         <Box flexDirection="column">
           {props.todos.length > 0 ? (
             <ShellTodoDock
@@ -120,7 +135,15 @@ export function ExperimentalShell(props: ExperimentalShellProps): React.ReactEle
           ) : approvalActive ? (
             <ShellApproval request={props.pendingApproval} bypassConfirmation={props.bypassConfirmation} />
           ) : null}
-          {props.configPanel}
+          {/* The in-flight answer, rendered live above the composer. It is not
+            part of the static transcript yet — that entry arrives when the
+            turn completes and this clears in the same frame. */}
+        {props.streamingText ? (
+          <Box flexDirection="column" paddingLeft={2} marginTop={1}>
+            <Markdown text={props.streamingText} width={props.columns - 4} />
+          </Box>
+        ) : null}
+        {props.configPanel}
           {props.paletteItems.length > 0 ? (
             <CommandPalette items={props.paletteItems} selectedIndex={props.paletteIndex} width={layout.transcriptWidth} />
           ) : null}
@@ -273,7 +296,7 @@ function ContextMeter(props: { usage: ContextUsageView }): React.ReactElement {
 
   return (
     <Text>
-      <Text color="gray" dimColor>
+      <Text color="gray">
         ctx{" "}
       </Text>
       <Text color={color}>{bar}</Text>
@@ -819,7 +842,7 @@ function ShellComposer(props: {
       // on throughput rather than on decoration.
       editorContent.push(
         <Box key="editor-run">
-          <Text color="gray" dimColor>
+          <Text color="gray">
             {pulseGlyph(frame)}{" "}
           </Text>
           {props.ultramaxxRun ? (
@@ -827,7 +850,7 @@ function ShellComposer(props: {
           ) : (
             <ShimmerText text={parts.verb} frame={frame} />
           )}
-          <Text color="gray" dimColor>
+          <Text color="gray">
             {" ("}
             {props.streamProgress
               ? props.streamProgress.phase === "prompt"
@@ -840,7 +863,7 @@ function ShellComposer(props: {
             <>
               {/* The sparkline answers a question the number cannot: is this
                   speeding up or grinding to a halt. */}
-              <Text color="gray" dimColor>
+              <Text color="gray">
                 {` ${sparkline(throughputHistory, 8)}`}
               </Text>
               <Text color="green">{` ${props.streamProgress.tokensPerSecond.toFixed(1)} tok/s`}</Text>
@@ -911,13 +934,13 @@ function ShellComposer(props: {
     // and the composer is the page — a single rule above it is enough to
     // separate it from the transcript, and costs one row instead of two.
     <Box flexDirection="column" height={layout.height + 2} overflowY="hidden">
-      <Text color="gray" dimColor>
+      <Text color="gray">
         {"─".repeat(Math.max(8, props.width))}
       </Text>
       <Box flexDirection="column" height={editorRows} overflowY="hidden">
         {editorContent}
       </Box>
-      <Text color="gray" dimColor wrap="truncate">
+      <Text color="gray" wrap="truncate">
         {props.isRunning
           ? "esc stops the run"
           : props.approvalActive

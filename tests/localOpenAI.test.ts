@@ -3,7 +3,8 @@ import {
   LocalOpenAIClient,
   normalizeLocalOpenAIBaseUrl,
   readLocalOpenAIRuntimeOptions,
-  resolveLocalOpenAIBaseUrl
+  resolveLocalOpenAIBaseUrl,
+  stripTemplateTokens
 } from "../src/core/localOpenAI.js";
 
 afterEach(() => {
@@ -250,5 +251,23 @@ describe("LocalOpenAIClient model discovery", () => {
     vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("ECONNREFUSED"));
 
     await expect(new LocalOpenAIClient().listModels()).rejects.toThrow(/Cannot reach a local model server/);
+  });
+});
+
+describe("chat-template tokens that leak into content", () => {
+  it("strips the channel markers gemma and gpt-oss builds pass through", () => {
+    expect(stripTemplateTokens("<|channel|>thought\nI see the folders.")).toBe("I see the folders.");
+    expect(stripTemplateTokens("<channel|>The answer.")).toBe("The answer.");
+    expect(stripTemplateTokens("<|im_start|>assistant\nHello")).toBe("Hello");
+  });
+
+  it("leaves ordinary prose and real code untouched", () => {
+    expect(stripTemplateTokens("Use a < b and c > d")).toBe("Use a < b and c > d");
+    expect(stripTemplateTokens("const x: Array<string> = [];")).toBe("const x: Array<string> = [];");
+    expect(stripTemplateTokens("if (a<b) return;")).toBe("if (a<b) return;");
+  });
+
+  it("keeps html-looking text that is not a control token", () => {
+    expect(stripTemplateTokens("<div>hello</div>")).toBe("<div>hello</div>");
   });
 });

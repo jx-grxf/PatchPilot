@@ -929,6 +929,7 @@ export class AgentRunner {
   }): AsyncGenerator<AgentEvent, ModelChatResult> {
     const timer = new StreamTimer();
     let thinkingChars = 0;
+    let visibleText = "";
     let tokens = 0;
     let wake: (() => void) | null = null;
     let finished = false;
@@ -953,6 +954,7 @@ export class AgentRunner {
           if (delta.content) {
             timer.markFirstToken();
             tokens += estimateTokens(delta.content);
+            visibleText += delta.content;
           }
           if (delta.thinking) {
             timer.markFirstToken();
@@ -990,6 +992,7 @@ export class AgentRunner {
         phase: generating ? "generating" : "prompt",
         elapsedMs: timer.elapsedMs,
         tokens,
+        content: visibleText,
         tokensPerSecond: generating && timer.generationMs > 0 ? tokens / (timer.generationMs / 1000) : null,
         workState: options.requestWorkState
       };

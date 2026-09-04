@@ -143,7 +143,7 @@ export class LocalOpenAIClient {
 
     const substitution = describeModelSubstitution(options.model, payload.model);
     return {
-      content: content.trim(),
+      content: stripTemplateTokens(content).trim(),
       ...(toolCalls.length > 0 ? { toolCalls } : {}),
       ...(substitution ? { warning: substitution } : {}),
       telemetry: toTelemetry(payload, options.model, timer.elapsedMs, streaming ? timer.timeToFirstTokenMs : null)
@@ -370,6 +370,32 @@ function isResponseFormatRejection(error: unknown): boolean {
 
 function normalizeModelId(value: string): string {
   return value.trim().toLowerCase();
+}
+
+/**
+ * Strips chat-template control tokens that reach the caller as content.
+ *
+ * A server is supposed to consume these while decoding, but several builds —
+ * gemma and gpt-oss harmony formats especially — pass them straight through,
+ * so the answer arrives with `<|channel|>` and role markers embedded in it.
+ * They are not part of what the model said, and leaving them in means the
+ * agent loop parses them and the user reads them.
+ */
+export function stripTemplateTokens(content: string): string {
+  // A control token is often followed by the role or channel name it opens,
+  // which is part of the marker rather than of the answer — so both go in one
+  // pass. Matching the pipe form only keeps `Array<string>` and `a < b` safe.
+  return content
+    .replace(
+      /<\|(?:channel|start|end|message|im_start|im_end|assistant|system|user|return|constrain)\|?>\s*(?:thought|analysis|final|assistant|system|user)?\s*\n?/gi,
+      ""
+    )
+    .replace(
+      /<(?:channel|im_start|im_end|start|end)\|>\s*(?:thought|analysis|final|assistant)?\s*\n?/gi,
+      ""
+    )
+    .replace(/<\/?s>/g, "")
+    .trimStart();
 }
 
 /** Arguments stay strings here; the repair ladder parses and validates them. */

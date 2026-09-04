@@ -166,6 +166,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   const [isRunning, setIsRunning] = useState(false);
   const [status, setStatus] = useState("idle");
   const [streamProgress, setStreamProgress] = useState<StreamProgress | null>(null);
+  const [streamingText, setStreamingText] = useState("");
   const [configOpen, setConfigOpen] = useState(false);
   const [configQuery, setConfigQuery] = useState("");
   const [configIndex, setConfigIndex] = useState(0);
@@ -1377,11 +1378,16 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
               tokens: event.tokens,
               tokensPerSecond: event.tokensPerSecond
             });
+            // The answer renders as it is written. Once the turn completes the
+            // finished entry lands in the static transcript and this clears,
+            // so the same text is never on screen twice.
+            setStreamingText(event.content);
             setStatus(eventToStatus(event));
             continue;
           }
 
           setStreamProgress(null);
+          setStreamingText("");
           setStatus(eventToStatus(event));
           appendLine(eventToLine(event));
         }
@@ -2876,6 +2882,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         status={status}
         isRunning={isRunning}
         streamProgress={streamProgress}
+        streamingText={streamingText}
         contextUsage={contextUsage}
         flow={uiTheme === "flow"}
         transcriptEpoch={transcriptEpoch}

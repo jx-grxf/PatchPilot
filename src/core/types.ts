@@ -212,6 +212,11 @@ export type AgentEvent =
       elapsedMs: number;
       /** Tokens emitted so far; only meaningful while generating. */
       tokens: number;
+      /**
+       * Visible text so far. Carried so the UI can render the answer as it is
+       * written rather than revealing it whole when the call returns.
+       */
+      content: string;
       tokensPerSecond: number | null;
       workState: AgentWorkState;
     }
