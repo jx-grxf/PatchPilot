@@ -35,6 +35,8 @@ export function normalizeModelProvider(value: string): ModelProvider {
     normalizedValue === "bionic" ||
     normalizedValue === "llamacpp" ||
     normalizedValue === "llama.cpp" ||
+    normalizedValue === "mlx" ||
+    normalizedValue === "mlx-lm" ||
     normalizedValue === "vllm"
   ) {
     return "local-openai";

@@ -7,6 +7,7 @@ import { Command } from "commander";
 import { cleanupPatchPilot, readCleanupTarget } from "./core/cleanup.js";
 import { loadPatchPilotEnv, savePatchPilotEnvValues } from "./core/env.js";
 import { defaultLocalOpenAIModel, resolveLocalOpenAIBaseUrl } from "./core/localOpenAI.js";
+import { describeModel, discoverModels, isUsableForChat, rankForAgentUse } from "./core/modelCatalog.js";
 import { normalizeModelProvider, readModelProvider } from "./core/modelClient.js";
 import { runDoctor } from "./core/doctor.js";
 import { ensurePatchPilotInstructions } from "./core/projectInit.js";
@@ -66,7 +67,7 @@ program
 program
   .command("doctor")
   .description("Check local PatchPilot requirements.")
-  .option("--provider <name>", "Model provider: ollama, or local-openai for any OpenAI-compatible local server (LM Studio, llama.cpp, vLLM).", defaultProvider)
+  .option("--provider <name>", "Model provider: ollama, or local-openai for any OpenAI-compatible local server (LM Studio, MLX, llama.cpp, vLLM).", defaultProvider)
   .option("--check-url <url>", "Ollama base URL to verify", defaultOllamaUrl)
   .option("--ollama-url <url>", "Alias for --check-url.")
   .option("--check-model <name>", "Model name to verify", defaultModel)
@@ -90,6 +91,39 @@ program
     }
 
     process.exitCode = results.every((result) => result.ok) ? 0 : 1;
+  });
+
+program
+  .command("models")
+  .description("List every model available across the local runtimes on this machine.")
+  .option("--all", "Include models that cannot be used for chat.", false)
+  .option("--json", "Emit machine-readable JSON.", false)
+  .action(async (options: { all?: boolean; json?: boolean }) => {
+    const catalog = await discoverModels();
+    const models = rankForAgentUse(options.all ? catalog.models : catalog.models.filter(isUsableForChat));
+
+    if (options.json) {
+      console.log(JSON.stringify({ runtimes: catalog.runtimes.map((entry) => ({ id: entry.runtime.id, reachable: entry.reachable, detail: entry.detail })), models }, null, 2));
+      return;
+    }
+
+    for (const status of catalog.runtimes) {
+      const marker = status.reachable ? "up  " : "down";
+      console.log(`${marker}  ${status.runtime.label.padEnd(11)} ${status.detail}`);
+    }
+
+    if (models.length === 0) {
+      console.log("\nNo usable models found. Start one of the runtimes above, then run this again.");
+      process.exitCode = 1;
+      return;
+    }
+
+    console.log("");
+    const width = Math.min(52, Math.max(...models.map((model) => model.id.length)));
+    for (const model of models) {
+      console.log(`  ${model.id.padEnd(width)}  ${describeModel(model)}`);
+    }
+    console.log(`\nUse one with: patchpilot --provider ${models[0]?.provider ?? "ollama"} --model ${models[0]?.id ?? ""}`);
   });
 
 program
@@ -133,7 +167,7 @@ program
 program
   .argument("[task...]", "Task for the local coding agent.")
   .option("--workspace <path>", "Workspace root", process.cwd())
-  .option("--provider <name>", "Model provider: ollama, or local-openai for any OpenAI-compatible local server (LM Studio, llama.cpp, vLLM).", defaultProvider)
+  .option("--provider <name>", "Model provider: ollama, or local-openai for any OpenAI-compatible local server (LM Studio, MLX, llama.cpp, vLLM).", defaultProvider)
   .option("--model <name>", "Model name", defaultModel)
   .option("--ollama-url <url>", "Ollama base URL", defaultOllamaUrl)
   .option("--steps <count>", "Maximum agent steps", "8")

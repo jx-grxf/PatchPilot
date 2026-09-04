@@ -49,8 +49,9 @@ type ToolCallFrame = {
 type ModelsResponse = {
   data?: Array<{
     id?: string;
-    /** LM Studio's /api/v0 extension — absent on plain OpenAI-compatible servers. */
+    /** The next four come from LM Studio's richer /api/v0 surface only. */
     state?: string;
+    type?: string;
     max_context_length?: number;
     loaded_context_length?: number;
   }>;
@@ -67,6 +68,8 @@ export class LocalOpenAIClient {
   private readonly runtimeOptions: LocalOpenAIRuntimeOptions;
   /** Cleared for the process once a server rejects response_format. */
   private jsonFormatSupported = true;
+  /** Null until the richer LM Studio model endpoint has been tried once. */
+  private enrichedModelsSupported: boolean | null = null;
 
   constructor(baseUrl = defaultLocalOpenAIUrl, runtimeOptions = readLocalOpenAIRuntimeOptions()) {
     this.baseUrl = normalizeLocalOpenAIBaseUrl(baseUrl);
@@ -237,13 +240,21 @@ export class LocalOpenAIClient {
             return null;
           }
 
-          const capacity = readNullableFiniteNumber(model.max_context_length);
+          // Prefer the window the model is actually loaded with over the one
+          // it advertises; a model loaded by another client keeps that
+          // client's setting.
+          const capacity = readNullableFiniteNumber(model.loaded_context_length ?? model.max_context_length);
+          const details = [
+            model.state === undefined ? null : `state: ${model.state}`,
+            model.type === undefined ? null : `type: ${model.type}`
+          ].filter((entry): entry is string => entry !== null);
+
           return {
             id,
             modelName: id,
             isAvailable: model.state === undefined ? true : model.state !== "not-loaded",
             ...(capacity === null ? {} : { capacity }),
-            ...(model.state === undefined ? {} : { description: `state: ${model.state}` })
+            ...(details.length > 0 ? { description: details.join(", ") } : {})
           };
         })
         .filter((model): model is ModelDescriptor => model !== null)
@@ -251,13 +262,51 @@ export class LocalOpenAIClient {
     );
   }
 
+  /**
+   * The standard `/v1/models` reports ids and nothing else. LM Studio also
+   * serves `/api/v0/models`, which reports load state, model type, and the real
+   * context window — the only source for the context meter. Try the richer one
+   * first and fall back, so plain servers are unaffected.
+   */
   private async fetchModels(): Promise<ModelsResponse> {
+    const enriched = await this.fetchEnrichedModels();
+    if (enriched) {
+      return enriched;
+    }
+
     const response = await this.fetchLocal("/models", { headers: this.buildHeaders() });
     if (!response.ok) {
       throw new Error(`Local model server listing failed with HTTP ${response.status}.`);
     }
 
     return (await response.json()) as ModelsResponse;
+  }
+
+  private async fetchEnrichedModels(): Promise<ModelsResponse | null> {
+    if (this.enrichedModelsSupported === false) {
+      return null;
+    }
+
+    try {
+      const origin = new URL(this.baseUrl).origin;
+      const response = await fetchWithTimeout(`${origin}/api/v0/models`, { headers: this.buildHeaders() }, {
+        timeoutMs: 3000,
+        retries: 0,
+        label: `Local model server /api/v0/models at ${origin}`
+      });
+
+      if (!response.ok) {
+        this.enrichedModelsSupported = false;
+        return null;
+      }
+
+      const payload = (await response.json()) as ModelsResponse;
+      this.enrichedModelsSupported = Array.isArray(payload.data);
+      return this.enrichedModelsSupported ? payload : null;
+    } catch {
+      this.enrichedModelsSupported = false;
+      return null;
+    }
   }
 
   private buildHeaders(): Record<string, string> {
