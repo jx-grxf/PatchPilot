@@ -56,6 +56,14 @@ import {
   randomLegacyVerbIndex,
   type StreamProgress
 } from "./transcriptEvents.js";
+import { ConfigPanel, visibleSettings } from "./components/ConfigPanel.js";
+import {
+  cycleSettingValue,
+  findSettingByNameOrKey,
+  formatSettingValue,
+  readSettingValue,
+  validateSettingValue
+} from "./settingsRegistry.js";
 import { resolveSlashSubmission, type PaletteSuggestion } from "./slashCommands.js";
 import { runContextSlashCommand } from "./contextCommands.js";
 import { ExperimentalShell } from "./experimental/ExperimentalShell.js";
@@ -158,6 +166,10 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   const [isRunning, setIsRunning] = useState(false);
   const [status, setStatus] = useState("idle");
   const [streamProgress, setStreamProgress] = useState<StreamProgress | null>(null);
+  const [configOpen, setConfigOpen] = useState(false);
+  const [configQuery, setConfigQuery] = useState("");
+  const [configIndex, setConfigIndex] = useState(0);
+  const [configNotice, setConfigNotice] = useState<string | null>(null);
   const promptHistoryRef = useRef<PromptHistory>(emptyPromptHistory());
   const [contextUsage, setContextUsage] = useState<ContextUsageView | null>(null);
   const [workState, setWorkState] = useState<AgentWorkState>("idle");
@@ -2371,6 +2383,70 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   }, [hostOptions.length, input, isLoadingHosts, isLoadingModels, isRunning, loadHostSuggestions, loadProviderModels, modelOptions.length, onboarding, settings.provider]);
 
   useInput((inputValue, key) => {
+    if (configOpen) {
+      const settingsList = visibleSettings(settings.provider, configQuery);
+      const selected = settingsList[configIndex];
+
+      if (key.escape) {
+        setConfigOpen(false);
+        setConfigNotice(null);
+        return;
+      }
+
+      if (key.upArrow || key.downArrow) {
+        const step = key.upArrow ? -1 : 1;
+        setConfigIndex((current) =>
+          settingsList.length === 0 ? 0 : (current + step + settingsList.length) % settingsList.length
+        );
+        setConfigNotice(null);
+        return;
+      }
+
+      if (key.return && selected) {
+        const current = readSettingValue(selected);
+        const next = cycleSettingValue(selected, current);
+        if (next === null) {
+          // Numbers and free text cannot be cycled; say how to change them
+          // rather than doing nothing when Enter is pressed.
+          setConfigNotice(
+            `${selected.name} is ${formatSettingValue(selected, current)}. Set it with: /set ${selected.key} <value>`
+          );
+          return;
+        }
+
+        const rejection = validateSettingValue(selected, next);
+        if (rejection) {
+          setConfigNotice(rejection);
+          return;
+        }
+
+        process.env[selected.key] = next;
+        savePatchPilotEnvValues({ [selected.key]: next });
+        setConfigNotice(null);
+        appendLine({
+          tone: "success",
+          label: "config",
+          text: `${selected.name} ${formatSettingValue(selected, next)}`,
+          detail: selected.appliesNextRun ? "applies to the next run" : undefined
+        });
+        return;
+      }
+
+      if (key.backspace || key.delete) {
+        setConfigQuery((current) => current.slice(0, -1));
+        setConfigIndex(0);
+        return;
+      }
+
+      if (inputValue && !key.ctrl && !key.meta) {
+        setConfigQuery((current) => current + inputValue);
+        setConfigIndex(0);
+        setConfigNotice(null);
+      }
+
+      return;
+    }
+
     if (themePickerOpen) {
       if (key.upArrow) {
         setThemePickerIndex((currentIndex) => (currentIndex - 1 + themeOptions.length) % themeOptions.length);
@@ -2816,6 +2892,18 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         updateBusy={updateBusy}
         transcriptScrollOffset={transcriptScrollOffset}
         input={input}
+        configPanel={
+          configOpen ? (
+            <ConfigPanel
+              provider={settings.provider}
+              query={configQuery}
+              selectedIndex={configIndex}
+              width={terminalColumns}
+              height={Math.min(24, Math.max(10, terminalRows - 12))}
+              notice={configNotice}
+            />
+          ) : null
+        }
         paletteItems={paletteItems}
         paletteIndex={paletteIndex}
         rows={terminalRows}

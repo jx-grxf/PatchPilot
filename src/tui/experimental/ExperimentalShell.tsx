@@ -70,6 +70,8 @@ export type ExperimentalShellProps = {
   /** Returns the recalled prompt, or null when there is nothing to recall. */
   onHistoryPrevious: (currentInput: string) => string | null;
   onHistoryNext: () => string | null;
+  /** The settings screen, when it is open. */
+  configPanel?: React.ReactNode;
 };
 
 /**
@@ -117,6 +119,7 @@ export function ExperimentalShell(props: ExperimentalShellProps): React.ReactEle
           ) : approvalActive ? (
             <ShellApproval request={props.pendingApproval} bypassConfirmation={props.bypassConfirmation} />
           ) : null}
+          {props.configPanel}
           {props.paletteItems.length > 0 ? (
             <CommandPalette items={props.paletteItems} selectedIndex={props.paletteIndex} width={layout.transcriptWidth} />
           ) : null}

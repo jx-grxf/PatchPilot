@@ -187,6 +187,18 @@ export const slashCommands: SlashCommand[] = [
     category: "compute"
   },
   {
+    name: "set",
+    usage: "/set <SETTING> <value>",
+    description: "Change a setting by name or env key, e.g. /set NUM_CTX 16384.",
+    category: "session"
+  },
+  {
+    name: "config",
+    usage: "/config",
+    description: "Every setting, searchable, with the ones you changed highlighted.",
+    category: "session"
+  },
+  {
     name: "status",
     usage: "/status",
     description: "Operational dock: provider/model, permissions, compute target, session, advisors, tool counters.",
