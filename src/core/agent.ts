@@ -28,8 +28,13 @@ export type AgentRunnerOptions = {
   allowWrite: boolean;
   allowShell: boolean;
   maxSteps: number;
-  thinkingMode: "fixed" | "adaptive";
-  thinking: ThinkingSetting;
+  /**
+   * How the step budget is chosen. Adaptive unless a caller insists: the model
+   * is a better judge of how many steps a task needs than a flag is.
+   */
+  thinkingMode?: "fixed" | "adaptive";
+  /** Left to the model unless explicitly forced. */
+  thinking?: ThinkingSetting;
   subagents: boolean;
   resumeContext?: string;
   allowExternalFileAnalysis?: boolean;
@@ -94,8 +99,8 @@ export class AgentRunner {
     });
     const workspaceSummary = await buildWorkspaceSummary(this.tools.root);
     const ultramaxx = Boolean(this.options.ultramaxx);
-    let maxSteps = resolveMaxSteps(task, this.options.maxSteps, this.options.thinkingMode, ultramaxx);
-    const thinking = this.options.thinking;
+    let maxSteps = resolveMaxSteps(task, this.options.maxSteps, this.options.thinkingMode ?? "adaptive", ultramaxx);
+    const thinking = this.options.thinking ?? "auto";
 
     // Ask the model once whether it can drive native tool calls. Advertising
     // tools to a model that ignores them is worse than not advertising: it
@@ -743,7 +748,7 @@ export class AgentRunner {
         });
         return;
       }
-      if (this.options.thinkingMode === "adaptive" && stepIndex >= maxSteps && shouldExtendAdaptiveRun(task, toolResults, maxSteps, ultramaxx ? 60 : 32)) {
+      if ((this.options.thinkingMode ?? "adaptive") === "adaptive" && stepIndex >= maxSteps && shouldExtendAdaptiveRun(task, toolResults, maxSteps, ultramaxx ? 60 : 32)) {
         const nextMaxSteps = Math.min(ultramaxx ? 60 : 32, maxSteps + 4);
         if (nextMaxSteps > maxSteps) {
           maxSteps = nextMaxSteps;

@@ -171,8 +171,6 @@ program
   .option("--model <name>", "Model name", defaultModel)
   .option("--ollama-url <url>", "Ollama base URL", defaultOllamaUrl)
   .option("--steps <count>", "Maximum agent steps", "8")
-  .option("--steps-mode <mode>", "Step budget: fixed or adaptive.", process.env.PATCHPILOT_STEP_BUDGET ?? "adaptive")
-  .option("--thinking <mode>", "Model thinking: auto, on, or off.", process.env.PATCHPILOT_THINKING ?? "auto")
   .option("--apply", "Allow file writes inside the workspace.", false)
   .option("--allow-shell", "Allow shell commands inside the workspace.", false)
   .option("--subagents", "Enable planner and reviewer subagents.", readBooleanEnv(process.env.PATCHPILOT_SUBAGENTS, false))
@@ -205,23 +203,12 @@ program
         allowWrite={Boolean(options.apply)}
         allowShell={Boolean(options.allowShell)}
         maxSteps={Number.isFinite(maxSteps) ? maxSteps : 8}
-        thinkingMode={String(options.stepsMode) === "fixed" ? "fixed" : "adaptive"}
-        thinking={readThinking(String(options.thinking))}
         subagents={Boolean(options.subagents)}
       />
     );
   });
 
 await program.parseAsync(process.argv);
-
-function readThinking(value: string): "auto" | "on" | "off" {
-  const normalized = value.trim().toLowerCase();
-  if (["off", "false", "0", "none"].includes(normalized)) {
-    return "off";
-  }
-
-  return ["on", "true", "1"].includes(normalized) ? "on" : "auto";
-}
 
 function readBooleanEnv(value: string | undefined, fallback: boolean): boolean {
   if (!value) {

@@ -39,14 +39,6 @@ export const slashCommands: SlashCommand[] = [
     detail: "Provider controls where inference runs. Gemini-Wrapper runs the installed gemini_webapi bridge with pasted cookies or an explicit local browser-cookie import."
   },
   {
-    name: "think",
-    usage: "/think fixed|adaptive",
-    description: "Switch between fixed and adaptive thinking budgets.",
-    category: "session",
-    aliases: ["thinking"],
-    detail: "fixed uses exactly the configured --steps budget. adaptive shortens simple tasks and expands complex tasks up to a bounded budget. It does not change provider reasoning level; use /reasoning for that."
-  },
-  {
     name: "reasoning",
     usage: "/reasoning low|medium|high|xhigh|adaptive",
     description: "Set provider reasoning effort where the provider supports it.",

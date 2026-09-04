@@ -7,7 +7,6 @@ import type {
   ModelTelemetry,
   PermissionDecision,
   SessionTelemetry,
-  ThinkingSetting
 } from "../core/types.js";
 import { formatCost, formatSessionTokens, formatTokens } from "./format.js";
 import type { OllamaHostDetails } from "./hosts.js";
@@ -64,8 +63,6 @@ export function formatStatusDock(options: {
   model: string;
   agentMode: AgentMode;
   subagents: boolean;
-  thinkingMode: string;
-  thinking: ThinkingSetting;
   workspace: string;
   ollamaUrl: string;
   sessionId: string;
@@ -80,7 +77,9 @@ export function formatStatusDock(options: {
     ? `${options.activeHost?.host.deviceName ?? "ollama"}  ${options.activeHost?.host.url ?? options.ollamaUrl}`
     : `${options.provider} api`;
   const computeKind = isOllama ? describeComputeTarget(options.ollamaUrl).kind : "local";
-  const reasoning = `steps ${options.thinkingMode} · ${formatThinkingSupport(options.provider, options.model, options.thinking)}`;
+  // Thinking is the model's own; the dock reports what it supports, not a
+  // setting the user has to maintain.
+  const reasoning = formatThinkingSupport(options.provider, options.model, "auto");
   const toolCounters = Object.entries(options.toolTelemetry.byTool)
     .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
     .slice(0, 6)

@@ -56,6 +56,7 @@ import {
   randomLegacyVerbIndex,
   type StreamProgress
 } from "./transcriptEvents.js";
+import { resolveSlashSubmission, type PaletteSuggestion } from "./slashCommands.js";
 import { runContextSlashCommand } from "./contextCommands.js";
 import { ExperimentalShell } from "./experimental/ExperimentalShell.js";
 import { ThemePicker } from "./experimental/ThemePicker.js";
@@ -87,11 +88,6 @@ import { maxTranscriptLines, type AgentMode, type LogLine, type LogLineInput, ty
 export type PatchPilotAppProps = AgentRunnerOptions & {
   initialTask?: string;
   packageVersion?: string;
-};
-
-type PaletteSuggestion = CommandSuggestionItem & {
-  command: string;
-  execute: boolean;
 };
 
 type UiTheme = "flow" | "new" | "legacy";
@@ -1054,8 +1050,6 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           model: onboarding.model,
           allowWrite: permissions.allowWrite,
           allowShell: permissions.allowShell,
-          thinkingMode: prefs.stepBudget,
-          thinking: prefs.thinking,
           subagents: prefs.subagents
         }));
         savePatchPilotEnvValues({
@@ -1070,7 +1064,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           tone: "success",
           label: "onboarding",
           text: `ready: ${onboarding.provider} using ${onboarding.model}`,
-          detail: `mode ${prefs.mode} · thinking ${prefs.thinking} · steps ${prefs.stepBudget} · subagents ${prefs.subagents ? "on" : "off"}`
+          detail: `mode ${prefs.mode} · subagents ${prefs.subagents ? "on" : "off"}`
         });
         closeOnboarding();
         return;
@@ -1248,7 +1242,6 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
                 ? Math.min(runnableSettings.maxSteps, 12)
                 : runnableSettings.maxSteps,
           thinking: ultramaxx ? "on" : ultraLean ? "off" : runnableSettings.thinking,
-          thinkingMode: ultramaxx || ultraloop ? "adaptive" : ultraLean ? "fixed" : runnableSettings.thinkingMode,
           subagents: ultramaxx || ultraloop ? true : ultraLean ? false : runnableSettings.subagents,
           ultramaxx,
           allowExternalFileAnalysis: experimentalFlags.fileAnalysis,
@@ -1545,56 +1538,6 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           });
           return;
         }
-        case "think":
-        case "thinking": {
-          const nextMode = args[0]?.toLowerCase();
-          if (nextMode !== "fixed" && nextMode !== "adaptive") {
-            appendLine({
-              tone: "accent",
-              label: "think",
-              text: `current ${settings.thinkingMode}. Use /think fixed or /think adaptive.`
-            });
-            return;
-          }
-
-          setSettings((currentSettings) => ({
-            ...currentSettings,
-            thinkingMode: nextMode
-          }));
-          appendLine({
-            tone: "success",
-            label: "think",
-            text: `thinking mode ${nextMode}`
-          });
-          return;
-        }
-        case "think":
-        case "thinking": {
-          const nextThinking = args[0]?.toLowerCase();
-          if (nextThinking !== "auto" && nextThinking !== "on" && nextThinking !== "off") {
-            appendLine({
-              tone: "accent",
-              label: "thinking",
-              text: `current ${settings.thinking}. Use /thinking auto, on, or off.`,
-              detail: formatThinkingSupport(settings.provider, settings.model, settings.thinking)
-            });
-            return;
-          }
-
-          setSettings((currentSettings) => ({
-            ...currentSettings,
-            thinking: nextThinking
-          }));
-          savePatchPilotEnvValues({
-            PATCHPILOT_THINKING: nextThinking
-          });
-          appendLine({
-            tone: "success",
-            label: "thinking",
-            text: formatThinkingSupport(settings.provider, settings.model, nextThinking)
-          });
-          return;
-        }
         case "write":
         case "apply": {
           const writeEnabled = readToggle(args[0], !settings.allowWrite);
@@ -1751,8 +1694,6 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
               model: settings.model,
               agentMode,
               subagents: settings.subagents,
-              thinkingMode: settings.thinkingMode,
-              thinking: settings.thinking,
               workspace: settings.workspace,
               ollamaUrl: settings.ollamaUrl,
               sessionId: sessionStoreRef.current.sessionId,
@@ -2271,21 +2212,14 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       }
 
       if (nextValue.startsWith("/")) {
-        const selectedItem = paletteItems[paletteIndex];
-        const commandHasArgs = /^\/\S+\s+\S/.test(nextValue);
-        const shouldApplySuggestion =
-          selectedItem &&
-          (!commandHasArgs || selectedItem.command !== selectedItem.label) &&
-          (selectedItem.execute || selectedItem.command === nextValue || nextValue === "/" || nextValue.endsWith(" "));
-        const commandToRun = shouldApplySuggestion ? selectedItem.command : nextValue;
-
-        if (selectedItem && !selectedItem.execute && commandToRun !== nextValue) {
-          setInput(commandToRun);
+        const submission = resolveSlashSubmission(nextValue, paletteItems, paletteIndex);
+        if (submission.action === "complete") {
+          setInput(submission.input);
           return;
         }
 
         setInput("");
-        await handleSlashCommand(commandToRun);
+        await handleSlashCommand(submission.command);
         return;
       }
 
@@ -2907,8 +2841,6 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         allowShell={settings.allowShell}
         agentMode={agentMode}
         subagents={settings.subagents}
-        thinkingMode={settings.thinkingMode}
-        thinking={settings.thinking}
         ollamaUrl={settings.ollamaUrl}
         telemetry={telemetry}
         sessionTelemetry={sessionTelemetry}

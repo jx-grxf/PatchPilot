@@ -1,4 +1,3 @@
-import type { ThinkingSetting } from "../core/types.js";
 import type { AgentMode } from "./types.js";
 
 /**
@@ -8,15 +7,11 @@ import type { AgentMode } from "./types.js";
  */
 export type OnboardingPreferences = {
   mode: AgentMode;
-  thinking: ThinkingSetting;
-  stepBudget: "fixed" | "adaptive";
   subagents: boolean;
 };
 
 export const defaultOnboardingPreferences: OnboardingPreferences = {
   mode: "build",
-  thinking: "auto",
-  stepBudget: "adaptive",
   subagents: false,
 };
 
@@ -35,16 +30,6 @@ export const preferenceRows: PreferenceRow[] = [
     values: ["plan", "build"],
   },
   {
-    key: "thinking",
-    label: "Model thinking",
-    values: ["auto", "on", "off"],
-  },
-  {
-    key: "stepBudget",
-    label: "Step budget",
-    values: ["fixed", "adaptive"],
-  },
-  {
     key: "subagents",
     label: "Planner / Reviewer subagents",
     values: ["off", "on"],
@@ -59,20 +44,6 @@ export function describePreferenceValue(key: keyof OnboardingPreferences, value:
       : value === "build"
         ? "Recommended. Writes and shell run behind per-action approval prompts."
         : "Use /mode bypass after setup when you want trusted-workspace bypass.";
-  }
-
-  if (key === "thinking") {
-    return value === "auto"
-      ? "Recommended. Each model uses whatever thinking mode it ships with."
-      : value === "on"
-        ? "Force thinking on. Only affects models that support it."
-        : "Force thinking off for the fastest replies.";
-  }
-
-  if (key === "stepBudget") {
-    return value === "adaptive"
-      ? "Step count flexes with task difficulty."
-      : "Step count stays fixed for predictable runs.";
   }
 
   return value === "on"
@@ -113,19 +84,13 @@ export function cyclePreference(
     return { ...prefs, mode: nextValue as AgentMode };
   }
 
-  if (key === "stepBudget") {
-    return { ...prefs, stepBudget: nextValue === "fixed" ? "fixed" : "adaptive" };
-  }
-
-  return { ...prefs, thinking: nextValue as OnboardingPreferences["thinking"] };
+  return { ...prefs, subagents: nextValue === "on" };
 }
 
 /** Env payload for `savePatchPilotEnvValues` derived from the chosen prefs. */
 export function preferencesEnvValues(prefs: OnboardingPreferences): Record<string, string> {
   return {
     PATCHPILOT_DEFAULT_MODE: prefs.mode,
-    PATCHPILOT_THINKING: prefs.thinking,
-    PATCHPILOT_STEP_BUDGET: prefs.stepBudget,
     PATCHPILOT_SUBAGENTS: prefs.subagents ? "1" : "0",
   };
 }
@@ -133,15 +98,10 @@ export function preferencesEnvValues(prefs: OnboardingPreferences): Record<strin
 /** Read persisted preferences back into a typed shape, falling back safely. */
 export function readOnboardingPreferences(env: NodeJS.ProcessEnv = process.env): OnboardingPreferences {
   const mode = env.PATCHPILOT_DEFAULT_MODE?.trim().toLowerCase();
-  const thinking = env.PATCHPILOT_THINKING?.trim().toLowerCase();
-  const stepBudget = env.PATCHPILOT_STEP_BUDGET?.trim().toLowerCase();
   const subagents = env.PATCHPILOT_SUBAGENTS?.trim().toLowerCase();
 
   return {
     mode: mode === "plan" || mode === "build" || mode === "bypass" ? mode : defaultOnboardingPreferences.mode,
-    thinking:
-      thinking === "auto" || thinking === "on" || thinking === "off" ? thinking : defaultOnboardingPreferences.thinking,
-    stepBudget: stepBudget === "fixed" ? "fixed" : stepBudget === "adaptive" ? "adaptive" : defaultOnboardingPreferences.stepBudget,
     subagents: subagents === undefined ? defaultOnboardingPreferences.subagents : ["1", "true", "yes", "on", "enabled"].includes(subagents),
   };
 }
