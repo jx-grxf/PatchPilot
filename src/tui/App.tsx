@@ -122,6 +122,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   const [isRunning, setIsRunning] = useState(false);
   const [status, setStatus] = useState("idle");
   const [streamProgress, setStreamProgress] = useState<StreamProgress | null>(null);
+  const [contextUsage, setContextUsage] = useState<ContextUsageView | null>(null);
   const [workState, setWorkState] = useState<AgentWorkState>("idle");
   const [pendingApproval, setPendingApproval] = useState<ApprovalRequest | null>(null);
   const [updatePrompt, setUpdatePrompt] = useState<UpdatePromptState | null>(null);
@@ -1317,6 +1318,16 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
 
           if (event.type === "approval") {
             setToolTelemetry((currentTools) => addApprovalTelemetry(currentTools, event.decision));
+          }
+
+          if (event.type === "context") {
+            setContextUsage({
+              usedTokens: event.usedTokens,
+              limitTokens: event.limitTokens,
+              ratio: event.ratio,
+              pressure: event.pressure
+            });
+            continue;
           }
 
           if (event.type === "stream") {
@@ -2809,6 +2820,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         status={status}
         isRunning={isRunning}
         streamProgress={streamProgress}
+        contextUsage={contextUsage}
         ultramaxxRun={ultramaxxRun}
         telemetry={telemetry}
         sessionTelemetry={sessionTelemetry}
@@ -3709,6 +3721,30 @@ function formatAttachmentDigestPath(filePath: string): string {
   return JSON.stringify(filePath.split(/[\\/]/).filter(Boolean).at(-1) ?? filePath);
 }
 
+/** Context-window occupancy for the meter. */
+export type ContextUsageView = {
+  usedTokens: number;
+  limitTokens: number;
+  ratio: number;
+  pressure: "ok" | "warn" | "high" | "critical";
+};
+
+/**
+ * A percentage alone hides whether there is room for the next tool result, so
+ * the meter shows the raw token counts alongside it.
+ */
+export function formatContextUsage(usedTokens: number, limitTokens: number, ratio: number): string {
+  return `${formatTokenCount(usedTokens)}/${formatTokenCount(limitTokens)} · ${Math.round(ratio * 100)}%`;
+}
+
+function formatTokenCount(tokens: number): string {
+  if (tokens >= 1_000_000) {
+    return `${(tokens / 1_000_000).toFixed(1)}M`;
+  }
+
+  return tokens >= 1000 ? `${Math.round(tokens / 1000)}k` : String(tokens);
+}
+
 /** Live progress within the current model call, or null when idle. */
 export type StreamProgress = {
   phase: "prompt" | "generating";
@@ -3769,6 +3805,15 @@ function eventToLine(event: AgentEvent): LogLineInput {
         tone: "accent",
         label: "pilot",
         text: event.message,
+        workState: event.workState
+      };
+    case "context":
+      // Drives the meter, never a transcript line.
+      return {
+        kind: "status",
+        tone: event.pressure === "critical" ? "danger" : event.pressure === "high" ? "warning" : "muted",
+        label: "context",
+        text: formatContextUsage(event.usedTokens, event.limitTokens, event.ratio),
         workState: event.workState
       };
     case "thinking":

@@ -222,6 +222,15 @@ export type AgentEvent =
       message: string;
       workState: AgentWorkState;
     }
+  /** How much of the model's real context window the conversation occupies. */
+  | {
+      type: "context";
+      usedTokens: number;
+      limitTokens: number;
+      ratio: number;
+      pressure: "ok" | "warn" | "high" | "critical";
+      workState: AgentWorkState;
+    }
   | {
       type: "subagent";
       role: SubagentRole;

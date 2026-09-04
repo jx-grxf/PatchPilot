@@ -7,7 +7,7 @@ import { formatSubagentContext, runSubagentAdvisors } from "./subagents.js";
 import { MAX_TOOL_CALLS_PER_RESPONSE, type AgentEvent, type AgentTodoItem, type AgentToolName, type AgentWorkState, type ApprovalRequest, type ChatMessage, type ModelChatResult, type ModelClient, type ModelProvider, type PermissionDecision, type ThinkingSetting, type ProviderTool, type RawToolCall, type AgentToolCall, type ToolCategory, type ToolResult } from "./types.js";
 import { StreamTimer } from "./stream.js";
 import { probeModelCapabilities } from "./capability.js";
-import { pruneToolResults } from "./contextWindow.js";
+import { measureContext, pruneToolResults } from "./contextWindow.js";
 import {
   extractFencedToolCalls,
   looksLikePermissionRequest,
@@ -106,6 +106,9 @@ export class AgentRunner {
     const availableTools = toolsForMode(mode, { subagents: Boolean(this.options.subagents) });
     const providerTools = capabilities.nativeToolCalls ? toProviderTools(availableTools) : undefined;
     const loopBreaker = new ToolCallLoopBreaker();
+    // The window the runtime actually loaded, which is not the num_ctx the
+    // harness sends and not necessarily what the model advertises.
+    const contextLimitTokens = await this.resolveContextLimit();
     let sawPermissionRequest = false;
 
     yield {
@@ -651,6 +654,21 @@ export class AgentRunner {
         role: "user",
         content: formatToolResultsForPrompt(toolResults)
       });
+      if (contextLimitTokens) {
+        const usage = measureContext(messages, {
+          limitTokens: contextLimitTokens,
+          reserveTokens: Math.min(2048, Math.floor(contextLimitTokens / 8))
+        });
+        yield {
+          type: "context",
+          usedTokens: usage.usedTokens,
+          limitTokens: usage.limitTokens,
+          ratio: usage.ratio,
+          pressure: usage.pressure,
+          workState: "verifying"
+        };
+      }
+
       // Prune old tool output before anything else: it is what actually
       // floods a small window, and it is the cheapest thing to discard.
       const pruned = pruneToolResults(messages);
@@ -703,6 +721,25 @@ export class AgentRunner {
       message: "Stopped after the thinking budget.",
       failedAt: new Date().toISOString()
     });
+  }
+
+  /**
+   * Asks the runtime what window the model is really loaded with. Returns null
+   * when the runtime does not say, in which case no meter is shown — a wrong
+   * number is worse than none.
+   */
+  private async resolveContextLimit(): Promise<number | null> {
+    try {
+      const descriptors = await this.client.listModelDescriptors?.();
+      const match = descriptors?.find((descriptor) => descriptor.id === this.options.model);
+      if (match?.capacity && Number.isFinite(match.capacity)) {
+        return match.capacity;
+      }
+    } catch {
+      // Discovery is best-effort; a run must not fail because of a meter.
+    }
+
+    return null;
   }
 
   /**

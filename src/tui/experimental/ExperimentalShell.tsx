@@ -14,7 +14,7 @@ import { composerView, deleteComposerText, insertComposerText } from "./composer
 import { CommandPalette } from "./CommandPalette.js";
 import { estimateCloudEquivalentCost, formatSavedCost } from "./savings.js";
 import { computeExperimentalLayout, windowRows } from "./layout.js";
-import type { StreamProgress } from "../App.js";
+import type { ContextUsageView, StreamProgress } from "../App.js";
 import { symbols, workStateColor } from "./theme.js";
 import { buildShellRows, buildTodoDock, truncate } from "./transcriptRows.js";
 import { hasUltraMode, splitUltraSegments, type UltraMode } from "./ultraModes.js";
@@ -32,6 +32,7 @@ export type ExperimentalShellProps = {
   status: string;
   isRunning: boolean;
   streamProgress: StreamProgress | null;
+  contextUsage: ContextUsageView | null;
   ultramaxxRun: boolean;
   telemetry: ModelTelemetry | null;
   sessionTelemetry: SessionTelemetry;
@@ -186,6 +187,32 @@ function ShellUpdate(props: {
   );
 }
 
+/**
+ * A bar rather than a bare percentage: occupancy is a quantity you glance at,
+ * and colour alone cannot carry it on a monochrome terminal.
+ */
+function ContextMeter(props: { usage: ContextUsageView }): React.ReactElement {
+  const width = 8;
+  const filled = Math.max(0, Math.min(width, Math.round(props.usage.ratio * width)));
+  const color =
+    props.usage.pressure === "critical"
+      ? "red"
+      : props.usage.pressure === "high"
+        ? "yellow"
+        : props.usage.pressure === "warn"
+          ? "cyan"
+          : "green";
+
+  return (
+    <Text>
+      <Text color="gray">ctx </Text>
+      <Text color={color}>{symbols.barFilled.repeat(filled)}</Text>
+      <Text color="gray">{symbols.barEmpty.repeat(width - filled)}</Text>
+      <Text color={color}> {Math.round(props.usage.ratio * 100)}%</Text>
+    </Text>
+  );
+}
+
 function ShellHeader(props: ExperimentalShellProps): React.ReactElement {
   const accent = workStateColor(props.workState);
   const hostLabel = props.provider === "ollama" ? props.activeHost?.host.deviceName ?? "ollama" : `${props.provider} api`;
@@ -237,6 +264,12 @@ function ShellHeader(props: ExperimentalShellProps): React.ReactElement {
           <Text color={props.allowShell ? "red" : "gray"}>{shellLabel}</Text>
         </Text>
         <Text color="gray" wrap="truncate">
+          {props.contextUsage ? (
+            <Text>
+              <ContextMeter usage={props.contextUsage} />
+              <Text color="gray"> · </Text>
+            </Text>
+          ) : null}
           {formatSessionTokens(props.sessionTelemetry)} · {formatCost(props.sessionTelemetry.estimatedCostUsd)}
         </Text>
       </Box>

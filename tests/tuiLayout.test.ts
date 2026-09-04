@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { formatContextUsage } from "../src/tui/App.js";
 import { computeComposerLayout, wrapDraftRows } from "../src/tui/layout.js";
 
 describe("TUI layout helpers", () => {
@@ -24,5 +25,19 @@ describe("TUI layout helpers", () => {
 
   it("preserves empty lines while wrapping drafts", () => {
     expect(wrapDraftRows("alpha\n\nbeta", 20)).toEqual(["alpha", "", "beta"]);
+  });
+});
+
+describe("context meter formatting", () => {
+  it("shows raw counts alongside the percentage", () => {
+    expect(formatContextUsage(20_480, 41_000, 0.5)).toBe("20k/41k · 50%");
+  });
+
+  it("keeps small numbers exact rather than rounding them to 0k", () => {
+    expect(formatContextUsage(512, 8192, 0.0625)).toBe("512/8k · 6%");
+  });
+
+  it("abbreviates million-token windows", () => {
+    expect(formatContextUsage(500_000, 1_000_000, 0.5)).toBe("500k/1.0M · 50%");
   });
 });
