@@ -101,7 +101,6 @@ export function ExperimentalShell(props: ExperimentalShellProps): React.ReactEle
       <>
         <FlowShell lines={props.lines} transcriptEpoch={props.transcriptEpoch} columns={props.columns} />
         <Box flexDirection="column">
-          <ShellHeader {...props} />
           {props.todos.length > 0 ? (
             <ShellTodoDock
               todos={props.todos}
@@ -131,13 +130,14 @@ export function ExperimentalShell(props: ExperimentalShellProps): React.ReactEle
             status={props.status}
             draftTokens={props.draftTokens}
             sessionTelemetry={props.sessionTelemetry}
-            width={layout.transcriptWidth}
+            width={props.columns}
             onAttach={props.onAttach}
             onChange={props.onChange}
             onSubmit={props.onSubmit}
         onHistoryPrevious={props.onHistoryPrevious}
         onHistoryNext={props.onHistoryNext}
           />
+          <ShellHeader {...props} />
           <ShellFooter agentMode={props.agentMode} paletteOpen={props.paletteItems.length > 0} />
         </Box>
       </>
@@ -790,7 +790,9 @@ function ShellComposer(props: {
   const accent = props.isRunning ? (props.ultramaxxRun ? "magenta" : "yellow") : props.approvalActive ? "yellow" : "cyan";
   const parts = runStatusParts({ workState: props.workState, status: props.status, elapsedMs, seed: verbSeed });
   const safeCursor = Math.max(0, Math.min(cursor, props.input.length));
-  const editorRows = layout.editorRows;
+  // A run needs exactly one row for its status line; reserving the composer's
+  // full height leaves blank rows under it that read as a rendering fault.
+  const editorRows = props.isRunning || props.approvalActive ? 1 : layout.editorRows;
   const view = composerView(props.input, safeCursor, layout.inputWidth, editorRows);
   const showPlaceholder = props.input.length === 0;
 
@@ -799,54 +801,31 @@ function ShellComposer(props: {
   const editorContent: React.ReactNode[] = [];
   for (let index = 0; index < editorRows; index += 1) {
     if (props.isRunning && index === 0) {
+      // One dim line: a spinner, the verb, and the figures in parentheses.
+      // Colour is spent only on the number that is changing, so the eye lands
+      // on throughput rather than on decoration.
       editorContent.push(
         <Box key="editor-run">
-          {props.ultramaxxRun ? <RainbowText text={`${pulseGlyph(frame)} `} frame={frame} bold /> : (
-            <Text color="cyan" bold>
-              {pulseGlyph(frame)}{" "}
-            </Text>
-          )}
+          <Text color="gray" dimColor>
+            {pulseGlyph(frame)}{" "}
+          </Text>
           {props.ultramaxxRun ? (
             <RainbowText text={parts.verb} frame={frame} bold />
           ) : (
-            <WaveText text={parts.verb} frame={frame} bold />
+            <Text color="white">{parts.verb}</Text>
           )}
-          <Text color="gray">
-            {"  ·  "}
-            {parts.state}
-            {parts.detail ? ` · ${parts.detail}` : ""}
+          <Text color="gray" dimColor>
+            {" ("}
+            {props.streamProgress
+              ? props.streamProgress.phase === "prompt"
+                ? `reading prompt · ${formatElapsed(props.streamProgress.elapsedMs)}`
+                : `${formatElapsed(props.streamProgress.elapsedMs)} · ↓ ${formatCompactTokens(props.streamProgress.tokens)} tok`
+              : `${formatElapsed(elapsedMs)} · ↓ ${formatCompactTokens(runOutputTokens)} tok`}
+            {")"}
           </Text>
-          {props.streamProgress ? (
-            // While a call is in flight the live figures are more informative
-            // than session totals, which only update once the call returns.
-            <Text color="gray">
-              {"  ("}
-              {props.streamProgress.phase === "prompt" ? (
-                <Text color="yellow">reading prompt</Text>
-              ) : (
-                <>
-                  <Text color="green">
-                    {props.streamProgress.tokensPerSecond === null
-                      ? "writing"
-                      : `${props.streamProgress.tokensPerSecond.toFixed(1)} tok/s`}
-                  </Text>
-                  <Text color="gray"> · ↓ {formatCompactTokens(props.streamProgress.tokens)}</Text>
-                </>
-              )}
-              {" · "}
-              {formatElapsed(props.streamProgress.elapsedMs)}
-              {")"}
-            </Text>
-          ) : (
-            <Text color="gray">
-              {"  ("}
-              {formatElapsed(elapsedMs)}
-              {" · "}
-              <Text color="cyan">↑ {formatCompactTokens(runInputTokens)}</Text>
-              <Text color="gray"> ↓ {formatCompactTokens(runOutputTokens)} tokens</Text>
-              {")"}
-            </Text>
-          )}
+          {props.streamProgress?.phase === "generating" && props.streamProgress.tokensPerSecond !== null ? (
+            <Text color="green">{` ${props.streamProgress.tokensPerSecond.toFixed(1)} tok/s`}</Text>
+          ) : null}
         </Box>,
       );
     } else if (!props.isRunning && props.approvalActive && index === 0) {
@@ -908,18 +887,22 @@ function ShellComposer(props: {
   }
 
   return (
-    <Box borderStyle="round" borderColor={accent} flexDirection="column" paddingX={1} height={layout.height + 2} overflowY="hidden">
+    // No frame around the composer. A border says "this is a separate object",
+    // and the composer is the page — a single rule above it is enough to
+    // separate it from the transcript, and costs one row instead of two.
+    <Box flexDirection="column" height={layout.height + 2} overflowY="hidden">
+      <Text color="gray" dimColor>
+        {"─".repeat(Math.max(8, props.width))}
+      </Text>
       <Box flexDirection="column" height={editorRows} overflowY="hidden">
         {editorContent}
       </Box>
-      <Text color="gray" wrap="truncate">
+      <Text color="gray" dimColor wrap="truncate">
         {props.isRunning
-          ? props.ultramaxxRun
-            ? "ULTRAMAXX run — escalated reasoning & step budget · esc stops the run."
-            : "Run active — type /commands only, esc stops the run."
+          ? "esc stops the run"
           : props.approvalActive
-            ? "Approval pending — y once · a session · n deny."
-            : `${props.draftTokens} tok draft${view.hiddenAbove > 0 ? ` · ${view.hiddenAbove} line${view.hiddenAbove === 1 ? "" : "s"} above` : ""} · ←→ move · ⏎ send · shift+⏎ newline · type ultramaxx to go hard`}
+            ? "y allow once · a allow session · n deny"
+            : `⏎ send · shift+⏎ newline${view.hiddenAbove > 0 ? ` · ${view.hiddenAbove} line${view.hiddenAbove === 1 ? "" : "s"} above` : ""}`}
       </Text>
     </Box>
   );
