@@ -99,11 +99,13 @@ export function ExperimentalShell(props: ExperimentalShellProps): React.ReactEle
     hasArtifacts: props.artifacts.length > 0,
   });
 
-  // Two rows per entry is a deliberate under-estimate: padding slightly too
-  // little leaves a small gap, padding too much pushes the prompt off screen.
-  const printedRows = props.lines.length * 2;
+  // Pad only on a genuinely empty transcript. Estimating how many rows the
+  // static region has printed cannot work — one markdown answer is forty rows
+  // where the estimate said two — and an over-estimate leaves a hole between
+  // the last line and the prompt. Once anything has printed, the terminal's
+  // own scrolling already puts the live region at the bottom.
   const liveRows = 10 + (props.todos.length > 0 ? props.todos.length + 1 : 0);
-  const bottomPad = Math.max(0, props.rows - printedRows - liveRows);
+  const bottomPad = props.lines.length === 0 ? Math.max(0, props.rows - liveRows) : 0;
 
   if (props.flow) {
     // Static must be the first child and must sit outside any height-bounded
@@ -111,7 +113,7 @@ export function ExperimentalShell(props: ExperimentalShellProps): React.ReactEle
     // scrollback. Everything below re-renders each frame as usual.
     return (
       <>
-        <FlowShell lines={props.lines} transcriptEpoch={props.transcriptEpoch} columns={props.columns} />
+        <FlowShell lines={props.lines} transcriptEpoch={props.transcriptEpoch} columns={props.columns} showBanner />
         {/* Hold the live region against the bottom of the viewport while the
             transcript is still shorter than a screen. Without this a fresh
             session renders its prompt at the very top with the terminal empty

@@ -1391,7 +1391,9 @@ describe("WorkspaceTools", () => {
 
     expect(approvals).toBe(0);
     expect(result.ok).toBe(false);
-    expect(result.summary).toContain("absolute path arguments outside the workspace are blocked");
+    expect(result.summary).toContain("outside the workspace");
+    // The message has to name a next action the model can actually take.
+    expect(result.summary).toContain("workspace-relative");
   });
 
   it("blocks dangerous git and npm subcommands after global options", async () => {

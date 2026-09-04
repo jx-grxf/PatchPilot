@@ -364,6 +364,28 @@ export class ToolCallLoopBreaker {
  * it lets the harness re-prompt once rather than ending the turn on a question
  * the user already answered by asking.
  */
+/**
+ * Catches an answer that *announces* work instead of doing it.
+ *
+ * A model that says "I'll start by listing the files" and then stops has
+ * decided what to do and simply not called the tool. Ending the turn there
+ * strands the user with a promise; re-prompting once turns the sentence into
+ * the call it describes.
+ */
+export function looksLikeAnnouncedAction(message: string): boolean {
+  const normalized = message.trim().toLowerCase();
+  if (normalized.length > 600) {
+    return false;
+  }
+
+  // Only when the announcement is the *end* of the message — a plan that is
+  // followed by more prose is a summary, not an abandoned action.
+  const tail = normalized.slice(-220);
+  return /\b(i(?:'| a)?ll (?:start|now|first|check|look|search|list|read|run|explore)|let me (?:start|check|look|search|list|read|run|explore)|i will (?:start|now|check|look|search|list|read|run)|ich werde (?:nach|jetzt|zuerst|mir)|lass mich (?:kurz )?(?:schauen|prüfen|nachsehen)|schaue ich mir)\b/.test(
+    tail
+  );
+}
+
 export function looksLikePermissionRequest(message: string): boolean {
   const normalized = message.trim().toLowerCase();
   if (normalized.length > 400 || !normalized.includes("?")) {

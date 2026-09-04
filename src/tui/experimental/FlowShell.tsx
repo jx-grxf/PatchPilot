@@ -1,5 +1,6 @@
 import React from "react";
 import { Box, Static, Text } from "ink";
+import { ExperimentalBanner } from "./Banner.js";
 import { DiffBlock, Markdown } from "../components/Markdown.js";
 import { symbols } from "./theme.js";
 import type { LogLine } from "../types.js";
@@ -32,12 +33,32 @@ export type FlowShellProps = {
   /** Bumped by /clear and /new to start a fresh static region. */
   transcriptEpoch: number;
   columns: number;
+  /** Print the wordmark once, ahead of the first entry. */
+  showBanner?: boolean;
 };
 
+/**
+ * A sentinel first item so the banner prints once, into scrollback, with the
+ * transcript. It cannot be rendered outside `<Static>` — Ink requires Static
+ * to be the first child — and rendering it above the live frame would redraw
+ * the logo on every keystroke.
+ */
+const bannerItem = { id: -1, kind: "banner" } as const;
+
 export function FlowShell(props: FlowShellProps): React.ReactElement {
+  const items: Array<LogLine | typeof bannerItem> = props.showBanner ? [bannerItem, ...props.lines] : props.lines;
+
   return (
-    <Static key={props.transcriptEpoch} items={props.lines}>
-      {(line) => <TranscriptEntry key={line.id} line={line} columns={props.columns} />}
+    <Static key={props.transcriptEpoch} items={items}>
+      {(item) =>
+        item.id === -1 ? (
+          <Box key="banner" flexDirection="column" marginBottom={1}>
+            <ExperimentalBanner width={props.columns} height={14} />
+          </Box>
+        ) : (
+          <TranscriptEntry key={item.id} line={item as LogLine} columns={props.columns} />
+        )
+      }
     </Static>
   );
 }

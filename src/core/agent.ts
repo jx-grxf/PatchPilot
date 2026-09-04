@@ -6,11 +6,13 @@ import type { SessionStore } from "./session.js";
 import { MAX_TOOL_CALLS_PER_RESPONSE, type AgentEvent, type AgentTodoItem, type AgentToolName, type AgentWorkState, type ApprovalRequest, type ChatMessage, type ModelChatResult, type ModelClient, type ModelProvider, type PermissionDecision, type ThinkingSetting, type ProviderTool, type RawToolCall, type AgentToolCall, type ToolCategory, type ToolResult } from "./types.js";
 import { StreamTimer } from "./stream.js";
 import { probeModelCapabilities } from "./capability.js";
+import { stripTemplateTokens } from "./localOpenAI.js";
 import { formatEnvelope, runSubagent, type SubagentEnvelope, type SubagentRequest } from "./subagentRunner.js";
 import { measureContext, pruneToolResults } from "./contextWindow.js";
 import {
   extractFencedToolCalls,
   extractStringifiedToolCalls,
+  looksLikeAnnouncedAction,
   looksLikePermissionRequest,
   repairToolCall,
   ToolCallLoopBreaker
@@ -311,18 +313,20 @@ export class AgentRunner {
       } else if (providerTools) {
         // Capable model, no calls, no fence: it answered. Guard against a
         // permission request made despite an explicit act-don't-ask prompt.
-        if (!sawPermissionRequest && looksLikePermissionRequest(rawResponse)) {
+        // An answer that announces the next step without taking it is the
+        // same failure as asking permission: the model decided and stopped.
+        if (!sawPermissionRequest && (looksLikePermissionRequest(rawResponse) || looksLikeAnnouncedAction(rawResponse))) {
           sawPermissionRequest = true;
           yield {
             type: "status",
-            message: "model asked for permission it already has; re-prompting to act",
+            message: "model described the next step instead of taking it; re-prompting to act",
             workState: "planning"
           };
           messages.push({ role: "assistant", content: clipPromptValue(rawResponse, 2000) });
           messages.push({
             role: "user",
             content:
-              "You already have permission. Do not ask — carry out the work now using the tools, and report what you changed."
+              "You described what you would do but did not do it. Carry out that exact step now by calling the tool, then report the result. Do not ask, and do not describe it again."
           });
           continue;
         }
@@ -992,7 +996,7 @@ export class AgentRunner {
         phase: generating ? "generating" : "prompt",
         elapsedMs: timer.elapsedMs,
         tokens,
-        content: visibleText,
+        content: stripTemplateTokens(visibleText),
         tokensPerSecond: generating && timer.generationMs > 0 ? tokens / (timer.generationMs / 1000) : null,
         workState: options.requestWorkState
       };

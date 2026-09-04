@@ -2901,7 +2901,7 @@ function validateShellCommand(command: string, workspaceRoot: string, options: {
     if (absolutePath) {
       const relativePath = path.relative(workspaceRoot, absolutePath);
       if (relativePath.startsWith("..") || path.isAbsolute(relativePath)) {
-        return { error: "absolute path arguments outside the workspace are blocked. Use inspect_document with /experimental file-analysis for external files." };
+        return { error: "This command references a path outside the workspace, and the shell is confined to it. Re-run it with a workspace-relative path, or ask the user to run it themselves if it genuinely needs to reach outside." };
       }
     }
   }

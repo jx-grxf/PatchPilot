@@ -271,3 +271,16 @@ describe("chat-template tokens that leak into content", () => {
     expect(stripTemplateTokens("<div>hello</div>")).toBe("<div>hello</div>");
   });
 });
+
+describe("control tokens beyond the channel markers", () => {
+  it("strips the multimodal markers gemma emits mid-word", () => {
+    expect(stripTemplateTokens("Trock<audio|>enverfahren")).toBe("Trockenverfahren");
+    expect(stripTemplateTokens("a <|image_soft_token|> b")).toBe("a b");
+  });
+
+  it("still leaves generics, comparisons and html alone", () => {
+    expect(stripTemplateTokens("Map<string, number>")).toBe("Map<string, number>");
+    expect(stripTemplateTokens("if (a<b && c>d) {}")).toBe("if (a<b && c>d) {}");
+    expect(stripTemplateTokens("<section><p>hi</p></section>")).toBe("<section><p>hi</p></section>");
+  });
+});

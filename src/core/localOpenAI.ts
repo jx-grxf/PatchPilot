@@ -382,18 +382,15 @@ function normalizeModelId(value: string): string {
  * agent loop parses them and the user reads them.
  */
 export function stripTemplateTokens(content: string): string {
-  // A control token is often followed by the role or channel name it opens,
-  // which is part of the marker rather than of the answer — so both go in one
-  // pass. Matching the pipe form only keeps `Array<string>` and `a < b` safe.
+  // Matching a fixed list of names was too narrow — gemma also emits audio and
+  // image markers, and every family invents its own. What every control token
+  // has and ordinary text does not is a pipe inside the angle brackets, so
+  // that is what identifies one. `Array<string>` and `a < b` have no pipe and
+  // are left alone. A role or channel word directly after a marker belongs to
+  // the marker rather than to the answer, so it goes in the same pass.
   return content
-    .replace(
-      /<\|(?:channel|start|end|message|im_start|im_end|assistant|system|user|return|constrain)\|?>\s*(?:thought|analysis|final|assistant|system|user)?\s*\n?/gi,
-      ""
-    )
-    .replace(
-      /<(?:channel|im_start|im_end|start|end)\|>\s*(?:thought|analysis|final|assistant)?\s*\n?/gi,
-      ""
-    )
+    .replace(/<\|[a-z0-9_]{2,24}\|?>\s*(?:thought|analysis|final|assistant|system|user)?[ \t]*\n?/gi, "")
+    .replace(/<[a-z0-9_]{2,24}\|>\s*(?:thought|analysis|final|assistant|system|user)?[ \t]*\n?/gi, "")
     .replace(/<\/?s>/g, "")
     .trimStart();
 }
