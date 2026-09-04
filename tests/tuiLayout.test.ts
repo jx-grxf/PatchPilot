@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatContextUsage } from "../src/tui/App.js";
+import { formatContextUsage } from "../src/tui/transcriptEvents.js";
 import { computeComposerLayout, wrapDraftRows } from "../src/tui/layout.js";
 
 describe("TUI layout helpers", () => {

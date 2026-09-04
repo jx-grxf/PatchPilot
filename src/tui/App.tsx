@@ -23,6 +23,39 @@ import { CommandSuggestions, type CommandSuggestionItem } from "./components/Com
 import { Composer, FooterHints } from "./components/Composer.js";
 import { ExperimentalPanel, experimentalFlagAt, experimentalFlagCount, type ExperimentalFlag, type ExperimentalFlags } from "./components/ExperimentalPanel.js";
 import { emptyPromptHistory, recallNext, recallPrevious, rememberPrompt, type PromptHistory } from "./promptHistory.js";
+import {
+  addApprovalTelemetry,
+  addToolTelemetry,
+  emptyToolTelemetry,
+  formatStatusDock,
+  formatUsageDetail,
+  formatUsageSummary
+} from "./sessionStats.js";
+import { attachmentLimitWarning, formatAttachedDocuments, formatAttachmentDigestPath } from "./attachmentLimits.js";
+import {
+  loadAvailableModels,
+  loadKnownOrAvailableModels,
+  modelDescriptorIndex,
+  rememberModelDescriptors,
+  resolveRunnableSettings,
+  switchModel
+} from "./modelRuntime.js";
+import {
+  defaultModelForProvider,
+  ejectOllamaModels,
+  selectModelFromInput,
+  unloadUsedOllamaModels
+} from "./modelPicking.js";
+import { formatModelDescription, formatModelLabel, formatModelOptions } from "./modelSelection.js";
+import { cacheModelList } from "./modelRuntime.js";
+import {
+  eventToLine,
+  eventToStatus,
+  formatContextUsage,
+  formatStreamProgress,
+  randomLegacyVerbIndex,
+  type StreamProgress
+} from "./transcriptEvents.js";
 import { runContextSlashCommand } from "./contextCommands.js";
 import { ExperimentalShell } from "./experimental/ExperimentalShell.js";
 import { ThemePicker } from "./experimental/ThemePicker.js";
@@ -92,9 +125,6 @@ function readUiTheme(): UiTheme {
   return "flow";
 }
 
-const modelCacheTtlMs = 5 * 60_000;
-const modelCache = new Map<string, { models: string[]; descriptors: ModelDescriptor[]; expiresAt: number }>();
-const modelDescriptorIndex = new Map<string, ModelDescriptor>();
 
 export function App(props: PatchPilotAppProps): React.ReactElement {
   const { exit } = useApp();
@@ -655,11 +685,12 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       setActiveHost(details);
       setHostOptions((currentHosts) => [verifiedHost, ...currentHosts.filter((host) => host.url !== verifiedHost.url)]);
       setModelOptions(details.models);
-      modelCache.set(`ollama:${verifiedHost.url}`, {
-        models: details.models,
-        descriptors: details.models.map((model) => ({ id: model, displayName: model })),
-        expiresAt: Date.now() + modelCacheTtlMs
-      });
+      cacheModelList(
+        "ollama",
+        verifiedHost.url,
+        details.models,
+        details.models.map((model) => ({ id: model, displayName: model }))
+      );
       setSettings((currentSettings) => ({
         ...currentSettings,
         provider: "ollama",
@@ -2966,186 +2997,6 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   );
 }
 
-async function loadAvailableModels(
-  provider: ModelProvider,
-  ollamaUrl: string,
-  setModelOptions: React.Dispatch<React.SetStateAction<string[]>>,
-  refresh = false
-): Promise<string[]> {
-  const cacheKey = modelCacheKey(provider, ollamaUrl);
-  const cachedModels = modelCache.get(cacheKey);
-  if (!refresh && cachedModels && cachedModels.expiresAt > Date.now()) {
-    rememberModelDescriptors(cachedModels.descriptors);
-    setModelOptions(cachedModels.models);
-    return cachedModels.models;
-  }
-
-  const client = createModelClient({
-    provider,
-    ollamaUrl
-  });
-  const descriptors = client.listModelDescriptors
-    ? await client.listModelDescriptors()
-    : (await client.listModels()).map((model) => ({ id: model, displayName: model }));
-  const models = descriptors.map((model) => model.id);
-  rememberModelDescriptors(descriptors);
-  modelCache.set(cacheKey, {
-    models,
-    descriptors,
-    expiresAt: Date.now() + modelCacheTtlMs
-  });
-  setModelOptions(models);
-  return models;
-}
-
-function modelCacheKey(provider: ModelProvider, ollamaUrl: string): string {
-  if (provider === "ollama") {
-    return `${provider}:${ollamaUrl}`;
-  }
-
-  return `${provider}:${resolveLocalOpenAIBaseUrl()}`;
-}
-
-function rememberModelDescriptors(descriptors: ModelDescriptor[]): void {
-  for (const descriptor of descriptors) {
-    modelDescriptorIndex.set(descriptor.id, descriptor);
-    if (descriptor.modelName) {
-      modelDescriptorIndex.set(descriptor.modelName, descriptor);
-    }
-    if (descriptor.displayName) {
-      modelDescriptorIndex.set(descriptor.displayName, descriptor);
-    }
-  }
-}
-
-async function loadKnownOrAvailableModels(
-  provider: ModelProvider,
-  ollamaUrl: string,
-  modelOptions: string[],
-  setModelOptions: React.Dispatch<React.SetStateAction<string[]>>,
-  appendLine: (line: LogLineInput) => void,
-  options: {
-    refresh?: boolean;
-  } = {}
-): Promise<string[] | null> {
-  try {
-    return !options.refresh && modelOptions.length > 0 ? modelOptions : await loadAvailableModels(provider, ollamaUrl, setModelOptions, options.refresh);
-  } catch (error) {
-    appendLine({
-      tone: "danger",
-      label: "models",
-      text: error instanceof Error ? error.message : String(error)
-    });
-    return null;
-  }
-}
-
-async function switchModel(
-  provider: ModelProvider,
-  nextModel: string,
-  ollamaUrl: string,
-  currentModel: string,
-  appendLine: (line: LogLineInput) => void,
-  setModelOptions: React.Dispatch<React.SetStateAction<string[]>>,
-  setSettings: React.Dispatch<React.SetStateAction<AgentRunnerOptions>>,
-  setTelemetry: React.Dispatch<React.SetStateAction<ModelTelemetry | null>>,
-  knownModels?: string[]
-): Promise<void> {
-  const installedModels =
-    knownModels ??
-    (await loadAvailableModels(provider, ollamaUrl, setModelOptions).catch((error: unknown) => {
-      appendLine({
-        tone: "danger",
-        label: "models",
-        text: error instanceof Error ? error.message : String(error)
-      });
-      return null;
-    }));
-
-  if (!installedModels) {
-    return;
-  }
-
-  if (!installedModels.includes(nextModel) && !canUseUnverifiedModel(provider, nextModel)) {
-    appendLine({
-      tone: "warning",
-      label: "model",
-      text: `${nextModel} is not available for ${provider}.`,
-      detail:
-        installedModels.length > 0
-          ? `Use /models and pick one of:\n${formatModelOptions(installedModels, currentModel)}`
-          : provider === "ollama"
-            ? "No models installed on the selected host."
-            : "No models served. Load one in your local server, or check PATCHPILOT_LOCAL_URL."
-    });
-    return;
-  }
-
-  setTelemetry(null);
-  setSettings((currentSettings) => ({
-    ...currentSettings,
-    model: nextModel
-  }));
-  savePatchPilotEnvValues({
-    PATCHPILOT_PROVIDER: provider,
-    PATCHPILOT_MODEL: nextModel
-  });
-  appendLine({
-    tone: installedModels.includes(nextModel) ? "success" : "warning",
-    label: "model",
-    text: installedModels.includes(nextModel) ? `switched to ${formatModelLabel(nextModel)}` : `switched to unverified ${provider} model ${nextModel}`,
-    detail: installedModels.includes(nextModel) ? undefined : "The provider did not list this model in discovery. PatchPilot will try it and surface the provider error if it is unavailable."
-  });
-}
-
-async function resolveRunnableSettings(
-  settings: AgentRunnerOptions,
-  modelOptions: string[],
-  appendLine: (line: LogLineInput) => void,
-  setModelOptions: React.Dispatch<React.SetStateAction<string[]>>,
-  onProviderError?: (message: string) => void
-): Promise<AgentRunnerOptions | null> {
-  let installedModels: string[];
-  try {
-    installedModels = modelOptions.includes(settings.model)
-      ? modelOptions
-      : await loadAvailableModels(settings.provider, settings.ollamaUrl, setModelOptions);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    appendLine({
-      tone: "danger",
-      label: settings.provider,
-      text: message
-    });
-    onProviderError?.(message);
-    return null;
-  }
-
-  if (installedModels.includes(settings.model) || canUseUnverifiedModel(settings.provider, settings.model)) {
-    if (!installedModels.includes(settings.model)) {
-      appendLine({
-        tone: "warning",
-        label: "model",
-        text: `using unverified ${settings.provider} model ${settings.model}`,
-        detail: "Model discovery did not list it; the next provider request will be the compatibility check."
-      });
-    }
-    return settings;
-  }
-
-  appendLine({
-    tone: "warning",
-    label: "model",
-    text: `${settings.model} is not available for ${settings.provider}.`,
-    detail:
-      installedModels.length > 0
-        ? `Pick an installed model first:\n${formatModelOptions(installedModels, settings.model)}`
-        : settings.provider === "ollama"
-          ? "No models installed on the selected host."
-          : "No models served. Load one in your local server, or check PATCHPILOT_LOCAL_URL."
-  });
-  return null;
-}
 
 function buildCommandSuggestionItems(options: {
   input: string;
@@ -3339,110 +3190,6 @@ function readIndexedSelection(value: string, selectedIndex: number): number | nu
   return Number.isInteger(parsedIndex) ? parsedIndex - 1 : null;
 }
 
-function selectModelFromInput(value: string, models: string[], selectedIndex?: number, options: { allowManual?: boolean } = {}): string | null {
-  const normalizedValue = normalizeModelAlias(value.trim());
-  if (!normalizedValue && selectedIndex !== undefined) {
-    return models[selectedIndex] ?? null;
-  }
-
-  if (!normalizedValue) {
-    return null;
-  }
-
-  const modelIndex = Number.parseInt(normalizedValue, 10);
-  if (Number.isInteger(modelIndex)) {
-    return models[modelIndex - 1] ?? null;
-  }
-
-  if (models.includes(normalizedValue)) {
-    return normalizedValue;
-  }
-
-  const labelMatch = models.find((model) => formatModelLabel(model).toLowerCase() === normalizedValue.toLowerCase());
-  if (labelMatch) {
-    return labelMatch;
-  }
-
-  const matches = selectableModels(normalizedValue, models, formatModelLabel);
-  if (matches.length === 1) {
-    return matches[0] ?? null;
-  }
-
-  return options.allowManual && isPlausibleCloudModelId(normalizedValue) ? normalizedValue : null;
-}
-
-function isPlausibleCloudModelId(value: string): boolean {
-  return /^[A-Za-z0-9][A-Za-z0-9._:/+-]*$/.test(value) && value.length >= 3;
-}
-
-/**
- * Ollama can only run what it has pulled, so an unlisted id is always wrong.
- * An OpenAI-compatible server may load a model on demand, so a plausible id is
- * worth attempting rather than refusing.
- */
-function canUseUnverifiedModel(provider: ModelProvider, model: string): boolean {
-  return provider !== "ollama" && isPlausibleCloudModelId(model);
-}
-
-function defaultModelForProvider(provider: ModelProvider, currentModel: string): string {
-  if (provider === "local-openai") {
-    return modelDescriptorIndex.has(currentModel) ? currentModel : defaultLocalOpenAIModel;
-  }
-
-  return currentModel.includes("/") ? defaultOllamaModel : currentModel;
-}
-
-
-async function unloadUsedOllamaModels(usedModels: Set<string>): Promise<void> {
-  const entries = [...usedModels];
-  usedModels.clear();
-  await Promise.allSettled(
-    entries.map(async (entry) => {
-      const [url, model] = entry.split("|");
-      if (!url || !model) {
-        return;
-      }
-
-      await new OllamaClient(url).unloadModel(model);
-    })
-  );
-}
-
-async function ejectOllamaModels(options: {
-  target: string;
-  settings: AgentRunnerOptions;
-  activeHost: OllamaHostDetails | null;
-  usedModels: Set<string>;
-}): Promise<string[]> {
-  const target = options.target.trim();
-  const client = new OllamaClient(options.settings.ollamaUrl);
-  const models =
-    target === "all"
-      ? [
-          ...new Set([
-            ...[...options.usedModels]
-              .map((entry) => entry.split("|"))
-              .filter(([url]) => url === options.settings.ollamaUrl)
-              .map(([, model]) => model)
-              .filter((model): model is string => Boolean(model)),
-            ...(options.activeHost?.runningModels.map((model) => model.name) ?? [])
-          ])
-        ]
-      : [target || options.settings.model];
-
-  const ejected: string[] = [];
-  for (const model of models) {
-    await client.unloadModel(model).then(
-      () => {
-        ejected.push(model);
-        options.usedModels.delete(`${options.settings.ollamaUrl}|${model}`);
-      },
-      () => undefined
-    );
-  }
-
-  return ejected;
-}
 
 function UpdatePromptPanel(props: {
   prompt: UpdatePromptState | null;
@@ -3485,246 +3232,6 @@ function UpdatePromptPanel(props: {
   );
 }
 
-function emptyToolTelemetry(): ToolTelemetry {
-  return {
-    total: 0,
-    succeeded: 0,
-    failed: 0,
-    approvals: 0,
-    denied: 0,
-    byTool: {}
-  };
-}
-
-function addToolTelemetry(current: ToolTelemetry, tool: AgentToolName | "subagent", ok: boolean): ToolTelemetry {
-  return {
-    ...current,
-    total: current.total + 1,
-    succeeded: current.succeeded + (ok ? 1 : 0),
-    failed: current.failed + (ok ? 0 : 1),
-    byTool: {
-      ...current.byTool,
-      [tool]: (current.byTool[tool] ?? 0) + 1
-    }
-  };
-}
-
-function addApprovalTelemetry(current: ToolTelemetry, decision: PermissionDecision): ToolTelemetry {
-  return {
-    ...current,
-    approvals: current.approvals + (decision === "deny" ? 0 : 1),
-    denied: current.denied + (decision === "deny" ? 1 : 0)
-  };
-}
-
-/**
- * Dense operational status dock for `/status` — restores the always-available
- * "what mode am I in and what can happen" view the legacy sidebar provided,
- * without spending fixed screen rows in the new shell's header.
- */
-function formatStatusDock(options: {
-  provider: ModelProvider;
-  model: string;
-  agentMode: AgentMode;
-  subagents: boolean;
-  thinkingMode: string;
-  thinking: ThinkingSetting;
-  workspace: string;
-  ollamaUrl: string;
-  sessionId: string;
-  activeHost: OllamaHostDetails | null;
-  toolTelemetry: ToolTelemetry;
-  sessionTelemetry: SessionTelemetry;
-  telemetry: ModelTelemetry | null;
-  draftTokens: number;
-}): string {
-  const isOllama = options.provider === "ollama";
-  const hostLine = isOllama
-    ? `${options.activeHost?.host.deviceName ?? "ollama"}  ${options.activeHost?.host.url ?? options.ollamaUrl}`
-    : `${options.provider} api`;
-  const computeKind = isOllama ? describeComputeTarget(options.ollamaUrl).kind : "local";
-  const reasoning = `steps ${options.thinkingMode} · ${formatThinkingSupport(options.provider, options.model, options.thinking)}`;
-  const toolCounters = Object.entries(options.toolTelemetry.byTool)
-    .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
-    .slice(0, 6)
-    .map(([tool, count]) => `${tool} ${count}`)
-    .join(" · ");
-  return [
-    `provider   ${options.provider}/${options.model}`,
-    `host       ${hostLine}  ·  compute ${computeKind}  ·  tools local`,
-    `mode       ${options.agentMode}  ·  write ${modePermissionLabel(options.agentMode, "write")}  ·  shell ${modePermissionLabel(options.agentMode, "shell")}`,
-    `model cfg  ${reasoning}  ·  subagents ${options.subagents ? "on" : "off"}`,
-    `workspace  ${options.workspace}`,
-    `session    ${options.sessionId}`,
-    `tokens     draft ${options.draftTokens} · last ${formatTokens(options.telemetry)} · session ${formatSessionTokens(options.sessionTelemetry)} · cost ${formatCost(options.sessionTelemetry.estimatedCostUsd)}`,
-    options.toolTelemetry.total > 0
-      ? `tools      ${options.toolTelemetry.total} calls · ${options.toolTelemetry.succeeded} ok · ${options.toolTelemetry.failed} failed · ${options.toolTelemetry.approvals} approved · ${options.toolTelemetry.denied} denied`
-      : "tools      none yet",
-    toolCounters ? `counters   ${toolCounters}` : "",
-  ]
-    .filter(Boolean)
-    .join("\n");
-}
-
-function formatUsageSummary(options: {
-  provider: ModelProvider;
-  model: string;
-  telemetry: ModelTelemetry | null;
-  sessionTelemetry: SessionTelemetry;
-  toolTelemetry: ToolTelemetry;
-}): string {
-  const session = options.sessionTelemetry;
-  const cost = formatCost(session.estimatedCostUsd);
-  const saved = estimateSessionSavings(session);
-  const pricingNote = pricingSourceLabel(session.costSource, saved.source);
-  return [
-    `${session.requests} request${session.requests === 1 ? "" : "s"}`,
-    `${session.promptTokens} in`,
-    `${session.responseTokens} out`,
-    `${session.cachedPromptTokens} cached`,
-    `${options.toolTelemetry.total} tool call${options.toolTelemetry.total === 1 ? "" : "s"}`,
-    `cost ${cost}`,
-    saved.costUsd !== null ? `saved ${formatCost(saved.costUsd)}` : "saved -",
-    pricingNote
-  ].join(" · ");
-}
-
-function formatUsageDetail(options: {
-  provider: ModelProvider;
-  model: string;
-  sessionTelemetry: SessionTelemetry;
-  toolTelemetry: ToolTelemetry;
-}): string {
-  const session = options.sessionTelemetry;
-  const saved = estimateSessionSavings(session);
-  const toolRows = Object.entries(options.toolTelemetry.byTool)
-    .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
-    .map(([tool, count]) => `${tool}: ${count}`)
-    .join("\n");
-  return [
-    `model: ${options.provider}/${options.model}`,
-    `tokens: ${session.promptTokens} input, ${session.responseTokens} output, ${session.cachedPromptTokens} cached, ${session.cacheWriteTokens} cache-write, ${session.totalTokens} total`,
-    `cost: ${formatCost(session.estimatedCostUsd)} (${session.costSource})`,
-    saved.costUsd !== null ? `lifetime saved this session: ${formatCost(saved.costUsd)} (${saved.source})` : "lifetime saved this session: -",
-    options.toolTelemetry.total > 0
-      ? `tools: ${options.toolTelemetry.total} total, ${options.toolTelemetry.succeeded} ok, ${options.toolTelemetry.failed} failed, ${options.toolTelemetry.approvals} approved, ${options.toolTelemetry.denied} denied`
-      : "tools: none yet",
-    toolRows ? `tool counters:\n${toolRows}` : "",
-    session.costSource === "fallback-pricing" || saved.source === "fallback-pricing"
-      ? "pricing note: exact model pricing was not available, so PatchPilot used a conservative general cloud-model estimate."
-      : session.costSource === "unknown"
-        ? "pricing note: exact pricing is unavailable for this provider/model."
-        : ""
-  ]
-    .filter(Boolean)
-    .join("\n");
-}
-
-function estimateSessionSavings(session: SessionTelemetry): {
-  costUsd: number | null;
-  source: "api-pricing" | "fallback-pricing" | "unknown";
-} {
-  return {
-    costUsd: estimateCloudEquivalentCost(session.promptTokens, session.responseTokens, session.cachedPromptTokens),
-    source: "fallback-pricing"
-  };
-}
-
-function pricingSourceLabel(costSource: SessionTelemetry["costSource"], savedSource: "api-pricing" | "fallback-pricing" | "unknown"): string {
-  if (costSource === "fallback-pricing" || savedSource === "fallback-pricing") {
-    return "fallback pricing";
-  }
-  if (costSource === "unknown" && savedSource === "unknown") {
-    return "pricing unknown";
-  }
-  if (costSource === "free-route") {
-    return "free route";
-  }
-  if (costSource === "mixed") {
-    return "mixed pricing";
-  }
-  return "priced";
-}
-
-const bytesPerMiB = 1024 * 1024;
-/**
- * Local models are bounded by context window and VRAM rather than by an API's
- * upload rules, so these thresholds are about what a local run can actually
- * hold, not what a service will accept.
- */
-const promptFileLimit = 8;
-const largeFileBytes = 32 * bytesPerMiB;
-const largePdfBytes = 8 * bytesPerMiB;
-const totalPromptWarnBytes = 16 * bytesPerMiB;
-
-function attachmentLimitWarning(paths: string[], provider: ModelProvider): string | null {
-  if (paths.length === 0) {
-    return null;
-  }
-
-  const files = paths.map((filePath) => ({
-    path: filePath,
-    type: attachmentTypeForPath(filePath),
-    size: readFileSize(filePath)
-  }));
-  const knownTotalBytes = files.reduce((total, file) => total + (typeof file.size === "number" ? file.size : 0), 0);
-  const largePdf = files.find((file) => file.type === "PDF" && typeof file.size === "number" && file.size > largePdfBytes);
-  const largeFile = files.find((file) => typeof file.size === "number" && file.size > largeFileBytes);
-
-  if (paths.length > promptFileLimit) {
-    return `Attached ${paths.length} files. A local model holds far less context than a hosted one \u2014 split this into batches of ${promptFileLimit} or fewer.`;
-  }
-
-  if (largeFile) {
-    return `${attachmentTypeForPath(largeFile.path)} file ${attachmentBasename(largeFile.path)} is over ${formatMiB(largeFileBytes)}; it will very likely overflow the model's context window.`;
-  }
-
-  if (largePdf) {
-    return `${attachmentTypeForPath(largePdf.path)} file ${attachmentBasename(largePdf.path)} is over ${formatMiB(largePdfBytes)}; extraction may be slow and incomplete on local hardware.`;
-  }
-
-  if (knownTotalBytes > totalPromptWarnBytes) {
-    return `Attached files total about ${formatMiB(knownTotalBytes)}; run /doctor to check the loaded context window before sending.`;
-  }
-
-  return null;
-}
-
-function readFileSize(filePath: string): number | null {
-  try {
-    const stats = statSync(filePath);
-    return stats.isFile() ? stats.size : null;
-  } catch {
-    return null;
-  }
-}
-
-function formatMiB(bytes: number): string {
-  return `${Math.round((bytes / bytesPerMiB) * 10) / 10} MiB`;
-}
-
-function formatAttachedDocuments(paths: string[]): string {
-  const counts = new Map<string, number>();
-  return paths
-    .map((filePath) => {
-      const kind = attachmentKindForPath(filePath) ?? "file";
-      const type = attachmentTypeForPath(filePath);
-      const index = (counts.get(type) ?? 0) + 1;
-      counts.set(type, index);
-      return `- ${attachmentLabel(kind, index, filePath)} path=${JSON.stringify(filePath)}`;
-    })
-    .join("\n");
-}
-
-/** Last path segment, splitting on both POSIX and Windows separators. */
-function attachmentBasename(filePath: string): string {
-  return filePath.split(/[\\/]/).filter(Boolean).at(-1) ?? filePath;
-}
-
-function formatAttachmentDigestPath(filePath: string): string {
-  return JSON.stringify(filePath.split(/[\\/]/).filter(Boolean).at(-1) ?? filePath);
-}
-
 /** Context-window occupancy for the meter. */
 export type ContextUsageView = {
   usedTokens: number;
@@ -3732,223 +3239,6 @@ export type ContextUsageView = {
   ratio: number;
   pressure: "ok" | "warn" | "high" | "critical";
 };
-
-/**
- * A percentage alone hides whether there is room for the next tool result, so
- * the meter shows the raw token counts alongside it.
- */
-export function formatContextUsage(usedTokens: number, limitTokens: number, ratio: number): string {
-  return `${formatTokenCount(usedTokens)}/${formatTokenCount(limitTokens)} · ${Math.round(ratio * 100)}%`;
-}
-
-function formatTokenCount(tokens: number): string {
-  if (tokens >= 1_000_000) {
-    return `${(tokens / 1_000_000).toFixed(1)}M`;
-  }
-
-  return tokens >= 1000 ? `${Math.round(tokens / 1000)}k` : String(tokens);
-}
-
-/** Live progress within the current model call, or null when idle. */
-export type StreamProgress = {
-  phase: "prompt" | "generating";
-  elapsedMs: number;
-  tokens: number;
-  tokensPerSecond: number | null;
-};
-
-/**
- * Prompt evaluation and generation are different waits and deserve different
- * words: during the first there is nothing to show but elapsed time, during
- * the second the throughput is the interesting number.
- */
-export function formatStreamProgress(
-  phase: "prompt" | "generating",
-  elapsedMs: number,
-  tokens: number,
-  tokensPerSecond: number | null
-): string {
-  if (phase === "prompt") {
-    return `reading prompt · ${formatDuration(elapsedMs)}`;
-  }
-
-  const rate = tokensPerSecond === null ? null : `${tokensPerSecond.toFixed(1)} tok/s`;
-  return [`writing · ${tokens} tok`, rate, formatDuration(elapsedMs)].filter(Boolean).join(" · ");
-}
-
-function formatDuration(elapsedMs: number): string {
-  const seconds = elapsedMs / 1000;
-  if (seconds < 10) {
-    return `${seconds.toFixed(1)}s`;
-  }
-
-  if (seconds < 60) {
-    return `${Math.round(seconds)}s`;
-  }
-
-  return `${Math.floor(seconds / 60)}m${String(Math.round(seconds % 60)).padStart(2, "0")}s`;
-}
-
-function randomLegacyVerbIndex(): number {
-  return Math.floor(Math.random() * 1_000_000);
-}
-
-function eventToLine(event: AgentEvent): LogLineInput {
-  switch (event.type) {
-    case "status":
-      return {
-        kind: "status",
-        tone: "muted",
-        label: event.workState,
-        text: event.message,
-        workState: event.workState
-      };
-    case "assistant":
-      return {
-        kind: "assistant",
-        tone: "accent",
-        label: "pilot",
-        text: event.message,
-        workState: event.workState
-      };
-    case "context":
-      // Drives the meter, never a transcript line.
-      return {
-        kind: "status",
-        tone: event.pressure === "critical" ? "danger" : event.pressure === "high" ? "warning" : "muted",
-        label: "context",
-        text: formatContextUsage(event.usedTokens, event.limitTokens, event.ratio),
-        workState: event.workState
-      };
-    case "thinking":
-      return {
-        kind: "thinking",
-        tone: "muted",
-        label: "thinking",
-        text: event.message,
-        workState: event.workState
-      };
-    case "stream":
-      // Handled as live status, never appended; this keeps the switch total.
-      return {
-        kind: "status",
-        tone: "muted",
-        label: event.workState,
-        text: formatStreamProgress(event.phase, event.elapsedMs, event.tokens, event.tokensPerSecond),
-        workState: event.workState
-      };
-    case "tool":
-      return {
-        kind: event.name === "git_diff" ? "diff" : "tool",
-        tone: event.ok ? "success" : "warning",
-        label: event.name,
-        text: event.summary,
-        detail: event.ok ? previewToolContent(event.content) : event.content,
-        workState: event.workState,
-        tool: event.name,
-        toolCallId: event.toolCallId,
-        category: event.category,
-        preview: event.preview
-      };
-    case "todo":
-      return {
-        kind: "status",
-        tone: "muted",
-        label: "todo",
-        text: event.summary,
-        workState: event.workState
-      };
-    case "approval":
-      return {
-        kind: "approval",
-        tone: event.decision === "deny" ? "warning" : "success",
-        label: "approval",
-        text: `${event.request.tool} ${event.decision.replace("_", " ")}`,
-        detail: event.request.preview,
-        workState: event.workState,
-        tool: event.request.tool,
-        preview: event.request.preview
-      };
-    case "final":
-      return {
-        kind: "final",
-        tone: "success",
-        label: "final",
-        text: event.message,
-        workState: event.workState
-      };
-    case "error":
-      return {
-        kind: "error",
-        tone: "danger",
-        label: "error",
-        text: event.message,
-        workState: event.workState
-      };
-    case "metrics":
-      return {
-        kind: "status",
-        tone: "muted",
-        label: "metrics",
-        text: formatTokens(event.metrics),
-        workState: event.workState
-      };
-  }
-}
-
-function previewToolContent(content: string | undefined): string | undefined {
-  const value = content?.trim();
-  if (!value) {
-    return undefined;
-  }
-
-  const lines = value.split(/\r?\n/);
-  const preview = lines.slice(0, 6).join("\n");
-  const suffix = lines.length > 6 ? `\n...[${lines.length - 6} more lines]` : "";
-  return `${preview}${suffix}`;
-}
-
-function eventToStatus(event: AgentEvent): string {
-  if (event.type === "status") {
-    return event.message;
-  }
-
-  if (event.type === "stream") {
-    return formatStreamProgress(event.phase, event.elapsedMs, event.tokens, event.tokensPerSecond);
-  }
-
-  if (event.type === "thinking") {
-    return "thinking";
-  }
-
-  if (event.type === "tool") {
-    return `${event.name}: ${event.summary}`;
-  }
-
-  if (event.type === "todo") {
-    return event.summary;
-  }
-
-  if (event.type === "approval") {
-    return `${event.request.tool}: ${event.decision.replace("_", " ")}`;
-  }
-
-  return event.type;
-}
-
-function workStateForApprovalTool(tool: AgentToolName): AgentWorkState {
-  const category = getToolSpec(tool).category;
-  if (category === "write") {
-    return "editing";
-  }
-  if (category === "shell" || category === "test") {
-    return "verifying";
-  }
-  if (category === "read" || category === "search" || category === "document" || category === "git") {
-    return "reading";
-  }
-  return "inspecting";
-}
 
 function defaultLogKind(line: LogLineInput): LogLine["kind"] {
   if (line.kind) {
@@ -3970,6 +3260,19 @@ function defaultLogKind(line: LogLineInput): LogLine["kind"] {
   return "status";
 }
 
+function workStateForApprovalTool(tool: AgentToolName): AgentWorkState {
+  const category = getToolSpec(tool).category;
+  if (category === "write") {
+    return "editing";
+  }
+  if (category === "shell" || category === "test") {
+    return "verifying";
+  }
+  if (category === "read" || category === "search" || category === "document" || category === "git") {
+    return "reading";
+  }
+  return "inspecting";
+}
 
 function formatHostOptions(hosts: OllamaHost[]): string {
   return hosts
@@ -3978,29 +3281,4 @@ function formatHostOptions(hosts: OllamaHost[]): string {
       return `${index + 1}. ${host.deviceName}  ${host.kind}  ${host.url}${version}`;
     })
     .join("\n");
-}
-
-function formatModelOptions(models: string[], currentModel: string): string {
-  return models
-    .map((model, index) => {
-      const currentMarker = model === currentModel ? "  current" : "";
-      return `${index + 1}. ${formatModelLabel(model)}${formatModelDescription(model)}${currentMarker}`;
-    })
-    .join("\n");
-}
-
-function formatModelLabel(model: string): string {
-  const descriptor = modelDescriptorIndex.get(model);
-  const label = descriptor?.displayName || descriptor?.modelName || model;
-  return label === model ? model : `${label} (${model})`;
-}
-
-function formatModelDescription(model: string): string {
-  const descriptor = modelDescriptorIndex.get(model);
-  if (!descriptor?.description) {
-    return "";
-  }
-
-  const legacySuffix = descriptor.legacy ? " legacy" : "";
-  return `  ${descriptor.description}${legacySuffix}`;
 }
