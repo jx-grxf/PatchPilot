@@ -104,7 +104,9 @@ export function ExperimentalShell(props: ExperimentalShellProps): React.ReactEle
               todos={props.todos}
               todoFrame={props.todoFrame}
               // Header row, one row per todo, and the two border rows.
-              height={Math.min(props.todos.length + 3, 10)}
+              // Header row plus one row per todo. The frame is gone, so no
+              // rows are reserved for borders any more.
+              height={Math.min(props.todos.length + 1, 8)}
               width={layout.transcriptWidth}
             />
           ) : null}
@@ -295,7 +297,7 @@ function ShellHeader(props: ExperimentalShellProps): React.ReactElement {
   );
 
   return (
-    <Box borderStyle="round" borderColor={accent} flexDirection="column" paddingX={1}>
+    <Box flexDirection="column" paddingX={1}>
       <Box justifyContent="space-between">
         <Text wrap="truncate">
           <Text color="cyan" bold>
@@ -505,7 +507,7 @@ function ShellTodoDock(props: {
   const allDone = completed === props.todos.length;
 
   return (
-    <Box borderStyle="round" borderColor="cyan" flexDirection="column" paddingX={1} height={props.height} overflowY="hidden">
+    <Box flexDirection="column" paddingX={1} height={props.height} overflowY="hidden">
       <Box>
         <Text color="cyan" bold>
           {symbols.bullet} todos{" "}

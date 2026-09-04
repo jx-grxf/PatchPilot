@@ -182,11 +182,6 @@ export class AgentRunner {
       }
 
       const requestWorkState = stepIndex === 0 ? "planning" : "inspecting";
-      yield {
-        type: "status",
-        message: `thinking step ${stepIndex + 1}/${maxSteps}${this.options.thinkingMode === "adaptive" ? " adaptive" : ""}`,
-        workState: requestWorkState
-      };
       await this.options.sessionStore?.append({
         type: "model.request",
         runId,
@@ -440,11 +435,13 @@ export class AgentRunner {
         return;
       }
 
-      yield {
-        type: "assistant",
-        message: parsedResponse.message,
-        workState: "planning"
-      };
+      if (isMeaningfulAssistantMessage(parsedResponse.message)) {
+        yield {
+          type: "assistant",
+          message: parsedResponse.message,
+          workState: "planning"
+        };
+      }
 
       const toolCalls = parsedResponse.tool_calls.slice(0, MAX_TOOL_CALLS_PER_RESPONSE).map(normalizeToolCall);
       if (toolCalls.length === 0 && looksLikeClarification(parsedResponse.message)) {
@@ -926,7 +923,7 @@ export class AgentRunner {
     requestWorkState: AgentWorkState;
   }): AsyncGenerator<AgentEvent, ModelChatResult> {
     const timer = new StreamTimer();
-    let pendingThinking = "";
+    let thinkingChars = 0;
     let tokens = 0;
     let wake: (() => void) | null = null;
     let finished = false;
@@ -954,7 +951,7 @@ export class AgentRunner {
           }
           if (delta.thinking) {
             timer.markFirstToken();
-            pendingThinking += delta.thinking;
+            thinkingChars += delta.thinking.length;
           }
           nudge();
         }
@@ -981,17 +978,8 @@ export class AgentRunner {
 
       // Reasoning arrives token by token. Flushing on every tick would emit
       // one transcript line per word, so it is buffered into readable blocks.
-      if (pendingThinking.length >= thinkingFlushChars) {
-        const boundary = lastSentenceBoundary(pendingThinking);
-        yield {
-          type: "thinking",
-          message: pendingThinking.slice(0, boundary).trim(),
-          workState: options.requestWorkState
-        };
-        pendingThinking = pendingThinking.slice(boundary);
-      }
-
       const generating = timer.timeToFirstTokenMs !== null;
+      void thinkingChars;
       yield {
         type: "stream",
         phase: generating ? "generating" : "prompt",
@@ -1002,13 +990,6 @@ export class AgentRunner {
       };
     }
 
-    if (pendingThinking.trim()) {
-      yield {
-        type: "thinking",
-        message: pendingThinking.trim(),
-        workState: options.requestWorkState
-      };
-    }
 
     return await chat;
   }
@@ -1324,6 +1305,15 @@ function buildSystemPrompt(
 }
 
 /** Unwraps a narrated protocol envelope so it never reaches the user raw. */
+/**
+ * A tool-calling turn often carries no prose at all. Rendering the placeholder
+ * puts an empty heading above every tool call, which is pure noise.
+ */
+export function isMeaningfulAssistantMessage(message: string): boolean {
+  const normalized = message.trim();
+  return normalized.length > 0 && normalized !== "working" && !/^\{.*\}$/s.test(normalized);
+}
+
 export function readFinalMessage(rawResponse: string): string {
   const trimmed = rawResponse.trim();
   if (!trimmed.startsWith("{") || !trimmed.includes('"action"')) {
