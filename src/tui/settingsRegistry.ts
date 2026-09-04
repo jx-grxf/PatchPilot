@@ -182,6 +182,14 @@ export const settingsRegistry: SettingDefinition[] = [
     defaultValue: "flow"
   },
   {
+    key: "PATCHPILOT_REDUCE_MOTION",
+    name: "Reduce motion",
+    description: "Hold spinners and bars still. Motion already stops when output is piped rather than shown.",
+    group: "interface",
+    kind: { type: "boolean" },
+    defaultValue: "0"
+  },
+  {
     key: "PATCHPILOT_UPDATE_CHECK",
     name: "Check for updates",
     description: "Look for a newer PatchPilot release on launch.",

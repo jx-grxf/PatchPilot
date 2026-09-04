@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { Box, Text, useInput } from "ink";
 import type { AgentTodoItem, AgentWorkState, ApprovalRequest, ModelProvider, ModelTelemetry, SessionTelemetry } from "../../core/types.js";
 import type { CommandSuggestionItem } from "../components/CommandSuggestions.js";
@@ -20,6 +20,7 @@ import type { StreamProgress } from "../transcriptEvents.js";
 import { resolveLocalOpenAIBaseUrl } from "../../core/localOpenAI.js";
 import { FlowShell } from "./FlowShell.js";
 import { symbols, workStateColor } from "./theme.js";
+import { formatCompact, pressureColor, shimmerIndex, smoothBar, sparkline, trackedBar } from "../motion.js";
 import { buildShellRows, buildTodoDock, truncate } from "./transcriptRows.js";
 import { hasUltraMode, splitUltraSegments, type UltraMode } from "./ultraModes.js";
 
@@ -264,22 +265,18 @@ function readEndpointLabel(baseUrl: string): string {
 }
 
 function ContextMeter(props: { usage: ContextUsageView }): React.ReactElement {
-  const width = 8;
-  const filled = Math.max(0, Math.min(width, Math.round(props.usage.ratio * width)));
-  const color =
-    props.usage.pressure === "critical"
-      ? "red"
-      : props.usage.pressure === "high"
-        ? "yellow"
-        : props.usage.pressure === "warn"
-          ? "cyan"
-          : "green";
+  const width = 10;
+  const color = pressureColor(props.usage.ratio);
+  // Eighth-width blocks: a ten-cell bar gets eighty states instead of ten, so
+  // the meter creeps rather than jumping a whole character at a time.
+  const bar = trackedBar(props.usage.ratio, width);
 
   return (
     <Text>
-      <Text color="gray">ctx </Text>
-      <Text color={color}>{symbols.barFilled.repeat(filled)}</Text>
-      <Text color="gray">{symbols.barEmpty.repeat(width - filled)}</Text>
+      <Text color="gray" dimColor>
+        ctx{" "}
+      </Text>
+      <Text color={color}>{bar}</Text>
       <Text color={color}> {Math.round(props.usage.ratio * 100)}%</Text>
     </Text>
   );
@@ -511,7 +508,6 @@ function ShellTodoDock(props: {
   const completed = props.todos.filter((todo) => todo.status === "completed").length;
   const total = Math.max(1, props.todos.length);
   const barWidth = 14;
-  const filled = Math.min(barWidth, Math.round((completed / total) * barWidth));
   const allDone = completed === props.todos.length;
 
   return (
@@ -520,12 +516,9 @@ function ShellTodoDock(props: {
         <Text color="cyan" bold>
           {symbols.bullet} todos{" "}
         </Text>
-        {/* Solid filled run + an explicitly dim track so the bar keeps
-            contrast on both dark and light terminal themes. */}
-        <Text color={allDone ? "green" : "yellow"}>{symbols.barFilled.repeat(filled)}</Text>
-        <Text color="gray" dimColor>
-          {symbols.barEmpty.repeat(Math.max(0, barWidth - filled))}
-        </Text>
+        {/* One tracked bar: the track is part of the string, so the filled
+            run and the remainder cannot drift apart at odd widths. */}
+        <Text color={allDone ? "green" : "yellow"}>{trackedBar(completed / Math.max(1, total), barWidth)}</Text>
         <Text color="gray">
           {" "}
           {completed}/{props.todos.length}
@@ -784,6 +777,23 @@ function ShellComposer(props: {
     { isActive: typingActive },
   );
 
+  // Recent throughput samples for the sparkline. A ref rather than state: this
+  // feeds a render that already happens every frame, and making it state would
+  // schedule a second one.
+  const throughputRef = useRef<number[]>([]);
+  if (props.streamProgress?.tokensPerSecond != null) {
+    const samples = throughputRef.current;
+    if (samples[samples.length - 1] !== props.streamProgress.tokensPerSecond) {
+      samples.push(props.streamProgress.tokensPerSecond);
+      if (samples.length > 32) {
+        samples.shift();
+      }
+    }
+  } else if (!props.isRunning && throughputRef.current.length > 0) {
+    throughputRef.current = [];
+  }
+  const throughputHistory = throughputRef.current;
+
   const elapsedMs = runningSince ? Date.now() - runningSince : 0;
   // Real token counter for the active run: cumulative provider-reported tokens
   // minus the totals captured when the run started. Works for every provider
@@ -815,7 +825,7 @@ function ShellComposer(props: {
           {props.ultramaxxRun ? (
             <RainbowText text={parts.verb} frame={frame} bold />
           ) : (
-            <Text color="white">{parts.verb}</Text>
+            <ShimmerText text={parts.verb} frame={frame} />
           )}
           <Text color="gray" dimColor>
             {" ("}
@@ -827,7 +837,14 @@ function ShellComposer(props: {
             {")"}
           </Text>
           {props.streamProgress?.phase === "generating" && props.streamProgress.tokensPerSecond !== null ? (
-            <Text color="green">{` ${props.streamProgress.tokensPerSecond.toFixed(1)} tok/s`}</Text>
+            <>
+              {/* The sparkline answers a question the number cannot: is this
+                  speeding up or grinding to a halt. */}
+              <Text color="gray" dimColor>
+                {` ${sparkline(throughputHistory, 8)}`}
+              </Text>
+              <Text color="green">{` ${props.streamProgress.tokensPerSecond.toFixed(1)} tok/s`}</Text>
+            </>
           ) : null}
         </Box>,
       );
@@ -908,6 +925,30 @@ function ShellComposer(props: {
             : `⏎ send · shift+⏎ newline${view.hiddenAbove > 0 ? ` · ${view.hiddenAbove} line${view.hiddenAbove === 1 ? "" : "s"} above` : ""}`}
       </Text>
     </Box>
+  );
+}
+
+/**
+ * A single highlight travelling across a word, then a pause.
+ *
+ * Quieter than a gradient and much cheaper: one character differs per frame.
+ * The pause between passes is what makes it read as a heartbeat rather than a
+ * glitch — a word that shimmers continuously looks like a rendering fault.
+ */
+function ShimmerText(props: { text: string; frame: number }): React.ReactElement {
+  const index = shimmerIndex(props.frame, props.text.length);
+  if (index < 0) {
+    return <Text color="white">{props.text}</Text>;
+  }
+
+  return (
+    <Text color="white">
+      {props.text.slice(0, index)}
+      <Text color="cyan" bold>
+        {props.text.slice(index, index + 1)}
+      </Text>
+      {props.text.slice(index + 1)}
+    </Text>
   );
 }
 
