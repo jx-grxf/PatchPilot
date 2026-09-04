@@ -22,6 +22,7 @@ import { clipboardHasImage, clipboardImageHint, readClipboardImage } from "../co
 import { CommandSuggestions, type CommandSuggestionItem } from "./components/CommandSuggestions.js";
 import { Composer, FooterHints } from "./components/Composer.js";
 import { ExperimentalPanel, experimentalFlagAt, experimentalFlagCount, type ExperimentalFlag, type ExperimentalFlags } from "./components/ExperimentalPanel.js";
+import { emptyPromptHistory, recallNext, recallPrevious, rememberPrompt, type PromptHistory } from "./promptHistory.js";
 import { runContextSlashCommand } from "./contextCommands.js";
 import { ExperimentalShell } from "./experimental/ExperimentalShell.js";
 import { ThemePicker } from "./experimental/ThemePicker.js";
@@ -131,6 +132,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   const [isRunning, setIsRunning] = useState(false);
   const [status, setStatus] = useState("idle");
   const [streamProgress, setStreamProgress] = useState<StreamProgress | null>(null);
+  const promptHistoryRef = useRef<PromptHistory>(emptyPromptHistory());
   const [contextUsage, setContextUsage] = useState<ContextUsageView | null>(null);
   const [workState, setWorkState] = useState<AgentWorkState>("idle");
   const [pendingApproval, setPendingApproval] = useState<ApprovalRequest | null>(null);
@@ -203,10 +205,9 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   // resize event, which would otherwise collapse the whole layout.
   const terminalRows = stdout.rows || 40;
   const terminalColumns = stdout.columns || 120;
-  const reauthPromptActive = false;
-  const updatePromptActive = !reauthPromptActive && Boolean(updatePrompt || updateBusy);
-  const approvalPromptActive = !reauthPromptActive && !updatePromptActive && Boolean(pendingApproval || bypassConfirmation);
-  const blockingPromptActive = reauthPromptActive || updatePromptActive || approvalPromptActive;
+  const updatePromptActive = Boolean(updatePrompt || updateBusy);
+  const approvalPromptActive = !updatePromptActive && Boolean(pendingApproval || bypassConfirmation);
+  const blockingPromptActive = updatePromptActive || approvalPromptActive;
   const paletteItems =
     !isRunning && !onboarding && !experimentalOpen && !blockingPromptActive
       ? buildCommandSuggestionItems({
@@ -2220,6 +2221,10 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         return;
       }
 
+      // Slash commands are recalled too: re-running /diff or /models is at
+      // least as common as re-running a prompt.
+      promptHistoryRef.current = rememberPrompt(promptHistoryRef.current, nextValue);
+
       if (isRunning && nextValue.startsWith("/")) {
         await handleSlashCommand(nextValue);
         return;
@@ -2808,6 +2813,16 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
 
     return (
       <ExperimentalShell
+        onHistoryPrevious={(currentInput) => {
+          const step = recallPrevious(promptHistoryRef.current, currentInput);
+          promptHistoryRef.current = step.history;
+          return step.input;
+        }}
+        onHistoryNext={() => {
+          const step = recallNext(promptHistoryRef.current);
+          promptHistoryRef.current = step.history;
+          return step.input;
+        }}
         provider={settings.provider}
         model={settings.model}
         workspace={settings.workspace}
@@ -2834,8 +2849,6 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         bypassConfirmation={bypassConfirmation}
         updatePrompt={updatePrompt}
         updateBusy={updateBusy}
-        reauthActive={false}
-        reauthBusy={false}
         transcriptScrollOffset={transcriptScrollOffset}
         input={input}
         paletteItems={paletteItems}

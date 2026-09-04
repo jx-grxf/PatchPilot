@@ -36,8 +36,6 @@ function props(overrides: Partial<ExperimentalShellProps> = {}): ExperimentalShe
     bypassConfirmation: false,
     updatePrompt: null,
     updateBusy: false,
-    reauthActive: false,
-    reauthBusy: false,
     transcriptScrollOffset: 0,
     input: "",
     paletteItems: [],
@@ -49,6 +47,8 @@ function props(overrides: Partial<ExperimentalShellProps> = {}): ExperimentalShe
     onChange: () => undefined,
     onSubmit: () => undefined,
     onAttach: () => "",
+    onHistoryPrevious: () => null,
+    onHistoryNext: () => null,
     ...overrides
   };
 }

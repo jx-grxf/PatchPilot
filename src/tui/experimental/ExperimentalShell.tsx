@@ -11,6 +11,7 @@ import { GradientText, RainbowText, WaveText, ultraGradients } from "./AnimatedT
 import { type Artifact, attachmentSymbol, extractAttachmentPaths, sanitizePastedText } from "./attachments.js";
 import { ExperimentalBanner } from "./Banner.js";
 import { composerView, deleteComposerText, insertComposerText } from "./composer.js";
+import { shouldRecallForward, shouldRecallHistory } from "../promptHistory.js";
 import { CommandPalette } from "./CommandPalette.js";
 import { estimateCloudEquivalentCost, formatSavedCost } from "./savings.js";
 import { computeExperimentalLayout, windowRows } from "./layout.js";
@@ -54,8 +55,6 @@ export type ExperimentalShellProps = {
     command: string;
   } | null;
   updateBusy: boolean;
-  reauthActive: boolean;
-  reauthBusy: boolean;
   transcriptScrollOffset: number;
   input: string;
   paletteItems: CommandSuggestionItem[];
@@ -67,6 +66,9 @@ export type ExperimentalShellProps = {
   onChange: (value: string) => void;
   onSubmit: (value: string) => void;
   onAttach: (path: string) => string;
+  /** Returns the recalled prompt, or null when there is nothing to recall. */
+  onHistoryPrevious: (currentInput: string) => string | null;
+  onHistoryNext: () => string | null;
 };
 
 /**
@@ -79,7 +81,7 @@ export type ExperimentalShellProps = {
  * owns its own typing input.
  */
 export function ExperimentalShell(props: ExperimentalShellProps): React.ReactElement {
-  const approvalActive = Boolean(props.pendingApproval || props.bypassConfirmation || props.reauthActive || props.updatePrompt || props.updateBusy);
+  const approvalActive = Boolean(props.pendingApproval || props.bypassConfirmation || props.updatePrompt || props.updateBusy);
   const layout = computeExperimentalLayout({
     rows: props.rows,
     columns: props.columns,
@@ -132,6 +134,8 @@ export function ExperimentalShell(props: ExperimentalShellProps): React.ReactEle
             onAttach={props.onAttach}
             onChange={props.onChange}
             onSubmit={props.onSubmit}
+        onHistoryPrevious={props.onHistoryPrevious}
+        onHistoryNext={props.onHistoryNext}
           />
           <ShellFooter agentMode={props.agentMode} paletteOpen={props.paletteItems.length > 0} />
         </Box>
@@ -154,9 +158,7 @@ export function ExperimentalShell(props: ExperimentalShellProps): React.ReactEle
       {layout.todoDockHeight > 0 ? (
         <ShellTodoDock todos={props.todos} todoFrame={props.todoFrame} height={layout.todoDockHeight} width={layout.transcriptWidth} />
       ) : null}
-      {props.reauthActive ? (
-        <ShellReauth busy={props.reauthBusy} />
-      ) : props.updatePrompt || props.updateBusy ? (
+      {props.updatePrompt || props.updateBusy ? (
         <ShellUpdate prompt={props.updatePrompt} busy={props.updateBusy} />
       ) : approvalActive ? (
         <ShellApproval request={props.pendingApproval} bypassConfirmation={props.bypassConfirmation} />
@@ -165,6 +167,8 @@ export function ExperimentalShell(props: ExperimentalShellProps): React.ReactEle
         <CommandPalette items={props.paletteItems} selectedIndex={props.paletteIndex} width={layout.transcriptWidth} />
       ) : null}
       <ShellComposer
+        onHistoryPrevious={props.onHistoryPrevious}
+        onHistoryNext={props.onHistoryNext}
         input={props.input}
         isRunning={props.isRunning}
         streamProgress={props.streamProgress}
@@ -602,55 +606,6 @@ function ShellApproval(props: { request: ApprovalRequest | null; bypassConfirmat
   );
 }
 
-function ShellReauth(props: { busy: boolean }): React.ReactElement {
-  const [frame, setFrame] = useState(0);
-
-  useEffect(() => {
-    if (!props.busy) {
-      setFrame(0);
-      return;
-    }
-
-    const timer = setInterval(() => {
-      setFrame((current) => current + 1);
-    }, spinnerFrameMs);
-
-    return () => {
-      clearInterval(timer);
-    };
-  }, [props.busy]);
-
-  return (
-    <Box borderStyle="round" borderColor="yellow" flexDirection="column" paddingX={1}>
-      <Text color="yellow" bold>
-        {symbols.reauth} GEMINI COOKIES EXPIRED
-      </Text>
-      {props.busy ? (
-        <>
-          <Text color="cyan">
-            <Text bold>{spinnerGlyph(frame)}</Text> Refreshing Gemini browser cookies…
-          </Text>
-          <Text color="gray">Importing from your signed-in browser. The prompt retries automatically on success.</Text>
-        </>
-      ) : (
-        <>
-          <Text color="white">Refresh the Gemini browser cookies and retry your last prompt automatically?</Text>
-          <Text color="gray">PatchPilot re-imports cookies from your signed-in browser. Secret values are not printed.</Text>
-          <Text>
-            <Text color="green" bold>
-              [y]
-            </Text>
-            <Text color="gray"> refresh & retry   </Text>
-            <Text color="red" bold>
-              [n / esc]
-            </Text>
-            <Text color="gray"> dismiss</Text>
-          </Text>
-        </>
-      )}
-    </Box>
-  );
-}
 
 function ShellComposer(props: {
   input: string;
@@ -666,6 +621,9 @@ function ShellComposer(props: {
   onChange: (value: string) => void;
   onSubmit: (value: string) => void;
   onAttach: (path: string) => string;
+  /** Returns the recalled prompt, or null when there is nothing to recall. */
+  onHistoryPrevious: (currentInput: string) => string | null;
+  onHistoryNext: () => string | null;
 }): React.ReactElement {
   const [frame, setFrame] = useState(0);
   const [runningSince, setRunningSince] = useState<number | null>(null);
@@ -741,6 +699,27 @@ function ShellComposer(props: {
         }
 
         props.onSubmit(props.input);
+        return;
+      }
+
+      // Up and Down move the caret inside a multi-line prompt, and recall
+      // history only from the first or last line respectively — the rule every
+      // shell uses, so muscle memory carries over.
+      if (key.upArrow && shouldRecallHistory(props.input, safeCursor)) {
+        const recalled = props.onHistoryPrevious(props.input);
+        if (recalled !== null) {
+          props.onChange(recalled);
+          setCursor(recalled.length);
+        }
+        return;
+      }
+
+      if (key.downArrow && shouldRecallForward(props.input, safeCursor)) {
+        const recalled = props.onHistoryNext();
+        if (recalled !== null) {
+          props.onChange(recalled);
+          setCursor(recalled.length);
+        }
         return;
       }
 
