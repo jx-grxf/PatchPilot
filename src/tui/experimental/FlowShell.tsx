@@ -1,6 +1,6 @@
 import React from "react";
 import { Box, Static, Text } from "ink";
-import { Markdown } from "../components/Markdown.js";
+import { DiffBlock, Markdown } from "../components/Markdown.js";
 import { symbols } from "./theme.js";
 import type { LogLine } from "../types.js";
 
@@ -71,8 +71,8 @@ function TranscriptEntry(props: { line: LogLine; columns: number }): React.React
             {line.kind === "final" ? symbols.final : symbols.assistant} {line.label}
           </Text>
           <Box paddingLeft={2} flexDirection="column">
-            <Markdown source={line.text} />
-            {line.detail ? <Markdown source={line.detail} dimmed /> : null}
+            <Markdown text={line.text} width={props.columns - 4} />
+            {line.detail ? <Markdown text={line.detail} width={props.columns - 4} dim /> : null}
           </Box>
         </Box>
       );
@@ -109,7 +109,7 @@ function TranscriptEntry(props: { line: LogLine; columns: number }): React.React
     case "diff":
       return (
         <Box flexDirection="column" paddingLeft={2}>
-          <Markdown source={`\`\`\`diff\n${line.text}\n\`\`\``} />
+          <DiffBlock lines={line.text.split("\n")} width={props.columns - 4} />
         </Box>
       );
 

@@ -1,96 +1,124 @@
 import React from "react";
 import { Box, Text } from "ink";
-import { classifyDiffLine, highlightLine, isDiffLanguage, type Token, type TokenKind } from "../highlight.js";
-import { parseMarkdown, type InlineStyle, type MarkdownBlock } from "../markdown.js";
+import { classifyDiffLine, highlightBlock, looksLikeDiff, resolveLanguage } from "../highlight.js";
+import { parseMarkdown, type InlineSpan, type MarkdownBlock } from "../markdown.js";
 
 /**
- * Renders Markdown into Ink nodes.
+ * Renders assistant output as markdown.
  *
- * Colours are chosen to survive both light and dark terminals: no bright
- * whites or near-blacks, and every distinction is carried by weight or symbol
- * as well as hue, so the output still reads with colour disabled.
+ * A terminal has one font, so hierarchy has to come from weight, colour,
+ * indentation and glyphs. Every distinction here is carried by at least two of
+ * those — a heading is bold *and* coloured, a diff line keeps its +/- as well
+ * as its colour — so the output still reads on a monochrome terminal and in a
+ * piped log.
  */
 
-const tokenColor: Record<TokenKind, string | undefined> = {
-  plain: undefined,
-  keyword: "magenta",
-  string: "green",
-  comment: "gray",
-  number: "yellow",
-  function: "cyan",
-  punctuation: "gray"
-};
+export function Markdown(props: { text: string; width: number; dim?: boolean }): React.ReactElement {
+  // A raw diff is not markdown and must not be parsed as one: its leading -
+  // would become bullet points and its +++ a heading.
+  if (looksLikeDiff(props.text)) {
+    return <DiffBlock lines={props.text.split("\n")} width={props.width} />;
+  }
 
-const headingColor = ["cyan", "cyan", "blue", "blue", "gray", "gray"] as const;
-
-export function Markdown(props: { source: string; dimmed?: boolean }): React.ReactElement {
-  const blocks = parseMarkdown(props.source);
-
+  const blocks = parseMarkdown(props.text);
   return (
     <Box flexDirection="column">
       {blocks.map((block, index) => (
-        <MarkdownBlockView key={index} block={block} dimmed={props.dimmed} />
+        <BlockView key={index} block={block} width={props.width} dim={props.dim} previous={blocks[index - 1]} />
       ))}
     </Box>
   );
 }
 
-function MarkdownBlockView(props: { block: MarkdownBlock; dimmed?: boolean }): React.ReactElement | null {
+function BlockView(props: {
+  block: MarkdownBlock;
+  width: number;
+  dim?: boolean;
+  previous?: MarkdownBlock;
+}): React.ReactElement | null {
   const { block } = props;
 
   switch (block.kind) {
     case "blank":
-      return <Text> </Text>;
+      // Collapse runs of blank lines: a stream often carries several, and each
+      // one costs a row of a terminal that has forty.
+      return props.previous?.kind === "blank" ? null : <Text> </Text>;
 
     case "rule":
-      return <Text color="gray">────────────────────</Text>;
+      return <Text color="gray">{"─".repeat(Math.max(4, Math.min(props.width, 60)))}</Text>;
 
     case "heading":
       return (
-        <Text bold color={headingColor[Math.min(block.level, headingColor.length) - 1]}>
-          {block.level <= 2 ? "" : "› "}
-          <Spans spans={block.spans} dimmed={props.dimmed} />
-        </Text>
-      );
-
-    case "listItem":
-      return (
-        <Text>
-          <Text color="gray">
-            {"  ".repeat(block.depth + 1)}
-            {block.marker}{" "}
+        <Box marginTop={block.level === 1 ? 1 : 0}>
+          <Text bold color={block.level === 1 ? "cyan" : block.level === 2 ? "white" : "gray"}>
+            {block.level === 1 ? "" : block.level === 2 ? "" : ""}
+            <Spans spans={block.spans} />
           </Text>
-          <Spans spans={block.spans} dimmed={props.dimmed} />
-        </Text>
+        </Box>
       );
 
     case "quote":
       return (
-        <Text color="gray">
-          {"▏ "}
-          <Spans spans={block.spans} dimmed />
-        </Text>
+        <Box>
+          <Text color="gray">{"│ "}</Text>
+          <Text color="gray" italic>
+            <Spans spans={block.spans} />
+          </Text>
+        </Box>
+      );
+
+    case "bullet":
+      return (
+        <Box>
+          <Text color="gray">
+            {"  ".repeat(block.depth)}
+            {bulletGlyph(block.depth)}{" "}
+          </Text>
+          <Box flexGrow={1}>
+            <Text dimColor={props.dim} wrap="wrap">
+              <Spans spans={block.spans} />
+            </Text>
+          </Box>
+        </Box>
+      );
+
+    case "ordered":
+      return (
+        <Box>
+          <Text color="gray">
+            {"  ".repeat(block.depth)}
+            {block.marker}.{" "}
+          </Text>
+          <Box flexGrow={1}>
+            <Text dimColor={props.dim} wrap="wrap">
+              <Spans spans={block.spans} />
+            </Text>
+          </Box>
+        </Box>
       );
 
     case "code":
-      return <CodeBlock language={block.language} lines={block.lines} />;
+      return <CodeBlock language={block.language} lines={block.lines} width={props.width} open={block.open} />;
 
     case "paragraph":
       return (
-        <Text>
-          <Spans spans={block.spans} dimmed={props.dimmed} />
+        <Text dimColor={props.dim} wrap="wrap">
+          <Spans spans={block.spans} />
         </Text>
       );
   }
 }
 
-function Spans(props: { spans: InlineStyle[]; dimmed?: boolean }): React.ReactElement {
+/** Nesting depth is carried by the glyph as well as the indent. */
+function bulletGlyph(depth: number): string {
+  return depth === 0 ? "•" : depth === 1 ? "◦" : "▪";
+}
+
+function Spans(props: { spans: InlineSpan[] }): React.ReactElement {
   return (
     <>
       {props.spans.map((span, index) => {
         if (span.code) {
-          // Padding a code span reads as inline code without a background,
-          // which terminals render inconsistently.
           return (
             <Text key={index} color="yellow">
               {span.text}
@@ -98,15 +126,16 @@ function Spans(props: { spans: InlineStyle[]; dimmed?: boolean }): React.ReactEl
           );
         }
 
+        if (span.href) {
+          return (
+            <Text key={index} color="cyan" underline>
+              {span.text}
+            </Text>
+          );
+        }
+
         return (
-          <Text
-            key={index}
-            bold={span.bold}
-            italic={span.italic}
-            strikethrough={span.strike}
-            underline={span.link}
-            color={span.link ? "blue" : props.dimmed ? "gray" : undefined}
-          >
+          <Text key={index} bold={span.bold} italic={span.italic} strikethrough={span.strike}>
             {span.text}
           </Text>
         );
@@ -115,44 +144,71 @@ function Spans(props: { spans: InlineStyle[]; dimmed?: boolean }): React.ReactEl
   );
 }
 
-/**
- * A fenced block. Diffs get per-line +/- colouring; everything else gets
- * token highlighting, and an unknown language renders as plain text rather
- * than guessing.
- */
-function CodeBlock(props: { language: string | null; lines: string[] }): React.ReactElement {
-  const diff = isDiffLanguage(props.language);
+function CodeBlock(props: { language: string; lines: string[]; width: number; open: boolean }): React.ReactElement {
+  const language = resolveLanguage(props.language);
+  const highlighted = highlightBlock(props.lines.join("\n"), language);
 
   return (
-    <Box flexDirection="column" paddingLeft={1}>
-      {props.lines.map((line, index) =>
-        diff ? <DiffLine key={index} line={line} /> : <CodeLine key={index} line={line} language={props.language} />
-      )}
+    <Box flexDirection="column" marginY={1}>
+      {props.language ? (
+        <Text color="gray" dimColor>
+          {"  "}
+          {props.language}
+          {props.open ? " ·" : ""}
+        </Text>
+      ) : null}
+      {highlighted.map((line, index) => (
+        <Box key={index}>
+          <Text color="gray">{"  │ "}</Text>
+          <Text wrap="truncate">{line}</Text>
+        </Box>
+      ))}
     </Box>
   );
 }
 
-function CodeLine(props: { line: string; language: string | null }): React.ReactElement {
-  const tokens = highlightLine(props.line, props.language);
-  return (
-    <Text>
-      <Text color="gray">│ </Text>
-      {tokens.map((token: Token, index: number) => (
-        <Text key={index} color={tokenColor[token.kind]}>
-          {token.text}
-        </Text>
-      ))}
-    </Text>
-  );
-}
+/**
+ * Renders a unified diff. Added and removed lines keep their +/- so the
+ * distinction survives without colour, and each line is highlighted as code
+ * once its marker is stripped.
+ */
+export function DiffBlock(props: { lines: string[]; width: number; language?: string }): React.ReactElement {
+  const language = props.language ? resolveLanguage(props.language) : undefined;
 
-function DiffLine(props: { line: string }): React.ReactElement {
-  const kind = classifyDiffLine(props.line);
-  const color = kind === "added" ? "green" : kind === "removed" ? "red" : kind === "hunk" ? "cyan" : kind === "meta" ? "gray" : undefined;
-  // The sign is kept so the diff still reads when colour is unavailable.
   return (
-    <Text color={color} dimColor={kind === "meta"}>
-      {props.line || " "}
-    </Text>
+    <Box flexDirection="column">
+      {props.lines.map((line, index) => {
+        const kind = classifyDiffLine(line);
+        if (kind === "header") {
+          return (
+            <Text key={index} color="gray" dimColor>
+              {"  "}
+              {line}
+            </Text>
+          );
+        }
+
+        const marker = kind === "added" ? "+" : kind === "removed" ? "-" : " ";
+        const body = kind === "context" ? line : line.slice(1);
+        const [highlightedBody] = highlightBlock(body, language);
+
+        return (
+          <Box key={index}>
+            <Text color={kind === "added" ? "green" : kind === "removed" ? "red" : "gray"} bold={kind !== "context"}>
+              {"  "}
+              {marker}
+              {" "}
+            </Text>
+            <Text
+              color={kind === "added" ? "green" : kind === "removed" ? "red" : undefined}
+              dimColor={kind === "context"}
+              wrap="truncate"
+            >
+              {highlightedBody ?? body}
+            </Text>
+          </Box>
+        );
+      })}
+    </Box>
   );
 }

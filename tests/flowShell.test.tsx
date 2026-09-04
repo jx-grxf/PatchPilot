@@ -78,7 +78,7 @@ describe("FlowShell", () => {
 
 describe("Markdown rendering", () => {
   it("renders headings, lists and emphasis as text", () => {
-    const frame = output([render(<Markdown source={"# Title\n\n- one\n- two\n\n**bold** and `code`" } />).lastFrame() ?? ""]);
+    const frame = output([render(<Markdown text={"# Title\n\n- one\n- two\n\n**bold** and `code`"} width={80} />).lastFrame() ?? ""]);
 
     expect(frame).toContain("Title");
     expect(frame).toContain("• one");
@@ -87,23 +87,23 @@ describe("Markdown rendering", () => {
   });
 
   it("renders a fenced code block with its content intact", () => {
-    const frame = output([render(<Markdown source={"```ts\nconst x: number = 1;\n```"} />).lastFrame() ?? ""]);
+    const frame = output([render(<Markdown text={"```ts\nconst x: number = 1;\n```"} width={80} />).lastFrame() ?? ""]);
     expect(frame).toContain("const x: number = 1;");
   });
 
   it("keeps diff signs, so the diff reads without colour", () => {
-    const frame = output([render(<Markdown source={"```diff\n+added\n-removed\n```"} />).lastFrame() ?? ""]);
+    const frame = output([render(<Markdown text={"```diff\n+added\n-removed\n```"} width={80} />).lastFrame() ?? ""]);
     expect(frame).toContain("+added");
     expect(frame).toContain("-removed");
   });
 
   it("does not mangle a glob pattern into emphasis", () => {
-    const frame = output([render(<Markdown source="Files under src/**/*.ts changed." />).lastFrame() ?? ""]);
+    const frame = output([render(<Markdown text="Files under src/**/*.ts changed." width={80} />).lastFrame() ?? ""]);
     expect(frame).toContain("src/**/*.ts");
   });
 
   it("renders plain prose unchanged", () => {
-    const frame = output([render(<Markdown source="Just a sentence." />).lastFrame() ?? ""]);
+    const frame = output([render(<Markdown text="Just a sentence." width={80} />).lastFrame() ?? ""]);
     expect(frame.trim()).toBe("Just a sentence.");
   });
 });
