@@ -15,6 +15,7 @@ import { CommandPalette } from "./CommandPalette.js";
 import { estimateCloudEquivalentCost, formatSavedCost } from "./savings.js";
 import { computeExperimentalLayout, windowRows } from "./layout.js";
 import type { ContextUsageView, StreamProgress } from "../App.js";
+import { resolveLocalOpenAIBaseUrl } from "../../core/localOpenAI.js";
 import { FlowShell } from "./FlowShell.js";
 import { symbols, workStateColor } from "./theme.js";
 import { buildShellRows, buildTodoDock, truncate } from "./transcriptRows.js";
@@ -102,7 +103,8 @@ export function ExperimentalShell(props: ExperimentalShellProps): React.ReactEle
             <ShellTodoDock
               todos={props.todos}
               todoFrame={props.todoFrame}
-              height={Math.min(props.todos.length + 2, 8)}
+              // Header row, one row per todo, and the two border rows.
+              height={Math.min(props.todos.length + 3, 10)}
               width={layout.transcriptWidth}
             />
           ) : null}
@@ -241,6 +243,16 @@ function ShellUpdate(props: {
  * A bar rather than a bare percentage: occupancy is a quantity you glance at,
  * and colour alone cannot carry it on a monochrome terminal.
  */
+/** Host and port of the configured endpoint, which is what identifies it. */
+function readEndpointLabel(baseUrl: string): string {
+  try {
+    const url = new URL(baseUrl);
+    return url.host;
+  } catch {
+    return baseUrl;
+  }
+}
+
 function ContextMeter(props: { usage: ContextUsageView }): React.ReactElement {
   const width = 8;
   const filled = Math.max(0, Math.min(width, Math.round(props.usage.ratio * width)));
@@ -265,7 +277,11 @@ function ContextMeter(props: { usage: ContextUsageView }): React.ReactElement {
 
 function ShellHeader(props: ExperimentalShellProps): React.ReactElement {
   const accent = workStateColor(props.workState);
-  const hostLabel = props.provider === "ollama" ? props.activeHost?.host.deviceName ?? "ollama" : `${props.provider} api`;
+  // Naming the provider twice tells the user nothing; the endpoint does.
+  const hostLabel =
+    props.provider === "ollama"
+      ? props.activeHost?.host.deviceName ?? "ollama"
+      : readEndpointLabel(resolveLocalOpenAIBaseUrl());
   const modeColor = props.agentMode === "bypass" ? "red" : props.agentMode === "build" ? "yellow" : "green";
   const modeLabel = props.agentMode === "bypass" ? "build+bypass" : props.agentMode;
   const writeLabel = props.allowWrite ? "on" : props.agentMode === "build" ? "approval" : "off";
@@ -286,7 +302,7 @@ function ShellHeader(props: ExperimentalShellProps): React.ReactElement {
             {symbols.assistant} PatchPilot
           </Text>
           <Text color="gray"> · </Text>
-          <Text color="white">{props.provider}/{shortenMiddle(props.model, 24)}</Text>
+          <Text color="white">{shortenMiddle(props.model, 28)}</Text>
           <Text color="gray"> on </Text>
           <Text color="white">{shortenMiddle(hostLabel, 16)}</Text>
         </Text>
@@ -307,13 +323,22 @@ function ShellHeader(props: ExperimentalShellProps): React.ReactElement {
       </Box>
       <Box justifyContent="space-between">
         <Text color="gray" wrap="truncate">
-          {symbols.bullet} {shortenMiddle(props.workspace, 34)}
-          <Text color="gray">  write </Text>
-          <Text color={props.allowWrite ? "red" : "gray"}>{writeLabel}</Text>
-          <Text color="gray">  shell </Text>
-          <Text color={props.allowShell ? "red" : "gray"}>{shellLabel}</Text>
+          {symbols.bullet} {shortenMiddle(props.workspace, 30)}
+          {/* The mode already says what the defaults are, so only an
+              override is worth the width — show danger, not defaults. */}
+          {props.allowWrite ? (
+            <Text color="red" bold>
+              {"  write on"}
+            </Text>
+          ) : null}
+          {props.allowShell ? (
+            <Text color="red" bold>
+              {"  shell on"}
+            </Text>
+          ) : null}
         </Text>
         <Text color="gray" wrap="truncate">
+          {"  "}
           {props.contextUsage ? (
             <Text>
               <ContextMeter usage={props.contextUsage} />
@@ -436,15 +461,17 @@ function ShellRowView(props: { row: ReturnType<typeof buildShellRows>[number]; f
           </Text>
         )}
       </Box>
-      <Box width={12} marginRight={1}>
-        {props.row.effect === "rainbow" && props.row.label ? (
-          <RainbowText text={props.row.label} frame={props.frame} bold={props.row.bold} />
-        ) : (
-          <Text color={labelColor} bold={props.row.bold} dimColor={props.row.dim} wrap="truncate">
-            {props.row.label}
-          </Text>
-        )}
-      </Box>
+      {props.row.compact ? null : (
+        <Box width={12} marginRight={1}>
+          {props.row.effect === "rainbow" && props.row.label ? (
+            <RainbowText text={props.row.label} frame={props.frame} bold={props.row.bold} />
+          ) : (
+            <Text color={labelColor} bold={props.row.bold} dimColor={props.row.dim} wrap="truncate">
+              {props.row.label}
+            </Text>
+          )}
+        </Box>
+      )}
       <Text color={textColor} dimColor={props.row.dim} wrap="truncate">
         {splitUltraSegments(props.row.text).map((segment, index) =>
           segment.mode ? (

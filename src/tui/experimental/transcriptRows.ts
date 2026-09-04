@@ -14,6 +14,13 @@ export type ShellRow = {
   effect?: "rainbow";
   bold?: boolean;
   dim?: boolean;
+  /**
+   * Drops the fixed label column for this row. The transcript needs that
+   * column reserved even when a row's label is empty, so continuation lines
+   * stay aligned under their heading — but a list whose rows never carry a
+   * label just loses twelve columns to nothing.
+   */
+  compact?: boolean;
 };
 
 const LABEL_WIDTH = 12;
@@ -140,9 +147,13 @@ export function buildTodoDock(todos: AgentTodoItem[], width: number, frame: numb
           : symbols.todoPending;
     const color: InkColor = todo.status === "completed" ? "green" : isActive ? "yellow" : "gray";
     rows.push({
-      symbol: "",
-      label: marker,
-      text: truncate(todo.content, textWidth),
+      // The marker belongs in the symbol column: putting it in the label
+      // column pads it out to the label width and leaves a gap the size of a
+      // word between the marker and the item it marks.
+      symbol: marker,
+      label: "",
+      compact: true,
+      text: truncate(todo.content, textWidth + LABEL_WIDTH),
       color,
       bold: isActive,
       dim: todo.status === "pending",
