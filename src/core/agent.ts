@@ -7,6 +7,7 @@ import { formatSubagentContext, runSubagentAdvisors } from "./subagents.js";
 import { MAX_TOOL_CALLS_PER_RESPONSE, type AgentEvent, type AgentTodoItem, type AgentToolName, type AgentWorkState, type ApprovalRequest, type ChatMessage, type ModelChatResult, type ModelClient, type ModelProvider, type PermissionDecision, type ThinkingSetting, type ProviderTool, type RawToolCall, type AgentToolCall, type ToolCategory, type ToolResult } from "./types.js";
 import { StreamTimer } from "./stream.js";
 import { probeModelCapabilities } from "./capability.js";
+import { formatEnvelope, runSubagent, type SubagentEnvelope, type SubagentRequest } from "./subagentRunner.js";
 import { measureContext, pruneToolResults } from "./contextWindow.js";
 import {
   extractFencedToolCalls,
@@ -111,6 +112,7 @@ export class AgentRunner {
     // harness sends and not necessarily what the model advertises.
     const contextLimitTokens = await this.resolveContextLimit();
     let sawPermissionRequest = false;
+    let pendingSubagents: SubagentRequest[] = [];
 
     yield {
       type: "status",
@@ -301,11 +303,18 @@ export class AgentRunner {
           yield { type: "status", message: note, workState: "planning" };
         }
 
+        pendingSubagents = resolved.subagents;
         parsedResponse = {
           action: "tools" as const,
           message: rawResponse.trim() || "working",
           tool_calls: resolved.toolCalls
         };
+
+        // A turn that only delegated still did work, so it must not trip the
+        // empty-batch guard.
+        if (resolved.toolCalls.length === 0 && pendingSubagents.length > 0) {
+          parsedResponse = { ...parsedResponse, tool_calls: [] };
+        }
       } else if (providerTools) {
         // Capable model, no calls, no fence: it answered. Guard against a
         // permission request made despite an explicit act-don't-ask prompt.
@@ -557,6 +566,42 @@ export class AgentRunner {
         });
       }
 
+      // Children run one at a time: each starts with a cold prefix cache, and
+      // two at once on a single machine evict the parent's cache as well.
+      const subagentResults: Awaited<ReturnType<typeof executeToolSafely>>[] = [];
+      for (const request of pendingSubagents) {
+        yield {
+          type: "status",
+          message: `delegating to ${request.type} subagent: ${request.description}`,
+          workState: "planning"
+        };
+
+        const envelope = await this.runChildAgent(request);
+        yield {
+          type: "tool",
+          name: "update_todo",
+          summary: `${request.type} subagent ${envelope.status}: ${request.description}`,
+          content: formatEnvelope(envelope),
+          ok: envelope.status === "ok",
+          workState: "planning",
+          category: "state"
+        };
+
+        subagentResults.push({
+          tool: "update_todo",
+          ok: envelope.status === "ok",
+          summary: `${request.type} subagent ${envelope.status}: ${request.description}`,
+          content: formatEnvelope(envelope),
+          toolCallId: createToolCallId("update_todo"),
+          category: "state",
+          preview: undefined,
+          approval: undefined,
+          metadata: { subagent: request.type, transcript: envelope.transcript },
+          workState: "planning"
+        });
+      }
+      pendingSubagents = [];
+
       const toolCallRecords = workspaceCalls.map((toolCall) => ({
         id: createToolCallId(toolCall.name),
         call: toolCall,
@@ -576,6 +621,7 @@ export class AgentRunner {
       }
       const toolResults = [
         ...todoResults,
+        ...subagentResults,
         ...(await executeToolCallsWithReadParallelism(this.tools, toolCallRecords))
       ];
 
@@ -753,8 +799,9 @@ export class AgentRunner {
   private resolveNativeToolCalls(
     rawCalls: RawToolCall[],
     loopBreaker: ToolCallLoopBreaker
-  ): { toolCalls: AgentToolCall[]; problems: string[]; notes: string[] } {
+  ): { toolCalls: AgentToolCall[]; subagents: SubagentRequest[]; problems: string[]; notes: string[] } {
     const toolCalls: AgentToolCall[] = [];
+    const subagents: SubagentRequest[] = [];
     const problems: string[] = [];
     const notes: string[] = [];
 
@@ -775,10 +822,49 @@ export class AgentRunner {
         notes.push(`repaired ${repaired.name} call: ${repaired.repairs.join(", ")}`);
       }
 
+      // Subagents are dispatched by the loop, not by the workspace, so they
+      // never reach the tool executor.
+      if (repaired.name === "task") {
+        subagents.push({
+          type: repaired.arguments.subagent_type === "general" ? "general" : "explore",
+          description: String(repaired.arguments.description ?? "subtask"),
+          prompt: String(repaired.arguments.prompt ?? "")
+        });
+        continue;
+      }
+
       toolCalls.push(toWorkspaceCall(repaired.name, repaired.arguments));
     }
 
-    return { toolCalls, problems, notes };
+    return { toolCalls, subagents, problems, notes };
+  }
+
+  /**
+   * Runs one child loop with its own context and a narrower tool set. A child
+   * failure is a result the parent reasons about, never an exception that ends
+   * the parent's run.
+   */
+  private async runChildAgent(request: SubagentRequest): Promise<SubagentEnvelope> {
+    const parent = this.options;
+    return await runSubagent(request, {
+      client: this.client,
+      transcriptDir: path.join(parent.workspace, ".patchpilot", "subagents"),
+      run: (childOptions) =>
+        new AgentRunner({
+          ...parent,
+          // Isolated context: the child never sees this conversation.
+          resumeContext: "",
+          // Read-only children cannot be talked into writing by what they read.
+          allowWrite: childOptions.readOnly ? false : parent.allowWrite,
+          allowShell: false,
+          mode: childOptions.readOnly ? "plan" : parent.mode,
+          // Thinking budget belongs to the orchestrator; children answer.
+          thinking: "off",
+          // No grandchildren: depth is bounded by construction.
+          subagents: false,
+          maxSteps: Math.min(parent.maxSteps, 8)
+        }).run(childOptions.task)
+    });
   }
 
   private async *chatWithRetry(options: {
