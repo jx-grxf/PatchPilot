@@ -60,11 +60,16 @@ type PaletteSuggestion = CommandSuggestionItem & {
   execute: boolean;
 };
 
-type UiTheme = "new" | "legacy";
+type UiTheme = "flow" | "new" | "legacy";
 
 type UpdatePromptState = Extract<UpdateCheckResult, { available: true }>;
 
 const themeOptions: Array<{ value: UiTheme; label: string; description: string }> = [
+  {
+    value: "flow",
+    label: "Flow",
+    description: "Native terminal scrollback: the whole conversation stays in your terminal, with markdown, highlighted code and real diffs."
+  },
   {
     value: "new",
     label: "New",
@@ -78,7 +83,12 @@ const themeOptions: Array<{ value: UiTheme; label: string; description: string }
 ];
 
 function readUiTheme(): UiTheme {
-  return process.env.PATCHPILOT_UI_THEME?.trim().toLowerCase() === "legacy" ? "legacy" : "new";
+  const configured = process.env.PATCHPILOT_UI_THEME?.trim().toLowerCase();
+  if (configured === "legacy" || configured === "new" || configured === "flow") {
+    return configured;
+  }
+
+  return "flow";
 }
 
 const modelCacheTtlMs = 5 * 60_000;
@@ -150,6 +160,12 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
     shellMetacharacters: readBooleanEnv(process.env.PATCHPILOT_EXPERIMENTAL_SHELL_METACHARACTERS, false)
   });
   const [uiTheme, setUiTheme] = useState<UiTheme>(() => readUiTheme());
+  // Read inside appendLine, which must not be re-created when the theme changes.
+  const uiThemeRef = useRef<UiTheme>(uiTheme);
+  uiThemeRef.current = uiTheme;
+  // Static renders each row once, so clearing starts a fresh region instead of
+  // pretending the terminal can un-print what it already showed.
+  const [transcriptEpoch, setTranscriptEpoch] = useState(0);
   const [themePickerOpen, setThemePickerOpen] = useState(false);
   const [themePickerIndex, setThemePickerIndex] = useState(0);
   const [ultramaxxRun, setUltramaxxRun] = useState(false);
@@ -224,7 +240,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           kind: line.kind ?? defaultLogKind(line),
           id: Date.now() + Math.random()
         }
-      ].slice(-maxTranscriptLines)
+      ].slice(uiThemeRef.current === "flow" ? 0 : -maxTranscriptLines)
     );
   }, []);
 
@@ -2123,6 +2139,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           return;
         }
         case "clear":
+          setTranscriptEpoch((epoch) => epoch + 1);
           setLines([]);
           setAdvisorNotes([]);
           setTodos([]);
@@ -2780,7 +2797,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
     );
   }
 
-  if (uiTheme === "new" && !experimentalOpen) {
+  if ((uiTheme === "new" || uiTheme === "flow") && !experimentalOpen) {
     if (onboarding) {
       return (
         <Box flexDirection="column" paddingX={1} height={rootHeight} overflowY="hidden">
@@ -2821,6 +2838,8 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         isRunning={isRunning}
         streamProgress={streamProgress}
         contextUsage={contextUsage}
+        flow={uiTheme === "flow"}
+        transcriptEpoch={transcriptEpoch}
         ultramaxxRun={ultramaxxRun}
         telemetry={telemetry}
         sessionTelemetry={sessionTelemetry}

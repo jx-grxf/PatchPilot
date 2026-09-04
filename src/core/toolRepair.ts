@@ -132,6 +132,39 @@ export function resolveToolName(raw: unknown): { name: ToolName; aliased: boolea
 }
 
 /**
+ * L0 — recovers a tool call the *serving layer* failed to extract.
+ *
+ * Ollama's per-model chat templates parse tool-call tokens into `tool_calls`,
+ * and several of those parsers are known to fail on the exact shape this
+ * harness produces: a long system prompt, many tools, thinking disabled. When
+ * they fail the model's output is correct but arrives stringified inside
+ * `content`, which is indistinguishable from a refusal to use tools.
+ *
+ * This is the first rung because it costs one parse attempt and recovers a
+ * whole class of failures that otherwise look like model incapability.
+ */
+export function extractStringifiedToolCalls(content: string): Array<{ name: unknown; arguments: unknown }> {
+  const trimmed = content.trim();
+  if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) {
+    return [];
+  }
+
+  const parsed = parseLooseJson(trimmed);
+  if (!parsed) {
+    return [];
+  }
+
+  // Some templates wrap the calls; others emit a bare call or an array.
+  const candidates = Array.isArray(parsed)
+    ? parsed
+    : isRecord(parsed) && Array.isArray(parsed.tool_calls)
+      ? parsed.tool_calls
+      : [parsed];
+
+  return candidates.map(readCallShape).filter((call): call is { name: unknown; arguments: unknown } => call !== null);
+}
+
+/**
  * L2 — recovers tool calls a model printed as text instead of emitting through
  * the API. This is a measured failure mode, not a hypothetical: some models
  * produce a perfectly formed call inside a markdown fence and make zero actual

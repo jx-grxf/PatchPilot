@@ -15,6 +15,7 @@ import { CommandPalette } from "./CommandPalette.js";
 import { estimateCloudEquivalentCost, formatSavedCost } from "./savings.js";
 import { computeExperimentalLayout, windowRows } from "./layout.js";
 import type { ContextUsageView, StreamProgress } from "../App.js";
+import { FlowShell } from "./FlowShell.js";
 import { symbols, workStateColor } from "./theme.js";
 import { buildShellRows, buildTodoDock, truncate } from "./transcriptRows.js";
 import { hasUltraMode, splitUltraSegments, type UltraMode } from "./ultraModes.js";
@@ -33,6 +34,9 @@ export type ExperimentalShellProps = {
   isRunning: boolean;
   streamProgress: StreamProgress | null;
   contextUsage: ContextUsageView | null;
+  /** Render history into native terminal scrollback instead of a fixed pager. */
+  flow?: boolean;
+  transcriptEpoch: number;
   ultramaxxRun: boolean;
   telemetry: ModelTelemetry | null;
   sessionTelemetry: SessionTelemetry;
@@ -84,6 +88,52 @@ export function ExperimentalShell(props: ExperimentalShellProps): React.ReactEle
     todoCount: props.todos.length,
     hasArtifacts: props.artifacts.length > 0,
   });
+
+  if (props.flow) {
+    // Static must be the first child and must sit outside any height-bounded
+    // box: Ink prints those rows above the live frame, into the terminal's own
+    // scrollback. Everything below re-renders each frame as usual.
+    return (
+      <>
+        <FlowShell lines={props.lines} transcriptEpoch={props.transcriptEpoch} columns={props.columns} />
+        <Box flexDirection="column">
+          <ShellHeader {...props} />
+          {props.todos.length > 0 ? (
+            <ShellTodoDock
+              todos={props.todos}
+              todoFrame={props.todoFrame}
+              height={Math.min(props.todos.length + 2, 8)}
+              width={layout.transcriptWidth}
+            />
+          ) : null}
+          {props.updatePrompt || props.updateBusy ? (
+            <ShellUpdate prompt={props.updatePrompt} busy={props.updateBusy} />
+          ) : approvalActive ? (
+            <ShellApproval request={props.pendingApproval} bypassConfirmation={props.bypassConfirmation} />
+          ) : null}
+          {props.paletteItems.length > 0 ? (
+            <CommandPalette items={props.paletteItems} selectedIndex={props.paletteIndex} width={layout.transcriptWidth} />
+          ) : null}
+          <ShellComposer
+            input={props.input}
+            isRunning={props.isRunning}
+            streamProgress={props.streamProgress}
+            ultramaxxRun={props.ultramaxxRun}
+            approvalActive={approvalActive}
+            workState={props.workState}
+            status={props.status}
+            draftTokens={props.draftTokens}
+            sessionTelemetry={props.sessionTelemetry}
+            width={layout.transcriptWidth}
+            onAttach={props.onAttach}
+            onChange={props.onChange}
+            onSubmit={props.onSubmit}
+          />
+          <ShellFooter agentMode={props.agentMode} paletteOpen={props.paletteItems.length > 0} />
+        </Box>
+      </>
+    );
+  }
 
   return (
     <Box flexDirection="column" height={layout.rootHeight} overflowY="hidden">

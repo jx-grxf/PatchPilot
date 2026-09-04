@@ -6,6 +6,12 @@ export type ToolMode = "plan" | "build" | "bypass";
 /**
  * The nine-tool surface.
  *
+ * Every description ends with one worked example. That single example is worth
+ * more than any other prompt change measured for small models: zero-to-one
+ * shot is the largest single jump, and putting the example inside the tool's
+ * own description places it adjacent to the schema the model is about to fill
+ * in, rather than in a distant block it has to cross-reference.
+ *
  * PatchPilot used to expose 28 tools described only as prose in the system
  * prompt. Small local models format a call far more reliably than they pick
  * the right one, and the practical ceiling is three to five *relevant* tools
@@ -54,7 +60,7 @@ export const toolDefinitions: Record<ToolName, ToolDefinition> = {
   read: {
     name: "read",
     description:
-      "Read a file from the workspace. Returns the contents with line numbers. Use offset and limit to read part of a large file instead of pulling the whole thing into context. Always read a file before editing it.",
+      "Read a file from the workspace. Returns the contents with line numbers. Use offset and limit to read part of a large file instead of pulling the whole thing into context. Always read a file before editing it. Example: read({\"path\": \"src/core/agent.ts\", \"offset\": 120, \"limit\": 60}).",
     inputSchema: {
       type: "object",
       properties: {
@@ -75,7 +81,7 @@ export const toolDefinitions: Record<ToolName, ToolDefinition> = {
   write: {
     name: "write",
     description:
-      "Write a complete file, creating it or replacing its entire contents. Use this only for new files or a deliberate full rewrite; to change part of an existing file use edit, which is safer and cheaper.",
+      "Write a complete file, creating it or replacing its entire contents. Use this only for new files or a deliberate full rewrite; to change part of an existing file use edit, which is safer and cheaper. Example: write({\"path\": \"src/util/slug.ts\", \"content\": \"export function slug(v) { return v.trim(); }\"}).",
     inputSchema: {
       type: "object",
       properties: {
@@ -95,7 +101,7 @@ export const toolDefinitions: Record<ToolName, ToolDefinition> = {
   edit: {
     name: "edit",
     description:
-      "Replace an exact string in a file. old_string must match the file byte for byte, including indentation, and must be unique unless replace_all is true. Read the file first so the match is exact.",
+      "Replace an exact string in a file. old_string must match the file byte for byte, including indentation, and must be unique unless replace_all is true. Read the file first so the match is exact. Example: edit({\"path\": \"src/app.ts\", \"old_string\": \"const port = 3000;\", \"new_string\": \"const port = Number(process.env.PORT);\"}).",
     inputSchema: {
       type: "object",
       properties: {
@@ -117,7 +123,7 @@ export const toolDefinitions: Record<ToolName, ToolDefinition> = {
   glob: {
     name: "glob",
     description:
-      "Find files by name pattern, e.g. **/*.ts or src/core/*.test.ts. Returns matching paths. Use this to discover where something lives; use grep to search inside files.",
+      "Find files by name pattern, e.g. **/*.ts or src/core/*.test.ts. Returns matching paths. Use this to discover where something lives; use grep to search inside files. Example: glob({\"pattern\": \"src/**/*.test.ts\"}).",
     inputSchema: {
       type: "object",
       properties: {
@@ -137,7 +143,7 @@ export const toolDefinitions: Record<ToolName, ToolDefinition> = {
   grep: {
     name: "grep",
     description:
-      "Search file contents for a pattern and return matching lines with their paths. This is the fastest way to locate a symbol, string, or usage across the workspace.",
+      "Search file contents for a pattern and return matching lines with their paths. This is the fastest way to locate a symbol, string, or usage across the workspace. Example: grep({\"pattern\": \"createModelClient\", \"path\": \"src\"}).",
     inputSchema: {
       type: "object",
       properties: {
@@ -157,7 +163,7 @@ export const toolDefinitions: Record<ToolName, ToolDefinition> = {
   bash: {
     name: "bash",
     description:
-      "Run a shell command in the workspace root. This is how you use git (status, diff, log, show), run tests and build scripts, and inspect the project. Prefer the dedicated read, glob and grep tools for reading and searching — they are faster and do not need approval.",
+      "Run a shell command in the workspace root. This is how you use git (status, diff, log, show), run tests and build scripts, and inspect the project. Prefer the dedicated read, glob and grep tools for reading and searching — they are faster and do not need approval. Example: bash({\"command\": \"npm test\", \"description\": \"run the test suite\"}).",
     inputSchema: {
       type: "object",
       properties: {
@@ -177,7 +183,7 @@ export const toolDefinitions: Record<ToolName, ToolDefinition> = {
   fetch_url: {
     name: "fetch_url",
     description:
-      "Fetch a public http(s) URL and return its readable text. Use this when you need the actual contents of a specific page. You do have web access through this tool — never claim otherwise.",
+      "Fetch a public http(s) URL and return its readable text. Use this when you need the actual contents of a specific page. You do have web access through this tool — never claim otherwise. Example: fetch_url({\"url\": \"https://nodejs.org/api/fs.html\"}).",
     inputSchema: {
       type: "object",
       properties: {
@@ -197,7 +203,7 @@ export const toolDefinitions: Record<ToolName, ToolDefinition> = {
   task: {
     name: "task",
     description:
-      "Delegate a self-contained piece of work to a subagent with its own context. Use this when a task needs a lot of exploration whose detail you do not need to keep — the subagent reads widely and returns only its conclusion, which keeps your own context small.",
+      "Delegate a self-contained piece of work to a subagent with its own context. Use this when a task needs a lot of exploration whose detail you do not need to keep — the subagent reads widely and returns only its conclusion, which keeps your own context small. Example: task({\"description\": \"find auth entry points\", \"prompt\": \"Locate every place a request is authenticated and report each file and function.\", \"subagent_type\": \"explore\"}).",
     inputSchema: {
       type: "object",
       properties: {
@@ -222,7 +228,7 @@ export const toolDefinitions: Record<ToolName, ToolDefinition> = {
   todo: {
     name: "todo",
     description:
-      "Record or update your task list. Keep it current: mark an item in_progress when you start it and completed the moment it is done. This is how the user follows what you are doing on a long task.",
+      "Record or update your task list. Keep it current: mark an item in_progress when you start it and completed the moment it is done. This is how the user follows what you are doing on a long task. Example: todo({\"items\": [{\"title\": \"Read the parser\", \"status\": \"completed\"}, {\"title\": \"Add the flag\", \"status\": \"in_progress\"}]}).",
     inputSchema: {
       type: "object",
       properties: {

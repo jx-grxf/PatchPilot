@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { describeComputeTarget } from "./compute.js";
 import { LocalOpenAIClient, resolveLocalOpenAIBaseUrl } from "./localOpenAI.js";
-import { OllamaClient } from "./ollama.js";
+import { minimumUsableContextTokens, OllamaClient, readOllamaRuntimeOptions } from "./ollama.js";
 import type { ModelProvider } from "./types.js";
 
 export type DoctorResult = {
@@ -75,6 +75,7 @@ async function checkOllama(ollamaUrl: string, model?: string): Promise<DoctorRes
   }
 
   results.push(await checkOllamaContextWindow(ollama, model));
+  results.push(checkConfiguredContextWindow());
   return results;
 }
 
@@ -116,6 +117,30 @@ async function checkOllamaContextWindow(ollama: OllamaClient, model?: string): P
       details: error instanceof Error ? error.message : String(error)
     };
   }
+}
+
+/**
+ * Ollama truncates an over-long prompt *silently, from the front*, so a window
+ * that is too small does not error — it quietly removes the system prompt and
+ * the tool definitions, and the model then looks like it has forgotten how to
+ * use tools. An agent loop burns 30-80k tokens on a multi-step task, so a
+ * default 2-4k window is the single most expensive misconfiguration available.
+ */
+function checkConfiguredContextWindow(): DoctorResult {
+  const numCtx = readOllamaRuntimeOptions().numCtx;
+  if (numCtx >= minimumUsableContextTokens) {
+    return {
+      name: "context-budget",
+      ok: true,
+      details: `sending num_ctx ${numCtx.toLocaleString("en-US")}`
+    };
+  }
+
+  return {
+    name: "context-budget",
+    ok: false,
+    details: `num_ctx is ${numCtx.toLocaleString("en-US")}, below the ${minimumUsableContextTokens.toLocaleString("en-US")} an agent loop needs. Ollama drops the oldest tokens without warning, which removes the system prompt and tool definitions mid-task. Set PATCHPILOT_NUM_CTX=32768.`
+  };
 }
 
 async function checkLocalOpenAI(baseUrl: string, model?: string): Promise<DoctorResult[]> {

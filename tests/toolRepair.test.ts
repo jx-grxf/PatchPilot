@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   extractFencedToolCalls,
+  extractStringifiedToolCalls,
   looksLikePermissionRequest,
   parseLooseJson,
   repairToolCall,
@@ -241,5 +242,42 @@ describe("tool surface", () => {
       arguments: { command: "git status" }
     });
     expect(toWorkspaceCall("grep", { pattern: "todo" })).toMatchObject({ name: "search_text" });
+  });
+});
+
+describe("L0 — serving-layer parser failures", () => {
+  it("recovers a call the runtime left stringified in content", () => {
+    const calls = extractStringifiedToolCalls('{"name":"read","arguments":{"path":"a.ts"}}');
+    expect(calls).toHaveLength(1);
+    expect(repaired(calls[0]?.name, calls[0]?.arguments)).toMatchObject({ name: "read" });
+  });
+
+  it("unwraps a tool_calls envelope emitted as text", () => {
+    const calls = extractStringifiedToolCalls('{"tool_calls":[{"function":{"name":"grep","arguments":{"pattern":"x"}}}]}');
+    expect(repaired(calls[0]?.name, calls[0]?.arguments)).toMatchObject({ name: "grep" });
+  });
+
+  it("recovers an array of calls", () => {
+    expect(extractStringifiedToolCalls('[{"name":"read","arguments":{}},{"name":"grep","arguments":{}}]')).toHaveLength(2);
+  });
+
+  it("ignores ordinary prose, which is the common case", () => {
+    expect(extractStringifiedToolCalls("I read the file and it looks fine.")).toEqual([]);
+    expect(extractStringifiedToolCalls("")).toEqual([]);
+  });
+
+  it("ignores json that is not a tool call", () => {
+    expect(extractStringifiedToolCalls('{"result":"ok","count":2}')).toEqual([]);
+  });
+});
+
+describe("tool descriptions carry a worked example", () => {
+  it("gives every tool exactly one example, adjacent to its schema", () => {
+    for (const tool of toolsForMode("build")) {
+      expect(tool.description).toContain("Example:");
+      expect(tool.description.split("Example:")).toHaveLength(2);
+      // The example must name the tool it belongs to.
+      expect(tool.description.split("Example:")[1]).toContain(`${tool.name}(`);
+    }
   });
 });

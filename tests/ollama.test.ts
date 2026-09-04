@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  minimumUsableContextTokens,
   OllamaClient,
   normalizeOllamaBaseUrl,
   readOllamaRuntimeOptions,
@@ -142,9 +143,9 @@ describe("OllamaClient", () => {
     expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toMatchObject({
       keep_alive: "15m",
       options: {
-        num_ctx: 8192,
+        num_ctx: 32_768,
         num_predict: 8192,
-        temperature: 0.1
+        temperature: 0.2
       }
     });
     expect(result.content).toBe("{\"action\":\"final\",\"message\":\"ok\"}");
@@ -396,7 +397,37 @@ describe("Ollama URL config", () => {
       keepAlive: "30m",
       numCtx: 4096,
       numPredict: 768,
-      temperature: 0
+      temperature: 0,
+      topP: 0.9,
+      topK: 20,
+      repeatPenalty: 1
     });
+  });
+});
+
+describe("sampling defaults for tool calling", () => {
+  it("disables the repetition penalty, which corrupts structured output", () => {
+    expect(readOllamaRuntimeOptions({}).repeatPenalty).toBe(1);
+  });
+
+  it("sends a context window an agent loop can survive", () => {
+    expect(readOllamaRuntimeOptions({}).numCtx).toBeGreaterThanOrEqual(minimumUsableContextTokens);
+  });
+
+  it("sends every sampling knob explicitly rather than trusting server defaults", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async () => new Response(JSON.stringify({ message: { content: "ok" }, done: true }), { status: 200 }));
+
+    await new OllamaClient().chat({ model: "m", messages: [{ role: "user", content: "hi" }] });
+    const options = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)).options;
+
+    expect(options).toMatchObject({ repeat_penalty: 1, num_ctx: 32_768, top_k: 20 });
+    expect(options.top_p).toBeGreaterThan(0);
+  });
+
+  it("still honours an explicit override", () => {
+    expect(readOllamaRuntimeOptions({ PATCHPILOT_REPEAT_PENALTY: "1.15" }).repeatPenalty).toBeCloseTo(1.15);
+    expect(readOllamaRuntimeOptions({ PATCHPILOT_NUM_CTX: "8192" }).numCtx).toBe(8192);
   });
 });

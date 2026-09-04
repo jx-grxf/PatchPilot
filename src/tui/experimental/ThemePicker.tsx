@@ -3,7 +3,7 @@ import { Box, Text } from "ink";
 import { symbols } from "./theme.js";
 
 export type ThemePickerOption = {
-  value: "new" | "legacy";
+  value: "flow" | "new" | "legacy";
   label: string;
   description: string;
 };
@@ -12,7 +12,7 @@ export type ThemePickerOption = {
 export function ThemePicker(props: {
   options: ThemePickerOption[];
   selectedIndex: number;
-  currentValue: "new" | "legacy";
+  currentValue: "flow" | "new" | "legacy";
   height: number;
 }): React.ReactElement {
   return (

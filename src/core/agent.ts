@@ -10,6 +10,7 @@ import { probeModelCapabilities } from "./capability.js";
 import { measureContext, pruneToolResults } from "./contextWindow.js";
 import {
   extractFencedToolCalls,
+  extractStringifiedToolCalls,
   looksLikePermissionRequest,
   repairToolCall,
   ToolCallLoopBreaker
@@ -269,7 +270,9 @@ export class AgentRunner {
         modelResponse.toolCalls && modelResponse.toolCalls.length > 0
           ? modelResponse.toolCalls
           : providerTools
-            ? extractFencedToolCalls(rawResponse)
+            ? // L0 first: a serving-layer parser failure puts a correct call
+              // into content as a string, which looks exactly like a refusal.
+              firstNonEmpty(extractStringifiedToolCalls(rawResponse), extractFencedToolCalls(rawResponse))
             : [];
 
       if (nativeCalls.length > 0) {
@@ -916,6 +919,10 @@ export class AgentRunner {
 
     return await chat;
   }
+}
+
+function firstNonEmpty<T>(...candidates: T[][]): T[] {
+  return candidates.find((candidate) => candidate.length > 0) ?? [];
 }
 
 /** How often streaming progress is reported, in milliseconds. */

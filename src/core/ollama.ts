@@ -60,6 +60,9 @@ type OllamaRuntimeOptions = {
   numCtx: number;
   numPredict: number;
   temperature: number;
+  topP: number;
+  topK: number;
+  repeatPenalty: number;
 };
 
 export class OllamaClient {
@@ -88,7 +91,11 @@ export class OllamaClient {
         options: {
           num_ctx: this.runtimeOptions.numCtx,
           num_predict: this.runtimeOptions.numPredict,
-          temperature: this.runtimeOptions.temperature
+          temperature: this.runtimeOptions.temperature,
+          top_p: this.runtimeOptions.topP,
+          top_k: this.runtimeOptions.topK,
+          // Sent explicitly on every request, never left to the default.
+          repeat_penalty: this.runtimeOptions.repeatPenalty
         },
         // Advertising tools switches Ollama to grammar-constrained decoding
         // against each schema, which is what makes malformed calls impossible
@@ -314,14 +321,36 @@ export function normalizeOllamaBaseUrl(value: string | undefined): string {
   return parsedUrl.toString().replace(/\/$/, "");
 }
 
+/**
+ * Defaults tuned for tool calling rather than for prose.
+ *
+ * `repeat_penalty` is the one that matters most and is the least obvious.
+ * Ollama defaults it to 1.1, and the penalty is applied by branching on the
+ * raw logit sign — but softmax is invariant to adding a constant to all
+ * logits, so the zero point is arbitrary and model-dependent. Structured
+ * output is exactly the case that suffers: a tool call *must* repeat `{`, `"`,
+ * and its own field names, and penalising them measurably costs schema
+ * validity. Sending 1.0 explicitly disables it.
+ *
+ * `num_ctx` defaults to 32k rather than Ollama's 2–4k, because an agent loop
+ * burns 30–80k tokens on a multi-step task and Ollama truncates *silently
+ * from the front* when the window is exceeded — which reads as the model
+ * having forgotten its own system prompt and tools.
+ */
 export function readOllamaRuntimeOptions(env: NodeJS.ProcessEnv = process.env): OllamaRuntimeOptions {
   return {
     keepAlive: env.PATCHPILOT_KEEP_ALIVE?.trim() || "15m",
-    numCtx: readPositiveInteger(env.PATCHPILOT_NUM_CTX, 8192),
+    numCtx: readPositiveInteger(env.PATCHPILOT_NUM_CTX, 32_768),
     numPredict: readPositiveInteger(env.PATCHPILOT_NUM_PREDICT, 8192),
-    temperature: readTemperature(env.PATCHPILOT_TEMPERATURE, 0.1)
+    temperature: readTemperature(env.PATCHPILOT_TEMPERATURE, 0.2),
+    topP: readTemperature(env.PATCHPILOT_TOP_P, 0.9),
+    topK: readPositiveInteger(env.PATCHPILOT_TOP_K, 20),
+    repeatPenalty: readTemperature(env.PATCHPILOT_REPEAT_PENALTY, 1)
   };
 }
+
+/** Below this an agent loop silently loses its system prompt mid-task. */
+export const minimumUsableContextTokens = 16_384;
 
 function isTruncatedDoneReason(value: string | undefined): boolean {
   return typeof value === "string" && /length|max_?tokens|num_predict/i.test(value);
