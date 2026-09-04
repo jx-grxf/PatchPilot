@@ -4,9 +4,17 @@ import { platform, release, type } from "node:os";
 import { createModelClient } from "./modelClient.js";
 import type { SessionStore } from "./session.js";
 import { formatSubagentContext, runSubagentAdvisors } from "./subagents.js";
-import { MAX_TOOL_CALLS_PER_RESPONSE, type AgentEvent, type AgentTodoItem, type AgentToolName, type AgentWorkState, type ApprovalRequest, type ChatMessage, type ModelChatResult, type ModelClient, type ModelProvider, type PermissionDecision, type ThinkingSetting, type ToolCategory, type ToolResult } from "./types.js";
+import { MAX_TOOL_CALLS_PER_RESPONSE, type AgentEvent, type AgentTodoItem, type AgentToolName, type AgentWorkState, type ApprovalRequest, type ChatMessage, type ModelChatResult, type ModelClient, type ModelProvider, type PermissionDecision, type ThinkingSetting, type ProviderTool, type RawToolCall, type AgentToolCall, type ToolCategory, type ToolResult } from "./types.js";
 import { StreamTimer } from "./stream.js";
+import { probeModelCapabilities } from "./capability.js";
 import { pruneToolResults } from "./contextWindow.js";
+import {
+  extractFencedToolCalls,
+  looksLikePermissionRequest,
+  repairToolCall,
+  ToolCallLoopBreaker
+} from "./toolRepair.js";
+import { toolsForMode, toProviderTools, toWorkspaceCall, type ToolMode } from "./toolSchema.js";
 import { estimateTokens } from "./tokenAccounting.js";
 import { getToolSpec, WorkspaceTools } from "./workspace.js";
 
@@ -83,6 +91,30 @@ export class AgentRunner {
     const ultramaxx = Boolean(this.options.ultramaxx);
     let maxSteps = resolveMaxSteps(task, this.options.maxSteps, this.options.thinkingMode, ultramaxx);
     const thinking = this.options.thinking;
+
+    // Ask the model once whether it can drive native tool calls. Advertising
+    // tools to a model that ignores them is worse than not advertising: it
+    // answers in prose, the loop sees no calls, and the run stalls looking
+    // like a refusal.
+    const capabilities = await probeModelCapabilities({
+      client: this.client,
+      provider: this.options.provider,
+      model: this.options.model,
+      signal: this.options.signal
+    });
+    const mode: ToolMode = this.options.mode ?? (this.options.allowWrite || this.options.allowShell ? "build" : "plan");
+    const availableTools = toolsForMode(mode, { subagents: Boolean(this.options.subagents) });
+    const providerTools = capabilities.nativeToolCalls ? toProviderTools(availableTools) : undefined;
+    const loopBreaker = new ToolCallLoopBreaker();
+    let sawPermissionRequest = false;
+
+    yield {
+      type: "status",
+      message: capabilities.nativeToolCalls
+        ? `native tool calling: ${availableTools.length} tools in ${mode} mode`
+        : `tool protocol fallback: ${capabilities.detail}`,
+      workState: "planning"
+    };
     let stepIndex = 0;
     let repairs = 0;
     let malformedResponses = 0;
@@ -146,7 +178,8 @@ export class AgentRunner {
           memoryEnabled: Boolean(this.options.memoryEnabled),
           allowShellMetacharacters: Boolean(this.options.allowShellMetacharacters),
           ultramaxx,
-          expectsTodos
+          expectsTodos,
+          nativeTools: capabilities.nativeToolCalls
         })
       },
       {
@@ -187,6 +220,7 @@ export class AgentRunner {
           model: this.options.model,
           messages,
           thinking,
+          tools: providerTools,
           requestWorkState,
           attemptLabel: `step ${stepIndex + 1}`
         });
@@ -224,6 +258,72 @@ export class AgentRunner {
       }
 
       let parsedResponse;
+
+      // Native tool calls, when the runtime produced any, bypass the envelope
+      // entirely. L2 also covers the measured case where a model prints a
+      // well-formed call inside a fence and makes no real call at all.
+      const nativeCalls =
+        modelResponse.toolCalls && modelResponse.toolCalls.length > 0
+          ? modelResponse.toolCalls
+          : providerTools
+            ? extractFencedToolCalls(rawResponse)
+            : [];
+
+      if (nativeCalls.length > 0) {
+        const resolved = this.resolveNativeToolCalls(nativeCalls, loopBreaker);
+        if (resolved.problems.length > 0 && resolved.toolCalls.length === 0) {
+          // Every call was unusable: hand the guidance back and let the model
+          // correct within the same turn rather than ending the run.
+          repairs += 1;
+          for (const problem of resolved.problems) {
+            yield { type: "status", message: problem, workState: "planning" };
+          }
+          messages.push({ role: "assistant", content: clipPromptValue(rawResponse, 2000) });
+          messages.push({ role: "user", content: resolved.problems.join("\n") });
+          if (repairs >= 3) {
+            yield {
+              type: "final",
+              message: `The model could not produce a usable tool call: ${resolved.problems[0] ?? "unknown"}`,
+              workState: "error"
+            };
+            return;
+          }
+          continue;
+        }
+
+        for (const note of resolved.notes) {
+          yield { type: "status", message: note, workState: "planning" };
+        }
+
+        parsedResponse = {
+          action: "tools" as const,
+          message: rawResponse.trim() || "working",
+          tool_calls: resolved.toolCalls
+        };
+      } else if (providerTools) {
+        // Capable model, no calls, no fence: it answered. Guard against a
+        // permission request made despite an explicit act-don't-ask prompt.
+        if (!sawPermissionRequest && looksLikePermissionRequest(rawResponse)) {
+          sawPermissionRequest = true;
+          yield {
+            type: "status",
+            message: "model asked for permission it already has; re-prompting to act",
+            workState: "planning"
+          };
+          messages.push({ role: "assistant", content: clipPromptValue(rawResponse, 2000) });
+          messages.push({
+            role: "user",
+            content:
+              "You already have permission. Do not ask — carry out the work now using the tools, and report what you changed."
+          });
+          continue;
+        }
+
+        // A model coming off the legacy protocol sometimes narrates an
+        // envelope as prose. Presenting that raw as the answer looks like a
+        // crash, so it is stripped down to its message.
+        parsedResponse = { action: "final" as const, message: readFinalMessage(rawResponse) };
+      } else {
       try {
         parsedResponse = parseAgentResponse(rawResponse);
       } catch (error) {
@@ -269,6 +369,7 @@ export class AgentRunner {
           }
           continue;
         }
+      }
       }
 
       repairs = 0;
@@ -473,6 +574,15 @@ export class AgentRunner {
       ];
 
       for (const toolResult of toolResults) {
+        // L5 counts only failures: a call that worked should never be refused
+        // later just because it was repeated.
+        if (!toolResult.ok) {
+          const failedCall = workspaceCallById.get(toolResult.toolCallId);
+          if (failedCall) {
+            loopBreaker.recordFailure(failedCall.name as never, failedCall.arguments);
+          }
+        }
+
         if (isWriteToolResult(toolResult)) {
           hadWrite = true;
           verifiedSinceLastWrite = false;
@@ -595,10 +705,47 @@ export class AgentRunner {
     });
   }
 
+  /**
+   * Runs the repair ladder over one batch of native calls. Calls that survive
+   * are executed; calls that do not come back as guidance the model can act on
+   * in the same turn. A batch is never abandoned because one call was bad.
+   */
+  private resolveNativeToolCalls(
+    rawCalls: RawToolCall[],
+    loopBreaker: ToolCallLoopBreaker
+  ): { toolCalls: AgentToolCall[]; problems: string[]; notes: string[] } {
+    const toolCalls: AgentToolCall[] = [];
+    const problems: string[] = [];
+    const notes: string[] = [];
+
+    for (const rawCall of rawCalls.slice(0, MAX_TOOL_CALLS_PER_RESPONSE)) {
+      const repaired = repairToolCall(rawCall);
+      if ("message" in repaired) {
+        problems.push(repaired.message);
+        continue;
+      }
+
+      const looping = loopBreaker.check(repaired.name, repaired.arguments);
+      if (looping) {
+        problems.push(looping.message);
+        continue;
+      }
+
+      if (repaired.repairs.length > 0) {
+        notes.push(`repaired ${repaired.name} call: ${repaired.repairs.join(", ")}`);
+      }
+
+      toolCalls.push(toWorkspaceCall(repaired.name, repaired.arguments));
+    }
+
+    return { toolCalls, problems, notes };
+  }
+
   private async *chatWithRetry(options: {
     model: string;
     messages: ChatMessage[];
     thinking: ThinkingSetting | undefined;
+    tools?: ProviderTool[];
     requestWorkState: AgentWorkState;
     attemptLabel: string;
   }): AsyncGenerator<AgentEvent, ModelChatResult> {
@@ -642,6 +789,7 @@ export class AgentRunner {
     model: string;
     messages: ChatMessage[];
     thinking: ThinkingSetting | undefined;
+    tools?: ProviderTool[];
     requestWorkState: AgentWorkState;
   }): AsyncGenerator<AgentEvent, ModelChatResult> {
     const timer = new StreamTimer();
@@ -659,7 +807,11 @@ export class AgentRunner {
       .chat({
         model: options.model,
         messages: options.messages,
-        formatJson: true,
+        // The envelope needs a JSON response; native tool calling does not,
+        // and asking for both makes a model describe a call instead of making
+        // one.
+        formatJson: !options.tools,
+        tools: options.tools,
         thinking: options.thinking,
         signal: this.options.signal,
         onDelta: (delta) => {
@@ -865,6 +1017,8 @@ function buildSystemPrompt(
     allowShellMetacharacters: boolean;
     ultramaxx: boolean;
     expectsTodos: boolean;
+    /** Native tool calling replaces the JSON envelope protocol section. */
+    nativeTools: boolean;
   }
 ): string {
   const workspaceLabel = path.basename(workspaceRoot) || "workspace";
@@ -945,6 +1099,20 @@ function buildSystemPrompt(
         ].join("\n")
       : "",
     "",
+    // Native tool calling: the runtime enforces the shape, so the prompt only
+    // has to carry intent. Repeating a JSON protocol alongside real tools makes
+    // some models describe a call in prose instead of emitting one.
+    ...(experimental.nativeTools
+      ? [
+          "Use the provided tools to do the work. Call a tool whenever you need to read, search, change, or run something.",
+          "Do not describe a tool call in prose or in a code block — actually call the tool.",
+          "You may call several independent tools at once. Read a file before editing it.",
+          "Never repeat a tool call that just failed with the same arguments. Change the arguments or try a different approach.",
+          "Answer in plain prose only when the work is done or you genuinely cannot proceed.",
+          "Keep the todo list current: exactly one item in_progress, finished items completed.",
+          "Use bash for git, tests and scripts. Prefer read, glob and grep for reading and searching — they are faster and need no approval."
+        ]
+      : [
     "Return only JSON. Do not use Markdown outside JSON.",
     "Return exactly one JSON object. Never return a JSON array.",
     "",
@@ -986,7 +1154,8 @@ function buildSystemPrompt(
     "- apply_patch: {\"patch\":\"unified git patch\"}",
     "- run_script: {\"script\":\"test\"}",
     "- run_tests: {}",
-    "- run_shell: {\"command\":\"single simple command to run in the workspace\"}",
+    "- run_shell: {\"command\":\"single simple command to run in the workspace\"}"
+        ]),
     "",
     "Act like a coding agent. For simple create/edit/run requests, use tools directly instead of over-warning.",
     "Do not call search_text with an empty query. Use list_files {\"path\":\".\"} to inspect a directory.",
@@ -996,6 +1165,25 @@ function buildSystemPrompt(
     "In final answers, separate verified facts from remaining risks.",
     "Keep tool requests and final answers compact."
   ].join("\n");
+}
+
+/** Unwraps a narrated protocol envelope so it never reaches the user raw. */
+export function readFinalMessage(rawResponse: string): string {
+  const trimmed = rawResponse.trim();
+  if (!trimmed.startsWith("{") || !trimmed.includes('"action"')) {
+    return trimmed;
+  }
+
+  const message = /"message"\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(trimmed)?.[1];
+  if (!message) {
+    return "Done.";
+  }
+
+  try {
+    return JSON.parse(`"${message}"`) as string;
+  } catch {
+    return message;
+  }
 }
 
 function looksLikeClarification(message: string): boolean {

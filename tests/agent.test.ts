@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { compactTranscript, executeToolCallsWithReadParallelism, findRepeatedToolCall, isTodoOnlyFinalResponse, normalizeTodoItems, recoverMalformedToolResponse, shouldExpectTodos, shouldStopAfterEmptyToolBatches } from "../src/core/agent.js";
+import { compactTranscript, executeToolCallsWithReadParallelism, findRepeatedToolCall, isTodoOnlyFinalResponse, normalizeTodoItems, recoverMalformedToolResponse, shouldExpectTodos, shouldStopAfterEmptyToolBatches, readFinalMessage } from "../src/core/agent.js";
 import type { AgentToolCall, ToolResult } from "../src/core/types.js";
 import type { WorkspaceTools } from "../src/core/workspace.js";
 
@@ -206,3 +206,22 @@ function toolResultMessage(tool: string, content: string) {
     ].join("\n")
   };
 }
+
+describe("final message unwrapping", () => {
+  it("strips a narrated protocol envelope down to its message", () => {
+    expect(readFinalMessage('{"action":"final","message":"Added farewell()."}')).toBe("Added farewell().");
+    expect(readFinalMessage('{"action":"tools","message":"working","tool_calls":[{"name":"read"}]}')).toBe("working");
+  });
+
+  it("leaves ordinary prose alone", () => {
+    expect(readFinalMessage("  I added the function and tests pass.  ")).toBe("I added the function and tests pass.");
+  });
+
+  it("decodes escapes inside the message", () => {
+    expect(readFinalMessage('{"action":"final","message":"Edited \\"hello.py\\"."}')).toBe('Edited "hello.py".');
+  });
+
+  it("falls back rather than showing raw JSON when there is no message", () => {
+    expect(readFinalMessage('{"action":"final"}')).toBe("Done.");
+  });
+});
