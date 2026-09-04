@@ -439,7 +439,7 @@ export function readLocalOpenAIApiKey(env: NodeJS.ProcessEnv = process.env): str
 export function readLocalOpenAIRuntimeOptions(env: NodeJS.ProcessEnv = process.env): LocalOpenAIRuntimeOptions {
   return {
     apiKey: readLocalOpenAIApiKey(env),
-    maxTokens: readPositiveInteger(env.PATCHPILOT_NUM_PREDICT, 8192),
+    maxTokens: readPositiveInteger(env.PATCHPILOT_NUM_PREDICT, 16_384),
     temperature: readTemperature(env.PATCHPILOT_TEMPERATURE, 0.1)
   };
 }

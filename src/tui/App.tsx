@@ -48,7 +48,7 @@ import {
   type OnboardingPreferences
 } from "./onboardingPreferences.js";
 import { readGpuStats, readSystemStats, type GpuStats, type SystemStats } from "./systemStats.js";
-import { maxTranscriptLines, type AdvisorNote, type AgentMode, type LogLine, type LogLineInput, type ToolTelemetry } from "./types.js";
+import { maxTranscriptLines, type AgentMode, type LogLine, type LogLineInput, type ToolTelemetry } from "./types.js";
 
 export type PatchPilotAppProps = AgentRunnerOptions & {
   initialTask?: string;
@@ -125,7 +125,6 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   // ("now do X") still knows what the user asked for and where.
   const conversationTurnsRef = useRef<string[]>([]);
   const [lines, setLines] = useState<LogLine[]>([]);
-  const [advisorNotes, setAdvisorNotes] = useState<AdvisorNote[]>([]);
   const [todos, setTodos] = useState<AgentTodoItem[]>([]);
   const [todoFrame, setTodoFrame] = useState(0);
   const [verbTick, setVerbTick] = useState(0);
@@ -1295,18 +1294,6 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
             continue;
           }
 
-          if (event.type === "subagent") {
-            setTelemetry(event.metrics);
-            setSessionTelemetry((currentSession) => addTelemetryToSession(currentSession, event.metrics));
-            setToolTelemetry((currentTools) => addToolTelemetry(currentTools, "subagent", true));
-            setAdvisorNotes((currentNotes) =>
-              upsertAdvisorNote(currentNotes, {
-                role: event.role,
-                message: event.message
-              })
-            );
-          }
-
           if (event.type === "todo") {
             setTodos(event.items);
             setStatus(event.summary);
@@ -1738,7 +1725,6 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
               ollamaUrl: settings.ollamaUrl,
               sessionId: sessionStoreRef.current.sessionId,
               activeHost,
-              advisorNotes,
               toolTelemetry,
               sessionTelemetry,
               telemetry,
@@ -2047,7 +2033,6 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
             await sessionStoreRef.current.create();
             setResumeContext("");
             setLines([]);
-            setAdvisorNotes([]);
             setTelemetry(null);
             setSessionTelemetry(emptySessionTelemetry());
             setToolTelemetry(emptyToolTelemetry());
@@ -2141,7 +2126,6 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         case "clear":
           setTranscriptEpoch((epoch) => epoch + 1);
           setLines([]);
-          setAdvisorNotes([]);
           setTodos([]);
           setTelemetry(null);
           setResumeContext("");
@@ -2173,7 +2157,6 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           });
           await sessionStoreRef.current.create();
           setLines([]);
-          setAdvisorNotes([]);
           setTodos([]);
           setTelemetry(null);
           setSessionTelemetry(emptySessionTelemetry());
@@ -2930,7 +2913,6 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
             draftTokens={draftTokens}
             height={bodyHeight}
             scrollOffset={sessionScrollOffset}
-            advisors={advisorNotes}
             isActive={activeScrollPane === "session"}
             activeHost={activeHost}
           />
@@ -3449,11 +3431,6 @@ async function ejectOllamaModels(options: {
   return ejected;
 }
 
-function upsertAdvisorNote(notes: AdvisorNote[], nextNote: AdvisorNote): AdvisorNote[] {
-  const nextNotes = notes.filter((note) => note.role !== nextNote.role);
-  return [...nextNotes, nextNote].slice(-2);
-}
-
 function UpdatePromptPanel(props: {
   prompt: UpdatePromptState | null;
   busy: boolean;
@@ -3543,7 +3520,6 @@ function formatStatusDock(options: {
   ollamaUrl: string;
   sessionId: string;
   activeHost: OllamaHostDetails | null;
-  advisorNotes: AdvisorNote[];
   toolTelemetry: ToolTelemetry;
   sessionTelemetry: SessionTelemetry;
   telemetry: ModelTelemetry | null;
@@ -3560,9 +3536,6 @@ function formatStatusDock(options: {
     .slice(0, 6)
     .map(([tool, count]) => `${tool} ${count}`)
     .join(" · ");
-  const advisors = options.advisorNotes.length > 0
-    ? options.advisorNotes.map((note) => `  ${note.role}: ${note.message.replace(/\s+/g, " ").slice(0, 88)}`).join("\n")
-    : "  none yet";
   return [
     `provider   ${options.provider}/${options.model}`,
     `host       ${hostLine}  ·  compute ${computeKind}  ·  tools local`,
@@ -3575,7 +3548,6 @@ function formatStatusDock(options: {
       ? `tools      ${options.toolTelemetry.total} calls · ${options.toolTelemetry.succeeded} ok · ${options.toolTelemetry.failed} failed · ${options.toolTelemetry.approvals} approved · ${options.toolTelemetry.denied} denied`
       : "tools      none yet",
     toolCounters ? `counters   ${toolCounters}` : "",
-    `advisors\n${advisors}`,
   ]
     .filter(Boolean)
     .join("\n");
@@ -3852,15 +3824,6 @@ function eventToLine(event: AgentEvent): LogLineInput {
         text: formatStreamProgress(event.phase, event.elapsedMs, event.tokens, event.tokensPerSecond),
         workState: event.workState
       };
-    case "subagent":
-      return {
-        kind: "assistant",
-        tone: "accent",
-        label: event.role,
-        text: "advisor brief updated",
-        detail: event.message,
-        workState: event.workState
-      };
     case "tool":
       return {
         kind: event.name === "git_diff" ? "diff" : "tool",
@@ -3951,10 +3914,6 @@ function eventToStatus(event: AgentEvent): string {
 
   if (event.type === "todo") {
     return event.summary;
-  }
-
-  if (event.type === "subagent") {
-    return `${event.role} subagent`;
   }
 
   if (event.type === "approval") {

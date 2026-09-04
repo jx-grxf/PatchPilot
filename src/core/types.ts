@@ -175,7 +175,6 @@ export type AgentResponse =
       message: string;
     };
 
-export type SubagentRole = "planner" | "reviewer" | "explorer";
 
 export type AgentTodoStatus = "pending" | "in_progress" | "completed";
 
@@ -229,13 +228,6 @@ export type AgentEvent =
       limitTokens: number;
       ratio: number;
       pressure: "ok" | "warn" | "high" | "critical";
-      workState: AgentWorkState;
-    }
-  | {
-      type: "subagent";
-      role: SubagentRole;
-      message: string;
-      metrics: ModelTelemetry;
       workState: AgentWorkState;
     }
   | {

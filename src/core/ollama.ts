@@ -341,7 +341,7 @@ export function readOllamaRuntimeOptions(env: NodeJS.ProcessEnv = process.env): 
   return {
     keepAlive: env.PATCHPILOT_KEEP_ALIVE?.trim() || "15m",
     numCtx: readPositiveInteger(env.PATCHPILOT_NUM_CTX, 32_768),
-    numPredict: readPositiveInteger(env.PATCHPILOT_NUM_PREDICT, 8192),
+    numPredict: readPositiveInteger(env.PATCHPILOT_NUM_PREDICT, 16_384),
     temperature: readTemperature(env.PATCHPILOT_TEMPERATURE, 0.2),
     topP: readTemperature(env.PATCHPILOT_TOP_P, 0.9),
     topK: readPositiveInteger(env.PATCHPILOT_TOP_K, 20),

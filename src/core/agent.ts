@@ -3,7 +3,6 @@ import path from "node:path";
 import { platform, release, type } from "node:os";
 import { createModelClient } from "./modelClient.js";
 import type { SessionStore } from "./session.js";
-import { formatSubagentContext, runSubagentAdvisors } from "./subagents.js";
 import { MAX_TOOL_CALLS_PER_RESPONSE, type AgentEvent, type AgentTodoItem, type AgentToolName, type AgentWorkState, type ApprovalRequest, type ChatMessage, type ModelChatResult, type ModelClient, type ModelProvider, type PermissionDecision, type ThinkingSetting, type ProviderTool, type RawToolCall, type AgentToolCall, type ToolCategory, type ToolResult } from "./types.js";
 import { StreamTimer } from "./stream.js";
 import { probeModelCapabilities } from "./capability.js";
@@ -39,6 +38,8 @@ export type AgentRunnerOptions = {
   ultramaxx?: boolean;
   signal?: AbortSignal;
   shouldStopAfterStep?: () => boolean;
+  /** Test seam: supply a model client instead of building one from provider. */
+  client?: ModelClient;
   sessionStore?: SessionStore;
   approvalHandler?: (request: ApprovalRequest) => Promise<PermissionDecision>;
 };
@@ -50,11 +51,13 @@ export class AgentRunner {
 
   constructor(options: AgentRunnerOptions) {
     this.options = options;
-    this.client = createModelClient({
-      provider: options.provider,
-      ollamaUrl: options.ollamaUrl,
-      workspace: options.workspace
-    });
+    this.client =
+      options.client ??
+      createModelClient({
+        provider: options.provider,
+        ollamaUrl: options.ollamaUrl,
+        workspace: options.workspace
+      });
     const documentAnalyzer = this.client.analyzeFile && (this.client.supportsFileAnalysis?.() ?? true)
       ? async (request: { path: string; prompt: string; signal?: AbortSignal }) => {
           const result = await this.client.analyzeFile?.({
@@ -126,7 +129,6 @@ export class AgentRunner {
     let repairs = 0;
     let malformedResponses = 0;
     let lastReadFilePath = "";
-    let subagentContext = "";
     let todos: AgentTodoItem[] = [];
     const expectsTodos = shouldExpectTodos(task, ultramaxx);
     let didNudgeForTodos = false;
@@ -144,37 +146,11 @@ export class AgentRunner {
         workState: "planning"
       };
     }
-    if (this.options.subagents && shouldUseSubagents(task)) {
-      yield {
-        type: "status",
-        message: "consulting planner and reviewer subagents",
-        workState: "planning"
-      };
-
-      const advice = await runSubagentAdvisors({
-        client: this.client,
-        model: this.options.model,
-        task,
-        workspaceRoot: this.tools.root,
-        workspaceSummary
-      });
-      subagentContext = formatSubagentContext(advice);
-
-      for (const item of advice) {
-        yield {
-          type: "subagent",
-          role: item.role,
-          message: item.message,
-          metrics: item.telemetry,
-          workState: "planning"
-        };
-      }
-    }
 
     const messages: ChatMessage[] = [
       {
           role: "system",
-        content: buildSystemPrompt(this.tools.root, subagentContext, workspaceSummary, this.options.resumeContext ?? "", {
+        content: buildSystemPrompt(this.tools.root, "", workspaceSummary, this.options.resumeContext ?? "", {
           provider: this.options.provider,
           mode: this.options.mode ?? (this.options.allowWrite || this.options.allowShell ? "bypass" : "plan"),
           allowWrite: this.options.allowWrite,
@@ -240,6 +216,15 @@ export class AgentRunner {
           yield nextAttempt.value;
         }
       } catch (error) {
+        // A stop the user asked for is a normal outcome, not a failure. It
+        // surfaces here as a rejected fetch, and rethrowing it turns a
+        // deliberate cancel into an error the UI has to special-case — and
+        // leaves the run looking alive if that special case is ever missed.
+        if (isAbortError(error, this.options.signal)) {
+          yield { type: "final", message: "Stopped.", workState: "done" };
+          return;
+        }
+
         const message = error instanceof Error ? error.message : String(error);
         await this.options.sessionStore?.append({
           type: "run.failed",
@@ -283,7 +268,9 @@ export class AgentRunner {
         if (resolved.problems.length > 0 && resolved.toolCalls.length === 0) {
           // Every call was unusable: hand the guidance back and let the model
           // correct within the same turn rather than ending the run.
-          repairs += 1;
+          // Two truncations of the same kind mean the model cannot fit this
+          // call in its budget; more attempts only cost minutes each.
+          repairs += resolved.truncatedCalls > 0 ? 2 : 1;
           for (const problem of resolved.problems) {
             yield { type: "status", message: problem, workState: "planning" };
           }
@@ -292,7 +279,10 @@ export class AgentRunner {
           if (repairs >= 3) {
             yield {
               type: "final",
-              message: `The model could not produce a usable tool call: ${resolved.problems[0] ?? "unknown"}`,
+              message:
+                resolved.truncatedCalls > 0
+                  ? `The model kept running out of output tokens mid-call. Raise PATCHPILOT_NUM_PREDICT (currently the generation budget), or ask for a smaller change — writing a whole large file in one call does not fit.`
+                  : `The model could not produce a usable tool call: ${resolved.problems[0] ?? "unknown"}`,
               workState: "error"
             };
             return;
@@ -809,16 +799,23 @@ export class AgentRunner {
   private resolveNativeToolCalls(
     rawCalls: RawToolCall[],
     loopBreaker: ToolCallLoopBreaker
-  ): { toolCalls: AgentToolCall[]; subagents: SubagentRequest[]; problems: string[]; notes: string[] } {
+  ): { toolCalls: AgentToolCall[]; subagents: SubagentRequest[]; problems: string[]; notes: string[]; truncatedCalls: number } {
     const toolCalls: AgentToolCall[] = [];
     const subagents: SubagentRequest[] = [];
     const problems: string[] = [];
     const notes: string[] = [];
+    let truncatedCalls = 0;
 
     for (const rawCall of rawCalls.slice(0, MAX_TOOL_CALLS_PER_RESPONSE)) {
       const repaired = repairToolCall(rawCall);
       if ("message" in repaired) {
         problems.push(repaired.message);
+        // A truncated call cannot be fixed by retrying it, so count it against
+        // the loop budget immediately rather than letting the model regenerate
+        // the same oversized payload until the step budget runs out.
+        if (repaired.truncated) {
+          truncatedCalls += 1;
+        }
         continue;
       }
 
@@ -846,7 +843,7 @@ export class AgentRunner {
       toolCalls.push(toWorkspaceCall(repaired.name, repaired.arguments));
     }
 
-    return { toolCalls, subagents, problems, notes };
+    return { toolCalls, subagents, problems, notes, truncatedCalls };
   }
 
   /**
@@ -1343,6 +1340,23 @@ export function readFinalMessage(rawResponse: string): string {
   } catch {
     return message;
   }
+}
+
+/**
+ * Recognises a cancelled request. The signal is authoritative when present;
+ * the message check covers a client that surfaces the abort without having
+ * been given the signal.
+ */
+export function isAbortError(error: unknown, signal?: AbortSignal): boolean {
+  if (signal?.aborted) {
+    return true;
+  }
+
+  if (error instanceof Error) {
+    return error.name === "AbortError" || /\babort(ed)?\b/i.test(error.message);
+  }
+
+  return false;
 }
 
 function looksLikeClarification(message: string): boolean {

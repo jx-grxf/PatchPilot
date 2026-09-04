@@ -144,7 +144,7 @@ describe("OllamaClient", () => {
       keep_alive: "15m",
       options: {
         num_ctx: 32_768,
-        num_predict: 8192,
+        num_predict: 16_384,
         temperature: 0.2
       }
     });

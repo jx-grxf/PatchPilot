@@ -27,6 +27,8 @@ export type RepairedToolCall = {
 export type ToolCallProblem = {
   /** Returned to the model as a tool result so it can retry in the same turn. */
   message: string;
+  /** The arguments were cut off mid-value, so retrying identically cannot work. */
+  truncated?: boolean;
 };
 
 /**
@@ -196,21 +198,39 @@ export function extractFencedToolCalls(content: string): Array<{ name: unknown; 
  * commas, single quotes, and tails cut off by the token budget.
  */
 export function parseLooseJson(raw: string): unknown {
+  return parseLooseJsonDetailed(raw).value;
+}
+
+/**
+ * Parses near-valid JSON and reports *how* it succeeded.
+ *
+ * Whether the payload had to be closed matters enormously: a call that only
+ * parsed after synthesising its missing braces was cut off by the generation
+ * budget, and the fields that never arrived are missing for that reason —
+ * not because the model forgot them. Telling a model it "forgot path" when
+ * its output was truncated sends it to regenerate the same oversized payload,
+ * which truncates again, forever.
+ */
+export function parseLooseJsonDetailed(raw: string): { value: unknown; truncated: boolean } {
   const trimmed = raw.trim();
   if (!trimmed) {
-    return null;
+    return { value: null, truncated: false };
   }
 
-  const attempts = [trimmed, stripTrailingCommas(trimmed), quoteNormalized(stripTrailingCommas(trimmed)), closeTruncated(trimmed)];
-  for (const attempt of attempts) {
+  const clean = [trimmed, stripTrailingCommas(trimmed), quoteNormalized(stripTrailingCommas(trimmed))];
+  for (const attempt of clean) {
     try {
-      return JSON.parse(attempt);
+      return { value: JSON.parse(attempt), truncated: false };
     } catch {
       continue;
     }
   }
 
-  return null;
+  try {
+    return { value: JSON.parse(closeTruncated(trimmed)), truncated: true };
+  } catch {
+    return { value: null, truncated: false };
+  }
 }
 
 /** L3 — normalizes one raw call into a validated, schema-conforming call. */
@@ -228,7 +248,14 @@ export function repairToolCall(raw: { name: unknown; arguments: unknown }): Repa
   }
 
   const definition = getToolDefinition(resolved.name);
-  const rawArgs = coerceArgumentObject(raw.arguments);
+  const parsedArgs = coerceArgumentObjectDetailed(raw.arguments);
+  const rawArgs = parsedArgs.value;
+  if (parsedArgs.truncated) {
+    return {
+      message: `Your ${resolved.name} call was cut off by the output token limit — the arguments end mid-value, so the call cannot be run. Do not send the same call again: it will be cut off at the same place. Write the file in smaller pieces (create it with a short ${resolved.name}, then extend it with edit), or shorten the content.`,
+      truncated: true
+    };
+  }
   if (rawArgs === null) {
     return {
       message: `Tool ${resolved.name} was called with arguments that are not an object. Send arguments as a JSON object, e.g. ${exampleCall(definition)}`
@@ -348,18 +375,18 @@ export function looksLikePermissionRequest(message: string): boolean {
   );
 }
 
-function coerceArgumentObject(value: unknown): Record<string, unknown> | null {
+function coerceArgumentObjectDetailed(value: unknown): { value: Record<string, unknown> | null; truncated: boolean } {
   if (value === undefined || value === null) {
-    return {};
+    return { value: {}, truncated: false };
   }
 
   // Some runtimes hand back the arguments object as a JSON string.
   if (typeof value === "string") {
-    const parsed = parseLooseJson(value);
-    return isRecord(parsed) ? parsed : null;
+    const parsed = parseLooseJsonDetailed(value);
+    return { value: isRecord(parsed.value) ? parsed.value : null, truncated: parsed.truncated };
   }
 
-  return isRecord(value) ? value : null;
+  return { value: isRecord(value) ? value : null, truncated: false };
 }
 
 function applyArgumentAliases(name: ToolName, args: Record<string, unknown>, repairs: string[]): Record<string, unknown> {
