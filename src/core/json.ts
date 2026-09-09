@@ -65,7 +65,7 @@ function parseJsonWithRepair(jsonContent: string): unknown {
   try {
     return JSON.parse(jsonContent);
   } catch (error) {
-    // Local and cloud models routinely emit invalid JSON when a string value
+    // Local models routinely emit invalid JSON when a string value
     // carries file content — literal newlines/tabs and stray backslashes
     // (Windows paths, regex, code). Repair the string contents and retry on
     // any syntax error so "search the code and show me that snippet" works.

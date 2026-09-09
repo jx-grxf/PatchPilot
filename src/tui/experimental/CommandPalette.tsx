@@ -35,7 +35,7 @@ export function CommandPalette(props: {
           {symbols.arrow} Command palette
         </Text>
         <Text color="gray">
-          {selectedIndex + 1}/{props.items.length} · ↑↓ move · ⏎ apply · esc clear
+          {selectedIndex + 1}/{props.items.length} · ↑↓ move · ⏎ select · esc clear
         </Text>
       </Box>
       <Box flexDirection={wide ? "row" : "column"} marginTop={1}>

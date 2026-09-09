@@ -9,7 +9,7 @@ import {
   sanitizePastedText,
   stripQuotes,
 } from "../src/tui/experimental/attachments.js";
-import { estimateGeminiCost, formatSavedCost, geminiPriceFor } from "../src/tui/experimental/geminiPricing.js";
+import { estimateCloudEquivalentCost, formatSavedCost } from "../src/tui/experimental/savings.js";
 
 describe("attachment classification", () => {
   it("classifies known document extensions", () => {
@@ -99,19 +99,10 @@ describe("attachment classification", () => {
   });
 });
 
-describe("gemini pricing / saved cost", () => {
-  it("resolves prices per model tier", () => {
-    expect(geminiPriceFor("gemini-2.5-pro")).toEqual({ inputPerMillion: 1.25, outputPerMillion: 10 });
-    expect(geminiPriceFor("gemini-3.5-flash")).toEqual({ inputPerMillion: 1.5, outputPerMillion: 9 });
-    expect(geminiPriceFor("gemini-3.1-flash-lite")).toEqual({ inputPerMillion: 0.25, outputPerMillion: 1.5 });
-    expect(geminiPriceFor("gemini-2.5-flash")).toEqual({ inputPerMillion: 0.3, outputPerMillion: 2.5 });
-    expect(geminiPriceFor("gemini-2.5-flash-lite")).toEqual({ inputPerMillion: 0.1, outputPerMillion: 0.4 });
-    expect(geminiPriceFor("auto")).toEqual({ inputPerMillion: 1.5, outputPerMillion: 9 });
-  });
-
-  it("estimates the paid-API cost the free wrapper saved", () => {
-    expect(estimateGeminiCost(1_000_000, 1_000_000, "gemini-2.5-pro")).toBeCloseTo(11.25, 5);
-    expect(estimateGeminiCost(0, 0, "gemini-2.5-pro")).toBe(0);
+describe("local savings display", () => {
+  it("prices the cloud equivalent of local tokens", () => {
+    expect(estimateCloudEquivalentCost(1_000_000, 1_000_000)).toBeCloseTo(6, 5);
+    expect(estimateCloudEquivalentCost(0, 0)).toBe(0);
   });
 
   it("formats the saved-cost figure", () => {

@@ -1,11 +1,15 @@
 import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { constants } from "node:fs";
+import { lookup } from "node:dns/promises";
+import { constants, realpathSync } from "node:fs";
 import { access, lstat, mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { isIP } from "node:net";
 import { homedir, platform, tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { deflateRawSync, inflateRawSync } from "node:zlib";
+import { fetchWithTimeout } from "./http.js";
+import { readTextLimited } from "./stream.js";
 import { MemoryStore } from "./memory.js";
 import type { AgentToolCall, AgentToolName, ApprovalRequest, PermissionDecision, ToolCategory, ToolPermission, ToolResult, ToolRisk, ToolSpec } from "./types.js";
 
@@ -158,6 +162,14 @@ export const toolSpecs: Record<AgentToolName, ToolSpec> = {
     risk: "low",
     sideEffects: "none",
     permission: "none",
+    category: "search"
+  },
+  fetch_url: {
+    name: "fetch_url",
+    description: "Fetch a public http(s) URL and return its text content. Keyless web access available to every model; private/loopback hosts are blocked.",
+    risk: "medium",
+    sideEffects: "none",
+    permission: "network",
     category: "search"
   },
   inspect_document: {
@@ -375,6 +387,8 @@ export class WorkspaceTools {
           return await this.fileInfo(readString(call.arguments.path, ""));
         case "search_text":
           return await this.searchText(readString(call.arguments.query, ""));
+        case "fetch_url":
+          return await this.fetchUrl(readString(call.arguments.url, ""), readNumber(call.arguments.max_chars, 0));
         case "inspect_document":
           return await this.inspectDocument(readString(call.arguments.path, ""), readString(call.arguments.mode, "auto"));
         case "memory_remember":
@@ -850,6 +864,127 @@ export class WorkspaceTools {
       content: matches.join("\n") || "No matches.",
       tool: "search_text",
       category: toolSpecs.search_text.category
+    };
+  }
+
+  private async fetchUrl(rawUrl: string, requestedMaxChars: number): Promise<ToolResult> {
+    if (!rawUrl.trim()) {
+      return denied("fetch_url requires a url.", "fetch_url");
+    }
+
+    const normalizedUrl = normalizeFetchUrlInput(rawUrl);
+    if (!normalizedUrl) {
+      return denied(`fetch_url could not parse url: ${rawUrl.trim()}`, "fetch_url");
+    }
+
+    let target: URL;
+    try {
+      target = new URL(normalizedUrl);
+    } catch {
+      return denied(`fetch_url could not parse url: ${normalizedUrl}`, "fetch_url");
+    }
+
+    if (target.protocol !== "http:" && target.protocol !== "https:") {
+      return denied(`fetch_url only allows http(s) URLs, got ${target.protocol}`, "fetch_url");
+    }
+
+    try {
+      await assertPublicHttpHost(target.hostname);
+    } catch (error) {
+      return denied(error instanceof Error ? error.message : String(error), "fetch_url");
+    }
+
+    // Network egress can exfiltrate workspace data, so gate it like shell: it
+    // bypasses approval only when shell is trusted (build+bypass), prompts in
+    // build mode, and is blocked in plan mode.
+    if (!this.allowShell) {
+      const approval = await this.requestApproval(
+        "fetch_url",
+        "network",
+        { url: target.href },
+        `Fetch ${target.href} over the network.`
+      );
+      if (approval.decision === "deny") {
+        return denied("fetch_url denied by permission policy. Approve the request, or switch to build/bypass.", "fetch_url", approval);
+      }
+    }
+
+    const maxChars = requestedMaxChars > 0 ? Math.min(requestedMaxChars, fetchUrlMaxChars) : fetchUrlMaxChars;
+    let response: Response;
+    try {
+      response = await fetchWithTimeout(
+        target,
+        {
+          redirect: "manual",
+          signal: this.signal,
+          headers: {
+            // Identify as a normal client so most sites return readable HTML.
+            "user-agent": "Mozilla/5.0 (compatible; PatchPilot/1.0; +https://github.com/jx-grxf/PatchPilot)",
+            accept: "text/html,application/xhtml+xml,application/json,text/plain;q=0.9,*/*;q=0.8"
+          }
+        },
+        { timeoutMs: Math.min(this.timeoutMs, fetchUrlTimeoutMs), label: `fetch_url ${target.hostname}` }
+      );
+    } catch (error) {
+      return denied(error instanceof Error ? error.message : String(error), "fetch_url");
+    }
+
+    if (response.status >= 300 && response.status < 400) {
+      const location = response.headers.get("location") ?? "";
+      const redirectSuffix = location ? ` Location: ${location}` : "";
+      await response.body?.cancel().catch(() => undefined);
+      return {
+        ok: true,
+        summary: `${target.href} -> HTTP ${response.status} redirect`,
+        content: `fetch_url did not follow the redirect automatically (SSRF guard). HTTP ${response.status}.${redirectSuffix}\nRe-call fetch_url with the absolute redirect target if it is a public http(s) URL.`,
+        tool: "fetch_url",
+        category: toolSpecs.fetch_url.category,
+        metadata: { status: response.status, location }
+      };
+    }
+
+    const contentType = response.headers.get("content-type") ?? "";
+    let rawBody = "";
+    let responseBodyTruncated = false;
+    let responseBytes = 0;
+    try {
+      const limitedBody = await readTextLimited(response, fetchUrlMaxBytes, this.signal, Math.min(this.timeoutMs, fetchUrlTimeoutMs));
+      rawBody = limitedBody.text;
+      responseBodyTruncated = limitedBody.truncated;
+      responseBytes = limitedBody.bytes;
+    } catch (error) {
+      return denied(error instanceof Error ? error.message : String(error), "fetch_url");
+    }
+    const isHtml = /\bhtml\b/i.test(contentType) || (!contentType && /^\s*<(?:!doctype|html)/i.test(rawBody));
+    const extracted = isHtml ? htmlToReadableText(rawBody) : rawBody.trim();
+    const truncated = responseBodyTruncated || extracted.length > maxChars;
+    const body = [
+      extracted.length > maxChars ? extracted.slice(0, maxChars) : extracted,
+      responseBodyTruncated
+        ? `… [response body capped at ${fetchUrlMaxBytes} bytes]`
+        : extracted.length > maxChars
+          ? `… [truncated ${extracted.length - maxChars} more chars]`
+          : ""
+    ].filter(Boolean).join("\n");
+
+    if (!response.ok) {
+      return {
+        ok: false,
+        summary: `${target.href} -> HTTP ${response.status}`,
+        content: `fetch_url received HTTP ${response.status} from ${target.href}.\n${body}`.trim(),
+        tool: "fetch_url",
+        category: toolSpecs.fetch_url.category,
+        metadata: { status: response.status, contentType, bytes: responseBytes, truncated }
+      };
+    }
+
+    return {
+      ok: true,
+      summary: `fetched ${target.href} (HTTP ${response.status}, ${extracted.length} chars${truncated ? ", truncated" : ""})`,
+      content: body || "(empty response body)",
+      tool: "fetch_url",
+      category: toolSpecs.fetch_url.category,
+      metadata: { status: response.status, contentType, bytes: responseBytes, chars: extracted.length, truncated }
     };
   }
 
@@ -2037,6 +2172,164 @@ function denied(
   };
 }
 
+const fetchUrlMaxChars = 20_000;
+const fetchUrlTimeoutMs = 20_000;
+const fetchUrlMaxBytes = 256_000;
+
+/**
+ * Models often hand back a URL wrapped in Markdown link
+ * syntax, angle brackets, quotes, or as a bare domain. Recover a plain absolute
+ * http(s) URL from those common shapes before parsing.
+ */
+function normalizeFetchUrlInput(raw: string): string {
+  let value = raw.trim();
+
+  // Markdown link: [label](url) -> url
+  const markdownLink = /\[[^\]]*\]\(\s*([^)\s]+)\s*\)/.exec(value);
+  if (markdownLink) {
+    value = markdownLink[1];
+  }
+
+  // Strip wrapping angle brackets, quotes, and backticks.
+  value = value.replace(/^[<'"`]+/, "").replace(/[>'"`]+$/, "").trim();
+  // Drop trailing sentence punctuation that is rarely part of a real URL.
+  value = value.replace(/[.,;]+$/, "").trim();
+
+  if (!value) {
+    return "";
+  }
+
+  // Add a scheme for bare domains like "example.com" or "example.com/path".
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(value) && /^[\w-]+(\.[\w-]+)+(:\d+)?(\/|$|\?)/.test(value)) {
+    value = `https://${value}`;
+  }
+
+  return value;
+}
+
+/**
+ * Reject non-public fetch targets so fetch_url cannot be used for SSRF against
+ * loopback, LAN, link-local, or cloud-metadata endpoints. Resolves DNS names so
+ * a public-looking host that points at a private address is still blocked.
+ */
+async function assertPublicHttpHost(hostname: string): Promise<void> {
+  const host = hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  if (!host) {
+    throw new Error("fetch_url blocked an empty host.");
+  }
+  if (host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local") || host.endsWith(".internal")) {
+    throw new Error(`fetch_url blocked a non-public host: ${hostname}`);
+  }
+
+  if (isIP(host)) {
+    if (isPrivateAddress(host)) {
+      throw new Error(`fetch_url blocked a private address: ${hostname}`);
+    }
+    return;
+  }
+
+  let resolved: { address: string }[];
+  try {
+    resolved = await lookup(host, { all: true });
+  } catch (error) {
+    throw new Error(`fetch_url could not resolve host ${hostname}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  if (resolved.length === 0) {
+    throw new Error(`fetch_url could not resolve host ${hostname}.`);
+  }
+  for (const entry of resolved) {
+    if (isPrivateAddress(entry.address)) {
+      throw new Error(`fetch_url blocked ${hostname} -> private address ${entry.address}.`);
+    }
+  }
+}
+
+function isPrivateAddress(address: string): boolean {
+  const family = isIP(address);
+  if (family === 4) {
+    return isPrivateIPv4(address);
+  }
+  if (family === 6) {
+    return isPrivateIPv6(address);
+  }
+  return true;
+}
+
+function isPrivateIPv4(address: string): boolean {
+  const parts = address.split(".").map((part) => Number.parseInt(part, 10));
+  if (parts.length !== 4 || parts.some((part) => Number.isNaN(part) || part < 0 || part > 255)) {
+    return true;
+  }
+  const value = (((parts[0] << 24) >>> 0) + (parts[1] << 16) + (parts[2] << 8) + parts[3]) >>> 0;
+  const inRange = (start: number, prefix: number): boolean => {
+    const mask = prefix === 0 ? 0 : (0xffffffff << (32 - prefix)) >>> 0;
+    return ((value & mask) >>> 0) === ((start & mask) >>> 0);
+  };
+  return (
+    inRange(0x00000000, 8) || // 0.0.0.0/8 "this network"
+    inRange(0x0a000000, 8) || // 10.0.0.0/8 private
+    inRange(0x64400000, 10) || // 100.64.0.0/10 CGNAT
+    inRange(0x7f000000, 8) || // 127.0.0.0/8 loopback
+    inRange(0xa9fe0000, 16) || // 169.254.0.0/16 link-local + metadata
+    inRange(0xac100000, 12) || // 172.16.0.0/12 private
+    inRange(0xc0a80000, 16) || // 192.168.0.0/16 private
+    inRange(0xc0000000, 24) || // 192.0.0.0/24 IETF protocol
+    inRange(0xc6120000, 15) || // 198.18.0.0/15 benchmarking
+    inRange(0xe0000000, 4) || // 224.0.0.0/4 multicast
+    inRange(0xf0000000, 4) // 240.0.0.0/4 reserved
+  );
+}
+
+function isPrivateIPv6(address: string): boolean {
+  const normalized = address.toLowerCase().split("%")[0];
+  if (normalized === "::1" || normalized === "::") {
+    return true;
+  }
+  const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(normalized);
+  if (mapped) {
+    return isPrivateIPv4(mapped[1]);
+  }
+  const firstHextet = normalized.split(":")[0] ?? "";
+  if (firstHextet === "") {
+    return false;
+  }
+  const value = Number.parseInt(firstHextet, 16);
+  if (Number.isNaN(value)) {
+    return true;
+  }
+  if ((value & 0xfe00) === 0xfc00) {
+    return true; // fc00::/7 unique-local
+  }
+  if ((value & 0xffc0) === 0xfe80) {
+    return true; // fe80::/10 link-local
+  }
+  if ((value & 0xff00) === 0xff00) {
+    return true; // ff00::/8 multicast
+  }
+  return false;
+}
+
+function htmlToReadableText(html: string): string {
+  return html
+    .replace(/<!--[\s\S]*?-->/g, " ")
+    .replace(/<(script|style|noscript|svg|head)[\s\S]*?<\/\1>/gi, " ")
+    .replace(/<\/(p|div|section|article|li|tr|h[1-6]|header|footer)>/gi, "\n")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/&amp;/gi, "&")
+    .replace(/[ \t\f\v]+/g, " ")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line, index, lines) => line.length > 0 || (index > 0 && lines[index - 1].trim().length > 0))
+    .join("\n")
+    .trim();
+}
+
 function isLikelyTextFile(filePath: string): boolean {
   return textFileExtensions.has(path.extname(filePath).toLowerCase());
 }
@@ -2505,8 +2798,30 @@ function wordXmlToText(xml: string): string {
     .trim();
 }
 
+/**
+ * A workspace-relative path for display.
+ *
+ * The root as configured and the path as resolved can differ by a symlink —
+ * on macOS /tmp is /private/tmp — which produces a relative path of a dozen
+ * "../" segments for a file that is plainly inside the workspace. Resolving
+ * both ends through realpath before giving up keeps the display honest.
+ */
 function normalizeRelative(root: string, filePath: string): string {
-  return path.relative(root, filePath).split(path.sep).join("/");
+  const direct = path.relative(root, filePath);
+  if (!direct.startsWith("..")) {
+    return direct.split(path.sep).join("/");
+  }
+
+  try {
+    const resolved = path.relative(realpathSync(root), realpathSync(filePath));
+    if (!resolved.startsWith("..")) {
+      return resolved.split(path.sep).join("/");
+    }
+  } catch {
+    // Fall through: a path that cannot be resolved is shown as-is.
+  }
+
+  return direct.split(path.sep).join("/");
 }
 
 function normalizeSlashPath(value: string): string {
@@ -2606,7 +2921,7 @@ function validateShellCommand(command: string, workspaceRoot: string, options: {
     if (absolutePath) {
       const relativePath = path.relative(workspaceRoot, absolutePath);
       if (relativePath.startsWith("..") || path.isAbsolute(relativePath)) {
-        return { error: "absolute path arguments outside the workspace are blocked. Use inspect_document with /experimental file-analysis for external files." };
+        return { error: "This command references a path outside the workspace, and the shell is confined to it. Re-run it with a workspace-relative path, or ask the user to run it themselves if it genuinely needs to reach outside." };
       }
     }
   }

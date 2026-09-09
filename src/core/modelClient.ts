@@ -1,36 +1,16 @@
-import { CodexCliClient } from "./codex.js";
-import { GeminiClient } from "./gemini.js";
-import { GeminiWrapperClient } from "./geminiWrapper.js";
-import { NvidiaClient } from "./nvidia.js";
+import { LocalOpenAIClient, resolveLocalOpenAIBaseUrl } from "./localOpenAI.js";
+import { resolveRuntimeAlias } from "./localRuntimes.js";
 import { OllamaClient } from "./ollama.js";
-import { OpenRouterClient } from "./openrouter.js";
 import type { ModelClient, ModelProvider } from "./types.js";
 
 export function createModelClient(options: {
   provider: ModelProvider;
   ollamaUrl: string;
+  localUrl?: string;
   workspace?: string;
 }): ModelClient {
-  if (options.provider === "gemini") {
-    return new GeminiClient();
-  }
-
-  if (options.provider === "gemini-wrapper") {
-    return new GeminiWrapperClient();
-  }
-
-  if (options.provider === "codex") {
-    return new CodexCliClient({
-      workspace: options.workspace ?? process.cwd()
-    });
-  }
-
-  if (options.provider === "openrouter") {
-    return new OpenRouterClient();
-  }
-
-  if (options.provider === "nvidia") {
-    return new NvidiaClient();
+  if (options.provider === "local-openai") {
+    return new LocalOpenAIClient(options.localUrl ?? resolveLocalOpenAIBaseUrl());
   }
 
   return new OllamaClient(options.ollamaUrl);
@@ -40,26 +20,24 @@ export function readModelProvider(env: NodeJS.ProcessEnv = process.env): ModelPr
   return normalizeModelProvider(env.PATCHPILOT_PROVIDER ?? env.PATCHPILOT_MODEL_PROVIDER ?? "ollama");
 }
 
+/**
+ * Aliases cover the runtimes that all speak the same OpenAI-compatible
+ * surface, so `--provider lmstudio` and `--provider llamacpp` land on one
+ * client rather than implying separate implementations.
+ */
 export function normalizeModelProvider(value: string): ModelProvider {
   const normalizedValue = value.trim().toLowerCase();
-  if (normalizedValue === "gemini" || normalizedValue === "google") {
-    return "gemini";
+  const runtime = resolveRuntimeAlias(value);
+  if (runtime) {
+    return runtime.provider;
   }
 
-  if (normalizedValue === "gemini-wrapper" || normalizedValue === "geminiwrapper" || normalizedValue === "google-wrapper") {
-    return "gemini-wrapper";
-  }
-
-  if (normalizedValue === "codex" || normalizedValue === "openai" || normalizedValue === "openai-codex") {
-    return "codex";
-  }
-
-  if (normalizedValue === "openrouter" || normalizedValue === "open-router") {
-    return "openrouter";
-  }
-
-  if (normalizedValue === "nvidia" || normalizedValue === "nim") {
-    return "nvidia";
+  if (
+    normalizedValue === "local-openai" ||
+    normalizedValue === "local" ||
+    normalizedValue === "openai-compatible"
+  ) {
+    return "local-openai";
   }
 
   return "ollama";

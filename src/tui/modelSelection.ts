@@ -1,3 +1,5 @@
+import { modelDescriptorIndex } from "./modelDescriptors.js";
+
 export function selectableModels(query: string, models: string[], labelForModel: (model: string) => string = (model) => model): string[] {
   const normalizedQuery = query.trim().toLowerCase();
   if (!normalizedQuery) {
@@ -32,4 +34,29 @@ function scoreModelMatch(model: string, query: string, label: string): number | 
 
   const tokens = query.split(/[\s/:_-]+/).filter(Boolean);
   return tokens.length > 0 && tokens.every((token) => normalizedModel.includes(token)) ? 10 : null;
+}
+
+export function formatModelOptions(models: string[], currentModel: string): string {
+  return models
+    .map((model, index) => {
+      const currentMarker = model === currentModel ? "  current" : "";
+      return `${index + 1}. ${formatModelLabel(model)}${formatModelDescription(model)}${currentMarker}`;
+    })
+    .join("\n");
+}
+
+export function formatModelLabel(model: string): string {
+  const descriptor = modelDescriptorIndex.get(model);
+  const label = descriptor?.displayName || descriptor?.modelName || model;
+  return label === model ? model : `${label} (${model})`;
+}
+
+export function formatModelDescription(model: string): string {
+  const descriptor = modelDescriptorIndex.get(model);
+  if (!descriptor?.description) {
+    return "";
+  }
+
+  const legacySuffix = descriptor.legacy ? " legacy" : "";
+  return `  ${descriptor.description}${legacySuffix}`;
 }

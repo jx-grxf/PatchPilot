@@ -56,6 +56,12 @@ describe("filterSlashCommands", () => {
     expect(formatCommandHelp("ctx export")).toContain("snapshot JSON");
   });
 
+  it("does not advertise removed manual thinking controls", () => {
+    const detail = formatCommandDetail();
+    expect(detail).not.toContain("/think");
+    expect(detail).not.toContain("/reasoning");
+  });
+
   it("exposes visible categories for command palette grouping", () => {
     expect(filterSlashCommands("/status")).toEqual([
       expect.objectContaining({

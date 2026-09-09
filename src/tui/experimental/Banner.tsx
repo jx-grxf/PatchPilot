@@ -34,9 +34,9 @@ export function ExperimentalBanner(props: { width: number; height: number }): Re
     return (
       <Box flexDirection="column" paddingX={1}>
         <Text color="cyan" bold>
-          ▸ PatchPilot <Text color="gray">— experimental shell</Text>
+          ▸ PatchPilot <Text color="gray">— terminal shell</Text>
         </Text>
-        <Text color="gray">Local-first coding agent. Visible tools, explicit permissions.</Text>
+        <Text color="gray">Local-only coding agent. Visible tools, explicit permissions.</Text>
         <Text color="gray">Type a task, or press / for the command palette.</Text>
       </Box>
     );
@@ -64,10 +64,10 @@ export function ExperimentalBanner(props: { width: number; height: number }): Re
       </Box>
       <Box marginTop={1} flexDirection="column">
         <Text color="white" bold>
-          Welcome to the experimental shell.
+          Welcome to PatchPilot.
         </Text>
         <Text color="gray">
-          Local-first coding agent — every read, write, command, and model route stays visible.
+          Local-only inference — every read, write, command, and model route stays visible.
         </Text>
         <Text color="gray">
           <Text color="cyan">/</Text> command palette <Text color="gray">·</Text>{" "}

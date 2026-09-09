@@ -1,7 +1,7 @@
 /**
  * `ultramaxx` is a power-mode prefix: starting a prompt with it makes the
- * backend think and work extra hard for that run (escalated reasoning effort,
- * a larger step budget, advisor subagents, mandatory planning).
+ * backend think and work extra hard for that run (thinking enabled, a larger
+ * step budget, child agents, and mandatory planning).
  */
 export const ultramaxxKeyword = "ultramaxx";
 

@@ -17,8 +17,6 @@ export function Header(props: {
   allowShell: boolean;
   agentMode: AgentMode;
   subagents: boolean;
-  thinkingMode: "fixed" | "adaptive";
-  reasoningEffort: string;
   ollamaUrl: string;
   telemetry: ModelTelemetry | null;
   sessionTelemetry: SessionTelemetry;

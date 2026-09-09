@@ -1,5 +1,7 @@
-import type { ModelChatOptions, ModelChatResult, ModelTelemetry } from "./types.js";
+import type { ModelChatOptions, ModelChatResult, ModelStreamDelta, ModelTelemetry, RawToolCall } from "./types.js";
 import { fetchWithTimeout } from "./http.js";
+import { stripTemplateTokens } from "./localOpenAI.js";
+import { readNewlineDelimitedJson, StreamTimer } from "./stream.js";
 import { getOllamaThinkValue } from "./reasoning.js";
 import { attachTokenCost } from "./tokenAccounting.js";
 
@@ -8,9 +10,14 @@ export const defaultOllamaUrl = "http://127.0.0.1:11434";
 export const defaultOllamaPort = 11434;
 
 type OllamaChatResponse = {
+  /** What the server actually ran, which is not always what was requested. */
+  model?: string;
   message?: {
     content?: string;
+    thinking?: string;
+    tool_calls?: Array<{ function?: { name?: string; arguments?: unknown } }>;
   };
+  done?: boolean;
   error?: string;
   done_reason?: string;
   total_duration?: number;
@@ -54,6 +61,9 @@ type OllamaRuntimeOptions = {
   numCtx: number;
   numPredict: number;
   temperature: number;
+  topP: number;
+  topK: number;
+  repeatPenalty: number;
 };
 
 export class OllamaClient {
@@ -66,6 +76,8 @@ export class OllamaClient {
   }
 
   async chat(options: ModelChatOptions): Promise<ModelChatResult> {
+    const streaming = Boolean(options.onDelta);
+    const timer = new StreamTimer();
     const response = await this.fetchOllama("/api/chat", {
       method: "POST",
       headers: {
@@ -74,41 +86,111 @@ export class OllamaClient {
       body: JSON.stringify({
         model: options.model,
         messages: options.messages,
-        stream: false,
+        stream: streaming,
         keep_alive: this.runtimeOptions.keepAlive,
-        think: getOllamaThinkValue(options.model, options.reasoningEffort),
+        think: getOllamaThinkValue(options.model, options.thinking),
         options: {
           num_ctx: this.runtimeOptions.numCtx,
           num_predict: this.runtimeOptions.numPredict,
-          temperature: this.runtimeOptions.temperature
+          temperature: this.runtimeOptions.temperature,
+          top_p: this.runtimeOptions.topP,
+          top_k: this.runtimeOptions.topK,
+          // Sent explicitly on every request, never left to the default.
+          repeat_penalty: this.runtimeOptions.repeatPenalty
         },
-        format: options.formatJson ? "json" : undefined
+        // Advertising tools switches Ollama to grammar-constrained decoding
+        // against each schema, which is what makes malformed calls impossible
+        // rather than merely repairable.
+        tools: options.tools,
+        // json format and tools are mutually exclusive: asking for both makes
+        // the model emit a JSON blob describing a call instead of calling.
+        format: options.tools ? undefined : options.formatJson ? "json" : undefined
       }),
       signal: options.signal
     });
 
-    const payload = (await readJsonSafely(response)) as OllamaChatResponse;
     if (!response.ok) {
-      const reason = payload.error ? ` ${payload.error}` : "";
+      const errorPayload = (await readJsonSafely(response)) as OllamaChatResponse;
+      const reason = errorPayload.error ? ` ${errorPayload.error}` : "";
       throw new Error(`Ollama chat failed for model "${options.model}" at ${this.baseUrl}: HTTP ${response.status}.${reason}`);
     }
+
+    const { payload, content } = streaming
+      ? await this.consumeStream(response, options, timer)
+      : await readBufferedResponse(response);
 
     if (payload.error) {
       throw new Error(payload.error);
     }
 
-    const content = payload.message?.content?.trim() ?? "";
     if (isTruncatedDoneReason(payload.done_reason)) {
       throw new Error(`Ollama response for model "${options.model}" was truncated by num_predict (${this.runtimeOptions.numPredict}).`);
     }
-    if (!content) {
+    // A tool call with no prose is a complete, valid response.
+    if (!content.trim() && readToolCalls(payload).length === 0) {
       throw new Error(`Ollama returned an empty response for model "${options.model}".`);
     }
 
+    const toolCalls = readToolCalls(payload);
+    const substitution =
+      payload.model && payload.model.trim().toLowerCase() !== options.model.trim().toLowerCase()
+        ? `Requested "${options.model}" but Ollama answered with "${payload.model}".`
+        : null;
     return {
-      content,
-      telemetry: toTelemetry(payload, options.model)
+      content: stripTemplateTokens(content).trim(),
+      ...(toolCalls.length > 0 ? { toolCalls } : {}),
+      ...(substitution ? { warning: substitution } : {}),
+      telemetry: toTelemetry(payload, options.model, streaming ? timer.timeToFirstTokenMs : null)
     };
+  }
+
+  /**
+   * Ollama emits one JSON object per chunk and repeats the cumulative counters
+   * on the final `done` object, so the last payload carries the telemetry.
+   */
+  private async consumeStream(
+    response: Response,
+    options: ModelChatOptions,
+    timer: StreamTimer
+  ): Promise<{ payload: OllamaChatResponse; content: string }> {
+    let content = "";
+    let finalPayload: OllamaChatResponse = {};
+    const streamedToolCalls: NonNullable<NonNullable<OllamaChatResponse["message"]>["tool_calls"]> = [];
+
+    for await (const chunk of readNewlineDelimitedJson(response, options.signal)) {
+      const payload = chunk as OllamaChatResponse;
+      if (payload.error) {
+        return { payload, content };
+      }
+
+      const delta: ModelStreamDelta = {};
+      if (payload.message?.content) {
+        content += payload.message.content;
+        delta.content = payload.message.content;
+      }
+      if (payload.message?.thinking) {
+        delta.thinking = payload.message.thinking;
+      }
+
+      if (delta.content || delta.thinking) {
+        timer.markFirstToken();
+        emitDelta(options.onDelta, delta);
+      }
+
+      if (payload.message?.tool_calls?.length) {
+        streamedToolCalls.push(...payload.message.tool_calls);
+      }
+
+      if (payload.done) {
+        finalPayload = payload;
+      }
+    }
+
+    if (streamedToolCalls.length > 0) {
+      finalPayload = { ...finalPayload, message: { ...finalPayload.message, tool_calls: streamedToolCalls } };
+    }
+
+    return { payload: finalPayload, content };
   }
 
   async listModels(): Promise<string[]> {
@@ -182,6 +264,27 @@ export class OllamaClient {
   }
 }
 
+function readToolCalls(payload: OllamaChatResponse): RawToolCall[] {
+  return (payload.message?.tool_calls ?? []).map((call) => ({
+    name: call.function?.name,
+    arguments: call.function?.arguments
+  }));
+}
+
+async function readBufferedResponse(response: Response): Promise<{ payload: OllamaChatResponse; content: string }> {
+  const payload = (await readJsonSafely(response)) as OllamaChatResponse;
+  return { payload, content: payload.message?.content ?? "" };
+}
+
+/** A renderer that throws must never take the model call down with it. */
+function emitDelta(onDelta: ModelChatOptions["onDelta"], delta: ModelStreamDelta): void {
+  try {
+    onDelta?.(delta);
+  } catch {
+    // Rendering is best-effort; the response still matters.
+  }
+}
+
 async function readJsonSafely(response: Response): Promise<unknown> {
   try {
     return await response.json();
@@ -219,14 +322,36 @@ export function normalizeOllamaBaseUrl(value: string | undefined): string {
   return parsedUrl.toString().replace(/\/$/, "");
 }
 
+/**
+ * Defaults tuned for tool calling rather than for prose.
+ *
+ * `repeat_penalty` is the one that matters most and is the least obvious.
+ * Ollama defaults it to 1.1, and the penalty is applied by branching on the
+ * raw logit sign — but softmax is invariant to adding a constant to all
+ * logits, so the zero point is arbitrary and model-dependent. Structured
+ * output is exactly the case that suffers: a tool call *must* repeat `{`, `"`,
+ * and its own field names, and penalising them measurably costs schema
+ * validity. Sending 1.0 explicitly disables it.
+ *
+ * `num_ctx` defaults to 32k rather than Ollama's 2–4k, because an agent loop
+ * burns 30–80k tokens on a multi-step task and Ollama truncates *silently
+ * from the front* when the window is exceeded — which reads as the model
+ * having forgotten its own system prompt and tools.
+ */
 export function readOllamaRuntimeOptions(env: NodeJS.ProcessEnv = process.env): OllamaRuntimeOptions {
   return {
     keepAlive: env.PATCHPILOT_KEEP_ALIVE?.trim() || "15m",
-    numCtx: readPositiveInteger(env.PATCHPILOT_NUM_CTX, 8192),
-    numPredict: readPositiveInteger(env.PATCHPILOT_NUM_PREDICT, 8192),
-    temperature: readTemperature(env.PATCHPILOT_TEMPERATURE, 0.1)
+    numCtx: readPositiveInteger(env.PATCHPILOT_NUM_CTX, 32_768),
+    numPredict: readPositiveInteger(env.PATCHPILOT_NUM_PREDICT, 16_384),
+    temperature: readTemperature(env.PATCHPILOT_TEMPERATURE, 0.2),
+    topP: readTemperature(env.PATCHPILOT_TOP_P, 0.9),
+    topK: readPositiveInteger(env.PATCHPILOT_TOP_K, 20),
+    repeatPenalty: readTemperature(env.PATCHPILOT_REPEAT_PENALTY, 1)
   };
 }
+
+/** Below this an agent loop silently loses its system prompt mid-task. */
+export const minimumUsableContextTokens = 16_384;
 
 function isTruncatedDoneReason(value: string | undefined): boolean {
   return typeof value === "string" && /length|max_?tokens|num_predict/i.test(value);
@@ -251,7 +376,7 @@ function formatOllamaConnectionError(baseUrl: string, error: unknown): string {
   return `Cannot reach Ollama at ${baseUrl}. Start Ollama, or run "ollama serve", then try /doctor.${suffix}`;
 }
 
-function toTelemetry(payload: OllamaChatResponse, model: string): ModelTelemetry {
+function toTelemetry(payload: OllamaChatResponse, model: string, timeToFirstTokenMs: number | null): ModelTelemetry {
   const promptTokens = payload.prompt_eval_count ?? 0;
   const responseTokens = payload.eval_count ?? 0;
   const responseDurationMs = nanosToMillis(payload.eval_duration ?? 0);
@@ -265,6 +390,7 @@ function toTelemetry(payload: OllamaChatResponse, model: string): ModelTelemetry
       totalTokens: promptTokens + responseTokens,
       evalTokensPerSecond:
         responseTokens > 0 && responseDurationMs > 0 ? responseTokens / (responseDurationMs / 1000) : null,
+      timeToFirstTokenMs,
       promptDurationMs: nanosToMillis(payload.prompt_eval_duration ?? 0),
       responseDurationMs,
       totalDurationMs: nanosToMillis(payload.total_duration ?? 0),

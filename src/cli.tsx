@@ -4,17 +4,14 @@ import { readFileSync } from "node:fs";
 import React from "react";
 import { render } from "ink";
 import { Command } from "commander";
-import { defaultCodexModel } from "./core/codex.js";
 import { cleanupPatchPilot, readCleanupTarget } from "./core/cleanup.js";
 import { loadPatchPilotEnv, savePatchPilotEnvValues } from "./core/env.js";
-import { defaultGeminiModel } from "./core/gemini.js";
-import { defaultGeminiWrapperModel, importGeminiWrapperBrowserCookies } from "./core/geminiWrapper.js";
+import { defaultLocalOpenAIModel, resolveLocalOpenAIBaseUrl } from "./core/localOpenAI.js";
+import { describeModel, discoverModels, isUsableForChat, rankForAgentUse } from "./core/modelCatalog.js";
 import { normalizeModelProvider, readModelProvider } from "./core/modelClient.js";
-import { defaultNvidiaModel } from "./core/nvidia.js";
 import { runDoctor } from "./core/doctor.js";
 import { ensurePatchPilotInstructions } from "./core/projectInit.js";
 import { defaultOllamaModel, resolveOllamaBaseUrl } from "./core/ollama.js";
-import { defaultOpenRouterModel } from "./core/openrouter.js";
 import { listIndexedSessions, listWorkspaceSessions, loadSessionSummary } from "./core/session.js";
 import { App } from "./tui/App.js";
 
@@ -22,19 +19,10 @@ loadPatchPilotEnv();
 
 const defaultOllamaUrl = resolveOllamaBaseUrl();
 const defaultProvider = readModelProvider();
+const defaultLocalUrl = resolveLocalOpenAIBaseUrl();
 const defaultModel =
   process.env.PATCHPILOT_MODEL ??
-  (defaultProvider === "gemini"
-    ? defaultGeminiModel
-    : defaultProvider === "gemini-wrapper"
-      ? defaultGeminiWrapperModel
-    : defaultProvider === "openrouter"
-      ? defaultOpenRouterModel
-      : defaultProvider === "nvidia"
-        ? defaultNvidiaModel
-      : defaultProvider === "codex"
-        ? defaultCodexModel
-        : defaultOllamaModel);
+  (defaultProvider === "local-openai" ? defaultLocalOpenAIModel : defaultOllamaModel);
 
 // Onboarding persists the chosen first-run agent mode; bypass implies the
 // always-allow write/shell defaults so the next launch starts where the user
@@ -47,7 +35,7 @@ program.enablePositionalOptions();
 
 program
   .name("patchpilot")
-  .description("Local-first coding agent TUI powered by Ollama and OpenAI-compatible providers.")
+  .description("Local-only coding agent TUI powered by Ollama and OpenAI-compatible runtimes.")
   .version(readPackageVersion());
 
 program
@@ -79,22 +67,22 @@ program
 program
   .command("doctor")
   .description("Check local PatchPilot requirements.")
-  .option("--provider <name>", "Model provider: ollama, gemini, gemini-wrapper, openrouter, nvidia, or codex.", defaultProvider)
+  .option("--provider <name>", "Model provider: ollama, or local-openai for any OpenAI-compatible local server (LM Studio, MLX, llama.cpp, vLLM).", defaultProvider)
   .option("--check-url <url>", "Ollama base URL to verify", defaultOllamaUrl)
   .option("--ollama-url <url>", "Alias for --check-url.")
   .option("--check-model <name>", "Model name to verify", defaultModel)
   .option("--model <name>", "Alias for --check-model.")
-  .option("--fix", "Apply safe doctor fixes, such as installing the managed Gemini-API bridge.", false)
+  .option("--local-url <url>", "Base URL of an OpenAI-compatible local server.", defaultLocalUrl)
   .action(async (options: {
       provider: string;
       checkUrl: string;
       ollamaUrl?: string;
       checkModel: string;
       model?: string;
-      fix?: boolean;
+      localUrl?: string;
     }) => {
     const results = await runDoctor(normalizeModelProvider(options.provider), options.ollamaUrl ?? options.checkUrl, options.model ?? options.checkModel, {
-      fix: Boolean(options.fix)
+      localUrl: options.localUrl
     });
     for (const result of results) {
       const marker = result.ok ? "ok" : "fail";
@@ -105,33 +93,37 @@ program
     process.exitCode = results.every((result) => result.ok) ? 0 : 1;
   });
 
-const geminiWrapperCommand = program
-  .command("gemini-wrapper")
-  .description("Manage the local Gemini-Wrapper Python bridge.");
+program
+  .command("models")
+  .description("List every model available across the local runtimes on this machine.")
+  .option("--all", "Include models that cannot be used for chat.", false)
+  .option("--json", "Emit machine-readable JSON.", false)
+  .action(async (options: { all?: boolean; json?: boolean }) => {
+    const catalog = await discoverModels();
+    const models = rankForAgentUse(options.all ? catalog.models : catalog.models.filter(isUsableForChat));
 
-geminiWrapperCommand
-  .command("import-cookies")
-  .description("Explicitly import Gemini Web cookies from a local supported browser.")
-  .action(async () => {
-    try {
-      const result = await importGeminiWrapperBrowserCookies();
-      process.env.PATCHPILOT_PROVIDER = "gemini-wrapper";
-      process.env.PATCHPILOT_MODEL = defaultGeminiWrapperModel;
-      process.env.PATCHPILOT_GEMINI_WRAPPER_MODE = "python";
-      process.env.PATCHPILOT_GEMINI_WRAPPER_COOKIES_JSON = result.cookiesPath;
-      savePatchPilotEnvValues({
-        PATCHPILOT_PROVIDER: "gemini-wrapper",
-        PATCHPILOT_MODEL: defaultGeminiWrapperModel,
-        PATCHPILOT_GEMINI_WRAPPER_MODE: "python",
-        PATCHPILOT_GEMINI_WRAPPER_COOKIES_JSON: result.cookiesPath
-      });
-      console.log(`imported ${result.cookieCount} Gemini browser cookies from ${result.source}`);
-      console.log(`saved ${result.cookiesPath}`);
-      console.log(`__Secure-1PSIDTS ${result.hasSecure1psidts ? "present" : "missing; bridge will try refresh fallback"}`);
-    } catch (error) {
-      console.error(error instanceof Error ? error.message : String(error));
-      process.exitCode = 1;
+    if (options.json) {
+      console.log(JSON.stringify({ runtimes: catalog.runtimes.map((entry) => ({ id: entry.runtime.id, reachable: entry.reachable, detail: entry.detail })), models }, null, 2));
+      return;
     }
+
+    for (const status of catalog.runtimes) {
+      const marker = status.reachable ? "up  " : "down";
+      console.log(`${marker}  ${status.runtime.label.padEnd(11)} ${status.detail}`);
+    }
+
+    if (models.length === 0) {
+      console.log("\nNo usable models found. Start one of the runtimes above, then run this again.");
+      process.exitCode = 1;
+      return;
+    }
+
+    console.log("");
+    const width = Math.min(52, Math.max(...models.map((model) => model.id.length)));
+    for (const model of models) {
+      console.log(`  ${model.id.padEnd(width)}  ${describeModel(model)}`);
+    }
+    console.log(`\nUse one with: patchpilot --provider ${models[0]?.provider ?? "ollama"} --model ${models[0]?.id ?? ""}`);
   });
 
 program
@@ -175,16 +167,14 @@ program
 program
   .argument("[task...]", "Task for the local coding agent.")
   .option("--workspace <path>", "Workspace root", process.cwd())
-  .option("--provider <name>", "Model provider: ollama, gemini, gemini-wrapper, openrouter, nvidia, or codex.", defaultProvider)
+  .option("--provider <name>", "Model provider: ollama, or local-openai for any OpenAI-compatible local server (LM Studio, MLX, llama.cpp, vLLM).", defaultProvider)
   .option("--model <name>", "Model name", defaultModel)
   .option("--ollama-url <url>", "Ollama base URL", defaultOllamaUrl)
   .option("--steps <count>", "Maximum agent steps", "8")
-  .option("--thinking <mode>", "Thinking budget mode: fixed or adaptive.", process.env.PATCHPILOT_THINKING_MODE ?? "adaptive")
-  .option("--reasoning <effort>", "Provider reasoning effort: none, low, medium, high, xhigh, or adaptive.", process.env.PATCHPILOT_REASONING_EFFORT ?? "medium")
   .option("--apply", "Allow file writes inside the workspace.", false)
   .option("--allow-shell", "Allow shell commands inside the workspace.", false)
-  .option("--subagents", "Enable planner and reviewer subagents.", readBooleanEnv(process.env.PATCHPILOT_SUBAGENTS, false))
-  .option("--no-subagents", "Disable planner and reviewer subagents for faster local runs.")
+  .option("--subagents", "Enable isolated explore/general child agents.", readBooleanEnv(process.env.PATCHPILOT_SUBAGENTS, false))
+  .option("--no-subagents", "Disable child-agent delegation for faster local runs.")
   .addHelpText(
     "after",
     [
@@ -192,8 +182,8 @@ program
       "Examples:",
       "  $ patchpilot",
       "  $ patchpilot \"summarize this repo and list the safest next fixes\"",
-      "  $ patchpilot --provider codex --model gpt-5.5 --workspace .",
-      "  $ patchpilot --provider gemini-wrapper --model auto",
+      "  $ patchpilot --provider local-openai --model qwen3-coder-30b --workspace .",
+      "  $ patchpilot --provider ollama --model devstral:24b",
       "",
       "First-run setup opens automatically. Reopen it anytime with /onboarding."
     ].join("\n")
@@ -213,22 +203,12 @@ program
         allowWrite={Boolean(options.apply)}
         allowShell={Boolean(options.allowShell)}
         maxSteps={Number.isFinite(maxSteps) ? maxSteps : 8}
-        thinkingMode={String(options.thinking) === "adaptive" ? "adaptive" : "fixed"}
-        reasoningEffort={readReasoningEffort(String(options.reasoning))}
         subagents={Boolean(options.subagents)}
       />
     );
   });
 
 await program.parseAsync(process.argv);
-
-function readReasoningEffort(value: string): "none" | "low" | "medium" | "high" | "xhigh" | "adaptive" {
-  return value === "none" || value === "off" || value === "false"
-    ? "none"
-    : value === "low" || value === "medium" || value === "high" || value === "xhigh" || value === "adaptive"
-      ? value
-      : "medium";
-}
 
 function readBooleanEnv(value: string | undefined, fallback: boolean): boolean {
   if (!value) {

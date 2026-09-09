@@ -63,7 +63,7 @@ export function shouldBypassApproval(options: {
     return options.permissions.allowWrite;
   }
 
-  if (options.permission === "shell") {
+  if (options.permission === "shell" || options.permission === "network") {
     return options.permissions.allowShell;
   }
 

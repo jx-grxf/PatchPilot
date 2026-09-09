@@ -5,7 +5,7 @@ import { formatCost, formatGpuMemory, formatGpuUtilization, formatOllamaHost, fo
 import type { OllamaHostDetails } from "../hosts.js";
 import { modeDescription, modePermissionLabel } from "../modes.js";
 import type { GpuStats, SystemStats } from "../systemStats.js";
-import type { AgentMode, AdvisorNote } from "../types.js";
+import type { AgentMode } from "../types.js";
 
 type SidebarLine = {
   text: string;
@@ -29,7 +29,6 @@ export function Sidebar(props: {
   telemetry: ModelTelemetry | null;
   sessionTelemetry: SessionTelemetry;
   draftTokens: number;
-  advisors: AdvisorNote[];
   height: number;
   scrollOffset: number;
   isActive: boolean;
@@ -68,12 +67,11 @@ function buildSidebarRows(props: {
   telemetry: ModelTelemetry | null;
   sessionTelemetry: SessionTelemetry;
   draftTokens: number;
-  advisors: AdvisorNote[];
   activeHost: OllamaHostDetails | null;
 }): SidebarLine[] {
   const hostDeviceName = props.provider === "ollama" ? props.activeHost?.host.deviceName ?? formatOllamaHost(props.ollamaUrl) : `${props.provider} api`;
-  const hostRoute = props.provider === "ollama" ? props.activeHost?.host.url ?? props.ollamaUrl : `${props.provider} cloud`;
-  const hostNetwork = props.provider === "ollama" ? props.activeHost?.host.kind ?? "local" : "cloud";
+  const hostRoute = props.provider === "ollama" ? props.activeHost?.host.url ?? props.ollamaUrl : `${props.provider} local`;
+  const hostNetwork = props.provider === "ollama" ? props.activeHost?.host.kind ?? "local" : "local";
   const hostVersion = props.activeHost?.host.version ?? "-";
   const hostModels = props.activeHost ? `${props.activeHost.models.length} available` : "-";
   const hostLoaded = props.activeHost?.runningModels.length ? props.activeHost.runningModels.map((model) => formatRunningModel(model)).join(", ") : "idle";
@@ -115,19 +113,7 @@ function buildSidebarRows(props: {
     section("Advisors")
   ];
 
-  if (props.advisors.length === 0) {
-    rows.push(muted("No advisor output yet."));
-    return rows;
-  }
 
-  for (const advisor of props.advisors) {
-    rows.push({
-      text: advisor.role,
-      color: "yellow"
-    });
-    rows.push(...summarizeAdvisorText(advisor.message));
-    rows.push(spacer());
-  }
 
   return rows;
 }

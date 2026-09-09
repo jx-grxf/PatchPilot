@@ -1,43 +1,46 @@
 # PatchPilot Product Context
 
-PatchPilot is a local-first, permissioned terminal coding agent. It is designed for repository work where the user wants every risky operation to be visible, reviewable, and easy to approve or deny.
+PatchPilot is a local-only, permissioned terminal coding agent. It is for repository work where the user wants model inference on infrastructure they control and every risky tool action to remain visible and reviewable.
 
-## Core Workflow
+## Product invariants
 
-1. Inspect the workspace with read-only tools.
-2. Keep a visible todo list for multi-step work.
-3. Propose or apply focused edits in build mode.
-4. Request scoped approvals for writes, package scripts, tests, and shell commands.
-5. Show Git diff, run checks, and leave commits or pull requests under the user's control.
+- Supported model routes are Ollama and OpenAI-compatible local runtimes only.
+- Remote Ollama moves inference, never workspace tools.
+- `plan` is read-only, `build` asks before side effects, and `bypass` is an explicit trusted-workspace choice.
+- Workspace boundaries, secret-path protections, and high-risk shell checks must survive every UI or tool refactor.
+- Native tool calling is preferred, but weaker local models must have a validated fallback and bounded repair path.
+- Cancellation is a normal outcome and must stop active model/child work before further writes continue.
+- Long sessions must expose context pressure and retain pinned context through compaction.
+- Child agents have isolated context, bounded steps, narrow tools, no shell, and no recursive delegation.
+- UI telemetry must describe real runtime state; local OpenAI-compatible endpoints must never be labeled as cloud compute.
 
-## Safety Model
+## Core workflow
 
-- `plan` mode is read-only.
-- `build` mode can request approvals for writes and shell actions.
-- `bypass` mode removes per-tool approval prompts only after an explicit trusted-workspace confirmation.
-- Session approvals are scoped to a concrete target such as a path, script body, patch hash, or normalized shell command.
-- Secrets, browser profiles, cookies, and credential files are denied by default.
+1. Select a repository and a reachable local model runtime.
+2. Inspect with read-only tools and keep multi-step work visible through todos.
+3. Request or apply focused edits according to the active permission mode.
+4. Run checks through the bounded shell path.
+5. Inspect the diff and report verified outcomes, failures, and remaining gates.
 
-## TUI Surface
+## Interface
 
-- Header: current provider, model, route, mode, and high-level run state.
-- Sidebar: workspace, permissions, machine stats, session telemetry, and advisors.
-- Transcript: compact run log, tool results, todos, and live status.
-- Composer: bounded multiline prompt editor with visible newest input.
-- Command palette: `/models`, `/sessions`, `/connect`, `/doctor`, `/experimental`, and related commands.
+- Header: runtime, model, compute route, mode, context pressure, and current work state.
+- Transcript: streaming output, reasoning where available, tool calls/results, todos, and failures.
+- Composer: multiline prompt editing, history, slash-command completion, and attachments.
+- Status/config surfaces: settings, permissions, runtime health, model inventory, token/tool telemetry, and child-agent state.
+- Session surfaces: new, list, resume, recap, context inspection, export, pinning, and compaction.
 
-## Provider Matrix
+## Supported runtimes
 
-- Ollama: local or remote LAN/Tailscale inference.
-- Gemini: official Google Gemini API key.
-- Gemini-Wrapper: opt-in Gemini Web bridge through pinned `gemini_webapi`; Python bridge supports file analysis, HTTP wrapper mode does not.
-- OpenRouter: broad cloud model routing, including free variants.
-- NVIDIA: OpenAI-compatible NVIDIA NIM endpoints.
-- Codex: ChatGPT login through Codex CLI.
+- Ollama, locally or on a verified LAN/Tailscale host.
+- LM Studio and Bionic through their local OpenAI-compatible server.
+- MLX on Apple Silicon.
+- llama.cpp.
+- vLLM.
 
-## Useful First Questions
+## Useful first tasks
 
-- "What can PatchPilot do in this repo?"
-- "Summarize this project and list the safest next fixes."
-- "Find the test commands and explain the release process."
-- "Review the current diff for risky changes."
+- "Summarize this repository and identify the highest-risk untested path."
+- "Review the current diff and explain the smallest safe fix."
+- "Find the build and test commands, then verify the current change."
+- "Delegate repository exploration to a child agent and return only the relevant files."

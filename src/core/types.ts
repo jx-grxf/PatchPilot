@@ -5,16 +5,53 @@ export type ChatMessage = {
   content: string;
 };
 
-export type ModelProvider = "ollama" | "gemini" | "gemini-wrapper" | "codex" | "openrouter" | "nvidia";
-export type ReasoningEffort = "low" | "medium" | "high" | "xhigh";
-export type ProviderReasoningEffort = ReasoningEffort | "none";
+export type ModelProvider = "ollama" | "local-openai";
+/** Thinking is either left to the model ("auto") or forced on/off. */
+export type ThinkingSetting = "auto" | "on" | "off";
+
+/** Incremental output from a streaming response. */
+export type ModelStreamDelta = {
+  /** Visible assistant output. */
+  content?: string;
+  /** Reasoning text, where the runtime reports it separately from content. */
+  thinking?: string;
+  /**
+   * Progress on a tool call being assembled. A model writing a whole file into
+   * an argument produces no visible content for minutes; without this the user
+   * sees a rising counter and nothing else.
+   */
+  toolCall?: { name: string; argumentChars: number };
+};
+
+/** A tool advertised to the runtime, in the shape both providers accept. */
+export type ProviderTool = {
+  type: "function";
+  function: { name: string; description: string; parameters: unknown };
+};
+
+/** A tool call as the runtime reported it, before any repair. */
+export type RawToolCall = {
+  name: unknown;
+  arguments: unknown;
+};
 
 export type ModelChatOptions = {
   model: string;
   messages: ChatMessage[];
   formatJson?: boolean;
-  reasoningEffort?: ProviderReasoningEffort;
+  /**
+   * Tools to advertise. Passing these enables native tool calling and, where
+   * the runtime supports it, grammar-constrained decoding against each schema.
+   */
+  tools?: ProviderTool[];
+  thinking?: ThinkingSetting;
   signal?: AbortSignal;
+  /**
+   * Called as tokens arrive. Providing it enables streaming; omitting it
+   * requests a single buffered response. The callback must not throw — a
+   * failing renderer should never abort a model call.
+   */
+  onDelta?: (delta: ModelStreamDelta) => void;
 };
 
 export type ModelFileAnalysisOptions = {
@@ -26,6 +63,8 @@ export type ModelFileAnalysisOptions = {
 
 export type ModelChatResult = {
   content: string;
+  /** Native tool calls, when the runtime emitted any. */
+  toolCalls?: RawToolCall[];
   telemetry: ModelTelemetry;
   /** Provider-side notice worth surfacing (e.g. model fallback, cookie retry). */
   warning?: string;
@@ -70,6 +109,7 @@ export const AGENT_TOOL_NAMES = [
   "read_range",
   "file_info",
   "search_text",
+  "fetch_url",
   "inspect_document",
   "memory_remember",
   "memory_search",
@@ -95,6 +135,7 @@ export const AGENT_TOOL_NAMES = [
 export const MAX_TOOL_CALLS_PER_RESPONSE = 12;
 
 export type AgentToolName = (typeof AGENT_TOOL_NAMES)[number];
+export type AgentEventToolName = AgentToolName | "subagent";
 
 export type AgentToolCall = {
   name: AgentToolName;
@@ -105,7 +146,7 @@ export type ToolRisk = "low" | "medium" | "high";
 
 export type ToolSideEffect = "none" | "write" | "shell";
 
-export type ToolPermission = "none" | "write" | "shell" | "external_file";
+export type ToolPermission = "none" | "write" | "shell" | "external_file" | "network";
 
 export type ToolCategory = "state" | "read" | "search" | "write" | "shell" | "git" | "test" | "document" | "memory";
 
@@ -141,7 +182,6 @@ export type AgentResponse =
       message: string;
     };
 
-export type SubagentRole = "planner" | "reviewer" | "explorer";
 
 export type AgentTodoStatus = "pending" | "in_progress" | "completed";
 
@@ -167,16 +207,46 @@ export type AgentEvent =
       message: string;
       workState: AgentWorkState;
     }
+  /**
+   * Live progress within a single model call. `prompt` covers the wait before
+   * the first token — on local hardware that is prompt evaluation, and it is
+   * most of the perceived latency on a long context. `generating` starts at
+   * the first token and carries a running throughput figure.
+   */
   | {
-      type: "subagent";
-      role: SubagentRole;
+      type: "stream";
+      phase: "prompt" | "generating";
+      elapsedMs: number;
+      /** Tokens emitted so far; only meaningful while generating. */
+      tokens: number;
+      /**
+       * Visible text so far. Carried so the UI can render the answer as it is
+       * written rather than revealing it whole when the call returns.
+       */
+      content: string;
+      tokensPerSecond: number | null;
+      /** What the model is assembling, when it is writing a tool call. */
+      writing?: { tool: string; chars: number };
+      workState: AgentWorkState;
+    }
+  /** Reasoning text, where the runtime reports it apart from the answer. */
+  | {
+      type: "thinking";
       message: string;
-      metrics: ModelTelemetry;
+      workState: AgentWorkState;
+    }
+  /** How much of the model's real context window the conversation occupies. */
+  | {
+      type: "context";
+      usedTokens: number;
+      limitTokens: number;
+      ratio: number;
+      pressure: "ok" | "warn" | "high" | "critical";
       workState: AgentWorkState;
     }
   | {
       type: "tool";
-      name: AgentToolName;
+      name: AgentEventToolName;
       summary: string;
       content?: string;
       ok: boolean;
@@ -280,7 +350,7 @@ export type SessionEvent =
       type: "tool.completed";
       runId: string;
       toolCallId: string;
-      tool: AgentToolName;
+      tool: AgentEventToolName;
       ok: boolean;
       summary: string;
       workState: AgentWorkState;
@@ -321,6 +391,12 @@ export type ModelTelemetry = {
   responseTokens: number;
   totalTokens: number;
   evalTokensPerSecond: number | null;
+  /**
+   * Time until the first token arrived. Null for non-streaming responses.
+   * Kept separate from promptDurationMs because on local hardware prompt
+   * evaluation is what a user actually waits through.
+   */
+  timeToFirstTokenMs: number | null;
   promptDurationMs: number;
   responseDurationMs: number;
   totalDurationMs: number;

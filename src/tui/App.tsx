@@ -3,41 +3,66 @@ import { statSync } from "node:fs";
 import { Box, Text, useApp, useInput, useStdout } from "ink";
 import { AgentRunner, type AgentRunnerOptions } from "../core/agent.js";
 import { cleanupPatchPilot, readCleanupTarget } from "../core/cleanup.js";
-import { defaultCodexModel, hasCodexCliOAuth } from "../core/codex.js";
 import { describeComputeTarget } from "../core/compute.js";
 import { ContextStore } from "../core/contextStore.js";
 import { runDoctor } from "../core/doctor.js";
 import { savePatchPilotEnvValues } from "../core/env.js";
-import { defaultGeminiModel, readGeminiApiKey } from "../core/gemini.js";
-import {
-  defaultGeminiWrapperModel,
-  geminiWrapperCuratedModels,
-  geminiWrapperShortcutModels,
-  geminiWrapperRequiresApiKey,
-  readGeminiWrapperApiKey,
-  readGeminiWrapperBaseUrl,
-  readGeminiWrapperCookiesJson,
-  readGeminiWrapperMode,
-  readGeminiWrapperPythonCommand,
-  importGeminiWrapperBrowserCookies,
-  saveGeminiWrapperCookieFile
-} from "../core/geminiWrapper.js";
 import { createModelClient } from "../core/modelClient.js";
-import { defaultNvidiaModel, readNvidiaApiKey } from "../core/nvidia.js";
+import { defaultLocalOpenAIModel, resolveLocalOpenAIBaseUrl } from "../core/localOpenAI.js";
+import { resolveRuntimeAlias } from "../core/localRuntimes.js";
 import { defaultOllamaModel, OllamaClient } from "../core/ollama.js";
-import { defaultOpenRouterModel, isOpenRouterFreeModel, readOpenRouterApiKey } from "../core/openrouter.js";
 import { ensurePatchPilotGitignore, patchPilotInitPrompt } from "../core/projectInit.js";
-import { formatReasoningSupport, type ReasoningSetting } from "../core/reasoning.js";
 import { buildSessionRecap, buildSessionResumeContext, listWorkspaceSessions, loadSessionSummary, SessionStore } from "../core/session.js";
-import { addTelemetryToSession, emptySessionTelemetry, estimateComparableApiCost, estimateTokens } from "../core/tokenAccounting.js";
-import type { AgentEvent, AgentTodoItem, AgentToolName, AgentWorkState, ApprovalRequest, ModelDescriptor, ModelProvider, ModelTelemetry, PermissionDecision, SessionTelemetry } from "../core/types.js";
+import { addTelemetryToSession, emptySessionTelemetry, estimateCloudEquivalentCost, estimateTokens } from "../core/tokenAccounting.js";
+import type { ThinkingSetting, AgentEvent, AgentTodoItem, AgentToolName, AgentWorkState, ApprovalRequest, ModelDescriptor, ModelProvider, ModelTelemetry, PermissionDecision, SessionTelemetry } from "../core/types.js";
 import { checkForPatchPilotUpdate, installPatchPilotUpdate, type UpdateCheckResult } from "../core/updateCheck.js";
 import { getToolSpec, WorkspaceTools } from "../core/workspace.js";
 import { ApprovalPanel } from "./components/ApprovalPanel.js";
 import { clipboardHasImage, clipboardImageHint, readClipboardImage } from "../core/clipboard.js";
 import { CommandSuggestions, type CommandSuggestionItem } from "./components/CommandSuggestions.js";
 import { Composer, FooterHints } from "./components/Composer.js";
-import { ExperimentalPanel, experimentalFlagAt, experimentalFlagCount, type ExperimentalFlag, type ExperimentalFlags } from "./components/ExperimentalPanel.js";
+import { ExperimentalPanel, experimentalFlagAt, experimentalFlagCount, experimentalFlagEnvName, type ExperimentalFlag, type ExperimentalFlags } from "./components/ExperimentalPanel.js";
+import { emptyPromptHistory, recallNext, recallPrevious, rememberPrompt, type PromptHistory } from "./promptHistory.js";
+import {
+  addApprovalTelemetry,
+  addToolTelemetry,
+  emptyToolTelemetry,
+  formatStatusDock,
+  formatUsageDetail,
+  formatUsageSummary
+} from "./sessionStats.js";
+import { attachmentLimitWarning, formatAttachedDocuments, formatAttachmentDigestPath } from "./attachmentLimits.js";
+import {
+  loadAvailableModels,
+  loadKnownOrAvailableModels,
+  resolveRunnableSettings,
+  switchModel
+} from "./modelRuntime.js";
+import {
+  defaultModelForProvider,
+  ejectModels,
+  selectModelFromInput,
+  unloadUsedOllamaModels
+} from "./modelPicking.js";
+import { formatModelDescription, formatModelLabel, formatModelOptions } from "./modelSelection.js";
+import { cacheModelList } from "./modelRuntime.js";
+import {
+  eventToLine,
+  eventToStatus,
+  formatContextUsage,
+  formatStreamProgress,
+  randomLegacyVerbIndex,
+  type StreamProgress
+} from "./transcriptEvents.js";
+import { ConfigPanel, visibleSettings } from "./components/ConfigPanel.js";
+import {
+  cycleSettingValue,
+  findSettingByNameOrKey,
+  formatSettingValue,
+  readSettingValue,
+  validateSettingValue
+} from "./settingsRegistry.js";
+import { needsArgument, resolveSlashSubmission, type PaletteSuggestion } from "./slashCommands.js";
 import { runContextSlashCommand } from "./contextCommands.js";
 import { ExperimentalShell } from "./experimental/ExperimentalShell.js";
 import { ThemePicker } from "./experimental/ThemePicker.js";
@@ -45,13 +70,14 @@ import { type Artifact, attachmentKindForPath, attachmentLabel, attachmentTypeFo
 import { describeUltraModes, parseUltraModes } from "./experimental/ultraModes.js";
 import { formatCompletionSummary } from "./runStatus.js";
 import { Header } from "./components/Header.js";
-import { OnboardingPanel, type ApiKeyProvider, type OnboardingState } from "./components/OnboardingPanel.js";
+import { OnboardingPanel, type OnboardingState } from "./components/OnboardingPanel.js";
 import { Sidebar } from "./components/Sidebar.js";
 import { Transcript } from "./components/Transcript.js";
 import { filterSlashCommands, formatCommandDetail, formatCommandHelp } from "./commands.js";
 import { formatCost, formatSessionTokens, formatTokens, normalizeModelAlias, readToggle } from "./format.js";
 import { checkOllamaHost, discoverOllamaHosts, normalizeOllamaUrl, readOllamaHostDetails, startLocalOllamaAppAndWait, type OllamaHost, type OllamaHostDetails } from "./hosts.js";
 import { computeComposerLayout } from "./layout.js";
+import { motionEnabled } from "./motion.js";
 import { initialAgentMode, modeDescription, modePermissionLabel, nextAgentMode, permissionsForMode, shouldBypassApproval } from "./modes.js";
 import { selectableModels } from "./modelSelection.js";
 import {
@@ -64,23 +90,23 @@ import {
   type OnboardingPreferences
 } from "./onboardingPreferences.js";
 import { readGpuStats, readSystemStats, type GpuStats, type SystemStats } from "./systemStats.js";
-import { maxTranscriptLines, type AdvisorNote, type AgentMode, type LogLine, type LogLineInput, type ToolTelemetry } from "./types.js";
+import { maxTranscriptLines, type AgentMode, type LogLine, type LogLineInput, type ToolTelemetry } from "./types.js";
 
 export type PatchPilotAppProps = AgentRunnerOptions & {
   initialTask?: string;
   packageVersion?: string;
 };
 
-type PaletteSuggestion = CommandSuggestionItem & {
-  command: string;
-  execute: boolean;
-};
-
-type UiTheme = "new" | "legacy";
+type UiTheme = "flow" | "new" | "legacy";
 
 type UpdatePromptState = Extract<UpdateCheckResult, { available: true }>;
 
 const themeOptions: Array<{ value: UiTheme; label: string; description: string }> = [
+  {
+    value: "flow",
+    label: "Flow",
+    description: "Native terminal scrollback: the whole conversation stays in your terminal, with markdown, highlighted code and real diffs."
+  },
   {
     value: "new",
     label: "New",
@@ -94,21 +120,17 @@ const themeOptions: Array<{ value: UiTheme; label: string; description: string }
 ];
 
 function readUiTheme(): UiTheme {
-  return process.env.PATCHPILOT_UI_THEME?.trim().toLowerCase() === "legacy" ? "legacy" : "new";
+  const configured = process.env.PATCHPILOT_UI_THEME?.trim().toLowerCase();
+  if (configured === "legacy" || configured === "new" || configured === "flow") {
+    return configured;
+  }
+
+  return "flow";
 }
 
-/** Heuristic: does this Gemini-Wrapper error look like expired/invalid cookies? */
-function isGeminiCookieError(message: string): boolean {
-  return /cookie|secure_1psid|psidts|expired|sign[ -]?in|auth(?:enticat|oriz)|401|403|session.*(?:invalid|expired)/i.test(
-    message
-  );
-}
-
-const modelCacheTtlMs = 5 * 60_000;
-const modelCache = new Map<string, { models: string[]; descriptors: ModelDescriptor[]; expiresAt: number }>();
-const modelDescriptorIndex = new Map<string, ModelDescriptor>();
 
 export function App(props: PatchPilotAppProps): React.ReactElement {
+  const animationsEnabled = motionEnabled();
   const { exit } = useApp();
   const { stdout } = useStdout();
   const [input, setInput] = useState(props.initialTask ?? "");
@@ -138,12 +160,19 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   // ("now do X") still knows what the user asked for and where.
   const conversationTurnsRef = useRef<string[]>([]);
   const [lines, setLines] = useState<LogLine[]>([]);
-  const [advisorNotes, setAdvisorNotes] = useState<AdvisorNote[]>([]);
   const [todos, setTodos] = useState<AgentTodoItem[]>([]);
   const [todoFrame, setTodoFrame] = useState(0);
   const [verbTick, setVerbTick] = useState(0);
   const [isRunning, setIsRunning] = useState(false);
   const [status, setStatus] = useState("idle");
+  const [streamProgress, setStreamProgress] = useState<StreamProgress | null>(null);
+  const [streamingText, setStreamingText] = useState("");
+  const [configOpen, setConfigOpen] = useState(false);
+  const [configQuery, setConfigQuery] = useState("");
+  const [configIndex, setConfigIndex] = useState(0);
+  const [configNotice, setConfigNotice] = useState<string | null>(null);
+  const promptHistoryRef = useRef<PromptHistory>(emptyPromptHistory());
+  const [contextUsage, setContextUsage] = useState<ContextUsageView | null>(null);
   const [workState, setWorkState] = useState<AgentWorkState>("idle");
   const [pendingApproval, setPendingApproval] = useState<ApprovalRequest | null>(null);
   const [updatePrompt, setUpdatePrompt] = useState<UpdatePromptState | null>(null);
@@ -171,11 +200,15 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
     shellMetacharacters: readBooleanEnv(process.env.PATCHPILOT_EXPERIMENTAL_SHELL_METACHARACTERS, false)
   });
   const [uiTheme, setUiTheme] = useState<UiTheme>(() => readUiTheme());
+  // Read inside appendLine, which must not be re-created when the theme changes.
+  const uiThemeRef = useRef<UiTheme>(uiTheme);
+  uiThemeRef.current = uiTheme;
+  // Static renders each row once, so clearing starts a fresh region instead of
+  // pretending the terminal can un-print what it already showed.
+  const [transcriptEpoch, setTranscriptEpoch] = useState(0);
   const [themePickerOpen, setThemePickerOpen] = useState(false);
   const [themePickerIndex, setThemePickerIndex] = useState(0);
   const [ultramaxxRun, setUltramaxxRun] = useState(false);
-  const [reauthPrompt, setReauthPrompt] = useState<{ task: string } | null>(null);
-  const [reauthBusy, setReauthBusy] = useState(false);
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
   const artifactsRef = useRef<Artifact[]>([]);
   const pendingAttachmentsRef = useRef<string[]>([]);
@@ -203,7 +236,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
     allowShell: props.allowShell,
     maxSteps: props.maxSteps,
     thinkingMode: props.thinkingMode,
-    reasoningEffort: props.reasoningEffort,
+    thinking: props.thinking,
     subagents: props.subagents
   });
   const draftTokens = estimateTokens(input);
@@ -211,10 +244,9 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   // resize event, which would otherwise collapse the whole layout.
   const terminalRows = stdout.rows || 40;
   const terminalColumns = stdout.columns || 120;
-  const reauthPromptActive = Boolean(reauthPrompt || reauthBusy);
-  const updatePromptActive = !reauthPromptActive && Boolean(updatePrompt || updateBusy);
-  const approvalPromptActive = !reauthPromptActive && !updatePromptActive && Boolean(pendingApproval || bypassConfirmation);
-  const blockingPromptActive = reauthPromptActive || updatePromptActive || approvalPromptActive;
+  const updatePromptActive = Boolean(updatePrompt || updateBusy);
+  const approvalPromptActive = !updatePromptActive && Boolean(pendingApproval || bypassConfirmation);
+  const blockingPromptActive = updatePromptActive || approvalPromptActive;
   const paletteItems =
     !isRunning && !onboarding && !experimentalOpen && !blockingPromptActive
       ? buildCommandSuggestionItems({
@@ -247,7 +279,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           kind: line.kind ?? defaultLogKind(line),
           id: Date.now() + Math.random()
         }
-      ].slice(-maxTranscriptLines)
+      ].slice(-(uiThemeRef.current === "flow" ? maxTranscriptLines * 4 : maxTranscriptLines))
     );
   }, []);
 
@@ -291,7 +323,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           tone: "warning",
           label: "attach",
           text: warning,
-          detail: "For Gemini/Gemini-Wrapper, send large batches in smaller prompts or ask PatchPilot to inspect the files in separate calls."
+          detail: "Send large batches in smaller prompts, or ask PatchPilot to inspect the files in separate calls."
         });
       }
       return label;
@@ -377,7 +409,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   );
 
   useEffect(() => {
-    if (!isRunning || todos.every((todo) => todo.status !== "in_progress")) {
+    if (!animationsEnabled || !isRunning || todos.every((todo) => todo.status !== "in_progress")) {
       setTodoFrame(0);
       return;
     }
@@ -389,12 +421,12 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
     return () => {
       clearInterval(timer);
     };
-  }, [isRunning, todos]);
+  }, [animationsEnabled, isRunning, todos]);
 
   // Slow run-status verb tick: the verb only advances every 10s while the fast
   // spinner glyph keeps animating, so the status line never flickers.
   useEffect(() => {
-    if (!isRunning) {
+    if (!animationsEnabled || !isRunning) {
       setVerbTick(randomLegacyVerbIndex());
       return;
     }
@@ -413,7 +445,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
     return () => {
       clearInterval(timer);
     };
-  }, [isRunning]);
+  }, [animationsEnabled, isRunning]);
 
   const resolveApproval = useCallback(
     (decision: PermissionDecision) => {
@@ -662,11 +694,12 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       setActiveHost(details);
       setHostOptions((currentHosts) => [verifiedHost, ...currentHosts.filter((host) => host.url !== verifiedHost.url)]);
       setModelOptions(details.models);
-      modelCache.set(`ollama:${verifiedHost.url}`, {
-        models: details.models,
-        descriptors: details.models.map((model) => ({ id: model, displayName: model })),
-        expiresAt: Date.now() + modelCacheTtlMs
-      });
+      cacheModelList(
+        "ollama",
+        verifiedHost.url,
+        details.models,
+        details.models.map((model) => ({ id: model, displayName: model }))
+      );
       setSettings((currentSettings) => ({
         ...currentSettings,
         provider: "ollama",
@@ -713,7 +746,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       setOnboardingInput("");
       setOnboardingNotice(null);
       setOnboardingBusyMessage(null);
-      const nextModel = defaultModelForProvider(provider, options.currentModel ?? settings.model);
+      const nextModel = defaultModelForProvider(provider, options.currentModel ?? settings.model, settings.provider);
       setSettings((currentSettings) => ({
         ...currentSettings,
         provider,
@@ -729,15 +762,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
             text:
               provider === "ollama"
                 ? "No Ollama models found on that host."
-                : provider === "gemini"
-                  ? "No Gemini models listed. Check the API key."
-                  : provider === "gemini-wrapper"
-                    ? "No Gemini-Wrapper models listed. Check the bridge install and cookie setup."
-                  : provider === "openrouter"
-                    ? "No OpenRouter models listed. Check the API key."
-                    : provider === "nvidia"
-                      ? "No NVIDIA models listed. Check the API key."
-                      : "No Codex OAuth models listed.",
+                : "No models served by that local endpoint. Load one in your local server, then retry.",
             detail: "Use the back key to choose another provider or retry after fixing the provider setup."
           });
           return;
@@ -794,16 +819,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         setOnboarding(null);
         return;
       case "host":
-      case "api-key-choice":
-      case "gemini-key":
-      case "gemini-wrapper-url":
-      case "gemini-wrapper-psid":
-      case "gemini-wrapper-psidts":
-      case "gemini-wrapper-model-mode":
-      case "gemini-wrapper-key":
-      case "openrouter-key":
-      case "nvidia-key":
-      case "codex-login":
+      case "local-url":
         setOnboarding({
           step: "entry"
         });
@@ -815,12 +831,6 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         });
         return;
       case "preferences":
-        if (onboarding.provider === "gemini-wrapper") {
-          setOnboarding({
-            step: "gemini-wrapper-model-mode"
-          });
-          return;
-        }
         void openModelSelection(onboarding.provider, { currentModel: onboarding.model });
         return;
       case "model":
@@ -832,31 +842,9 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           return;
         }
 
-        if (onboarding.provider === "gemini") {
-          openApiKeyChoice("gemini", setOnboarding, setOnboardingIndex);
-          return;
-        }
-
-        if (onboarding.provider === "gemini-wrapper") {
+        if (onboarding.provider === "local-openai") {
           setOnboarding({
-            step: "gemini-wrapper-model-mode"
-          });
-          return;
-        }
-
-        if (onboarding.provider === "nvidia") {
-          openApiKeyChoice("nvidia", setOnboarding, setOnboardingIndex);
-          return;
-        }
-
-        if (onboarding.provider === "openrouter") {
-          openApiKeyChoice("openrouter", setOnboarding, setOnboardingIndex);
-          return;
-        }
-
-        if (onboarding.provider === "codex" && !hasCodexCliOAuth()) {
-          setOnboarding({
-            step: "codex-login"
+            step: "local-url"
           });
           return;
         }
@@ -958,19 +946,9 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           return;
         }
 
-        if (selection === "gemini" || selection === "gemini-wrapper" || selection === "openrouter" || selection === "nvidia") {
-          openApiKeyChoice(selection, setOnboarding, setOnboardingIndex);
-          return;
-        }
-
-        if (!hasCodexCliOAuth()) {
-          setOnboarding({
-            step: "codex-login"
-          });
-          return;
-        }
-
-        await openModelSelection("codex");
+        setOnboarding({
+          step: "local-url"
+        });
         return;
       }
 
@@ -1049,336 +1027,20 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         return;
       }
 
-      if (onboarding.step === "api-key-choice") {
-        const choice = readIndexedSelection(value, onboardingIndex);
-        if (choice === null) {
-          return;
-        }
-
-        if (onboarding.provider === "gemini-wrapper") {
-          if (choice === 0 && onboarding.hasExistingKey) {
-            setOnboarding({
-              step: "gemini-wrapper-model-mode"
-            });
-            setOnboardingInput("");
-            setOnboardingIndex(0);
-            return;
-          }
-
-          const importChoice = onboarding.hasExistingKey ? 1 : 0;
-          if (choice === importChoice) {
-            setOnboardingBusyMessage("Importing Gemini browser cookies...");
-            try {
-              const result = await importGeminiWrapperBrowserCookies();
-              process.env.PATCHPILOT_GEMINI_WRAPPER_MODE = "python";
-              process.env.PATCHPILOT_GEMINI_WRAPPER_COOKIES_JSON = result.cookiesPath;
-              savePatchPilotEnvValues({
-                PATCHPILOT_PROVIDER: "gemini-wrapper",
-                PATCHPILOT_MODEL: defaultGeminiWrapperModel,
-                PATCHPILOT_GEMINI_WRAPPER_MODE: "python",
-                PATCHPILOT_GEMINI_WRAPPER_COOKIES_JSON: result.cookiesPath
-              });
-              setOnboardingNotice({
-                tone: "success",
-                text: `Imported ${result.cookieCount} Gemini browser cookies from ${result.source}.`,
-                detail: `${result.cookiesPath} was written with owner-only permissions. Secret values were not printed.`
-              });
-              setOnboarding({
-                step: "gemini-wrapper-model-mode"
-              });
-              setOnboardingInput("");
-              setOnboardingIndex(0);
-            } catch (error) {
-              setOnboardingNotice({
-                tone: "warning",
-                text: "Gemini browser cookie import failed.",
-                detail: error instanceof Error ? error.message : String(error)
-              });
-            } finally {
-              setOnboardingBusyMessage(null);
-            }
-            return;
-          }
-
-          setOnboarding({
-            step: "gemini-wrapper-psid"
-          });
-          setOnboardingInput("");
-          setOnboardingIndex(0);
-          return;
-        }
-
-        if (choice === 0 && onboarding.hasExistingKey) {
-          await openModelSelection(onboarding.provider, {
-            currentModel: defaultModelForProvider(onboarding.provider, settings.model)
-          });
-          return;
-        }
-
-        setOnboarding({
-          step: `${onboarding.provider}-key` as "gemini-key" | "openrouter-key" | "nvidia-key"
-        });
-        setOnboardingInput("");
-        setOnboardingIndex(0);
-        return;
-      }
-
-      if (onboarding.step === "gemini-key") {
-        const apiKey = value.trim();
-        if (!apiKey) {
-          setOnboardingNotice({
-            tone: "warning",
-            text: "Gemini API key cannot be empty."
-          });
-          return;
-        }
-
-        process.env.GEMINI_API_KEY = apiKey;
+      if (onboarding.step === "local-url") {
+        const url = value.trim() || resolveLocalOpenAIBaseUrl();
+        process.env.PATCHPILOT_PROVIDER = "local-openai";
+        process.env.PATCHPILOT_LOCAL_URL = url;
         savePatchPilotEnvValues({
-          PATCHPILOT_PROVIDER: "gemini",
-          PATCHPILOT_MODEL: defaultGeminiModel,
-          GEMINI_API_KEY: apiKey
+          PATCHPILOT_PROVIDER: "local-openai",
+          PATCHPILOT_LOCAL_URL: url
         });
         setOnboardingNotice({
           tone: "success",
-          text: "Gemini API key saved to PatchPilot config."
+          text: `Using the local model server at ${url}.`,
+          detail: "Models are listed straight from that server."
         });
-        await openModelSelection("gemini", {
-          currentModel: defaultGeminiModel
-        });
-        return;
-      }
-
-      if (onboarding.step === "gemini-wrapper-psid") {
-        const secure1psid = value.trim();
-        if (!secure1psid) {
-          setOnboardingNotice({
-            tone: "warning",
-            text: "__Secure-1PSID cannot be empty.",
-            detail: "Paste the cookie value manually. PatchPilot will not scan browser profiles."
-          });
-          return;
-        }
-
-        setOnboarding({
-          step: "gemini-wrapper-psidts",
-          secure1psid
-        });
-        setOnboardingInput("");
-        setOnboardingIndex(0);
-        return;
-      }
-
-      if (onboarding.step === "gemini-wrapper-psidts") {
-        const secure1psidts = value.trim();
-        const cookiesPath = saveGeminiWrapperCookieFile({
-          secure1psid: onboarding.secure1psid,
-          secure1psidts
-        });
-
-        process.env.PATCHPILOT_GEMINI_WRAPPER_MODE = "python";
-        process.env.PATCHPILOT_GEMINI_WRAPPER_COOKIES_JSON = cookiesPath;
-        savePatchPilotEnvValues({
-          PATCHPILOT_PROVIDER: "gemini-wrapper",
-          PATCHPILOT_MODEL: defaultGeminiWrapperModel,
-          PATCHPILOT_GEMINI_WRAPPER_MODE: "python",
-          PATCHPILOT_GEMINI_WRAPPER_COOKIES_JSON: cookiesPath
-        });
-        setOnboardingNotice({
-          tone: "success",
-          text: "Gemini-API bridge cookies saved to PatchPilot config.",
-          detail: `${cookiesPath} was written with owner-only permissions. PatchPilot will run gemini_webapi through python3.`
-        });
-        setOnboarding({
-          step: "gemini-wrapper-model-mode"
-        });
-        setOnboardingInput("");
-        setOnboardingIndex(0);
-        return;
-      }
-
-      if (onboarding.step === "gemini-wrapper-model-mode") {
-        const choice = readIndexedSelection(value, onboardingIndex);
-        if (choice === null) {
-          return;
-        }
-
-        const curatedModel = geminiWrapperShortcutModels[choice];
-        if (curatedModel) {
-          setTelemetry(null);
-          const shortcutDescriptors = geminiWrapperShortcutModels.map((model) => ({ id: model, displayName: model }));
-          rememberModelDescriptors(shortcutDescriptors);
-          setModelOptions([...geminiWrapperShortcutModels]);
-          setSettings((currentSettings) => ({
-            ...currentSettings,
-            provider: "gemini-wrapper",
-            model: curatedModel
-          }));
-          savePatchPilotEnvValues({
-            PATCHPILOT_PROVIDER: "gemini-wrapper",
-            PATCHPILOT_MODEL: curatedModel,
-            PATCHPILOT_GEMINI_WRAPPER_MODE: "python"
-          });
-          setOnboarding({
-            step: "preferences",
-            provider: "gemini-wrapper",
-            model: curatedModel,
-            preferences: readOnboardingPreferences()
-          });
-          setOnboardingInput("");
-          setOnboardingIndex(preferenceRows.length);
-          return;
-        }
-
-        await openModelSelection("gemini-wrapper", {
-          currentModel: settings.model
-        });
-        return;
-      }
-
-      if (onboarding.step === "gemini-wrapper-url") {
-        const baseUrl = value.trim().replace(/\/$/, "");
-        if (!baseUrl) {
-          setOnboardingNotice({
-            tone: "warning",
-            text: "Gemini-Wrapper URL cannot be empty."
-          });
-          return;
-        }
-
-        try {
-          new URL(baseUrl);
-        } catch {
-          setOnboardingNotice({
-            tone: "warning",
-            text: "Gemini-Wrapper URL must be a valid URL.",
-            detail: "Example: http://localhost:8787/v1"
-          });
-          return;
-        }
-
-        process.env.PATCHPILOT_GEMINI_WRAPPER_BASE_URL = baseUrl;
-        process.env.PATCHPILOT_GEMINI_WRAPPER_MODE = "http";
-        savePatchPilotEnvValues({
-          PATCHPILOT_PROVIDER: "gemini-wrapper",
-          PATCHPILOT_MODEL: defaultGeminiWrapperModel,
-          PATCHPILOT_GEMINI_WRAPPER_BASE_URL: baseUrl,
-          PATCHPILOT_GEMINI_WRAPPER_MODE: "http"
-        });
-        setOnboardingNotice({
-          tone: "success",
-          text: "Gemini-Wrapper URL saved to PatchPilot config.",
-          detail: "PatchPilot uses only this explicit URL and never reads browser cookies."
-        });
-        if (geminiWrapperRequiresApiKey(baseUrl) && !readGeminiWrapperApiKey()) {
-          setOnboarding({
-            step: "gemini-wrapper-key",
-            baseUrl
-          });
-          setOnboardingInput("");
-          setOnboardingIndex(0);
-          return;
-        }
-
-        await openModelSelection("gemini-wrapper", {
-          currentModel: defaultGeminiWrapperModel
-        });
-        return;
-      }
-
-      if (onboarding.step === "gemini-wrapper-key") {
-        const apiKey = value.trim();
-        if (geminiWrapperRequiresApiKey(onboarding.baseUrl) && !apiKey) {
-          setOnboardingNotice({
-            tone: "warning",
-            text: "Gemini-Wrapper API key cannot be empty for remote wrapper URLs."
-          });
-          return;
-        }
-
-        process.env.PATCHPILOT_GEMINI_WRAPPER_API_KEY = apiKey;
-        savePatchPilotEnvValues({
-          PATCHPILOT_PROVIDER: "gemini-wrapper",
-          PATCHPILOT_MODEL: defaultGeminiWrapperModel,
-          PATCHPILOT_GEMINI_WRAPPER_BASE_URL: onboarding.baseUrl,
-          PATCHPILOT_GEMINI_WRAPPER_MODE: "http",
-          ...(apiKey ? { PATCHPILOT_GEMINI_WRAPPER_API_KEY: apiKey } : {})
-        });
-        setOnboardingNotice({
-          tone: "success",
-          text: apiKey ? "Gemini-Wrapper API key saved to PatchPilot config." : "Gemini-Wrapper local URL saved without an API key."
-        });
-        await openModelSelection("gemini-wrapper", {
-          currentModel: defaultGeminiWrapperModel
-        });
-        return;
-      }
-
-      if (onboarding.step === "openrouter-key") {
-        const apiKey = value.trim();
-        if (!apiKey) {
-          setOnboardingNotice({
-            tone: "warning",
-            text: "OpenRouter API key cannot be empty."
-          });
-          return;
-        }
-
-        process.env.OPENROUTER_API_KEY = apiKey;
-        savePatchPilotEnvValues({
-          PATCHPILOT_PROVIDER: "openrouter",
-          PATCHPILOT_MODEL: defaultOpenRouterModel,
-          OPENROUTER_API_KEY: apiKey
-        });
-        setOnboardingNotice({
-          tone: "success",
-          text: "OpenRouter API key saved to PatchPilot config."
-        });
-        await openModelSelection("openrouter", {
-          currentModel: defaultOpenRouterModel
-        });
-        return;
-      }
-
-      if (onboarding.step === "nvidia-key") {
-        const apiKey = value.trim();
-        if (!apiKey) {
-          setOnboardingNotice({
-            tone: "warning",
-            text: "NVIDIA API key cannot be empty."
-          });
-          return;
-        }
-
-        process.env.NVIDIA_API_KEY = apiKey;
-        savePatchPilotEnvValues({
-          PATCHPILOT_PROVIDER: "nvidia",
-          PATCHPILOT_MODEL: defaultNvidiaModel,
-          NVIDIA_API_KEY: apiKey
-        });
-        setOnboardingNotice({
-          tone: "success",
-          text: "NVIDIA API key saved to PatchPilot config."
-        });
-        await openModelSelection("nvidia", {
-          currentModel: defaultNvidiaModel
-        });
-        return;
-      }
-
-      if (onboarding.step === "codex-login") {
-        if (!hasCodexCliOAuth()) {
-          setOnboardingNotice({
-            tone: "warning",
-            text: "Codex OAuth is still missing.",
-            detail: "Run `codex login` in another terminal, then press Enter to retry."
-          });
-          return;
-        }
-
-        await openModelSelection("codex", {
-          currentModel: defaultCodexModel
-        });
+        await openModelSelection("local-openai", { currentModel: defaultLocalOpenAIModel });
         return;
       }
 
@@ -1401,8 +1063,6 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           model: onboarding.model,
           allowWrite: permissions.allowWrite,
           allowShell: permissions.allowShell,
-          thinkingMode: prefs.thinking,
-          reasoningEffort: prefs.reasoning,
           subagents: prefs.subagents
         }));
         savePatchPilotEnvValues({
@@ -1417,23 +1077,15 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           tone: "success",
           label: "onboarding",
           text: `ready: ${onboarding.provider} using ${onboarding.model}`,
-          detail: `mode ${prefs.mode} · reasoning ${prefs.reasoning} · thinking ${prefs.thinking} · subagents ${prefs.subagents ? "on" : "off"}`
+          detail: `mode ${prefs.mode} · subagents ${prefs.subagents ? "on" : "off"}`
         });
-        if (onboarding.provider === "openrouter" && isOpenRouterFreeModel(onboarding.model)) {
-          appendLine({
-            tone: "warning",
-            label: "openrouter",
-            text: "Free OpenRouter models are rate-limited.",
-            detail: "OpenRouter documents 20 requests/minute for :free models, plus daily limits depending on account credits."
-          });
-        }
         closeOnboarding();
         return;
       }
 
       const visibleModels = selectableModels(onboardingInput, onboarding.models, formatModelLabel);
       const selectedModel = visibleModels[onboardingIndex] ?? selectModelFromInput(value, visibleModels, onboardingIndex, {
-        allowManual: onboarding.provider !== "ollama" && onboarding.provider !== "gemini-wrapper"
+        allowManual: onboarding.provider !== "ollama"
       });
       if (!selectedModel) {
         setOnboardingNotice({
@@ -1481,8 +1133,8 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       const ultrafast = ultra.modes.includes("fast");
       const ultrafocus = ultra.modes.includes("focus");
       const ultraloop = ultra.modes.includes("loop");
-      // ultracheap and ultrafast both run the lean pipeline (low reasoning,
-      // fixed short thinking, no advisors, capped steps).
+      // ultracheap and ultrafast both run the lean pipeline (thinking and
+      // child agents off, capped steps).
       const ultraLean = ultracheap || ultrafast;
       const effectiveTask = ultra.modes.length > 0 ? ultra.cleaned : task;
       if (ultra.modes.length > 0 && !effectiveTask) {
@@ -1519,13 +1171,13 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       if (ultra.modes.length > 0) {
         const engagedDetail: string[] = [];
         if (ultramaxx) {
-          engagedDetail.push("ultramaxx: xhigh reasoning, expanded step budget, advisors on.");
+          engagedDetail.push("ultramaxx: thinking on, expanded step budget, child agents on.");
         }
         if (ultracheap) {
-          engagedDetail.push("ultracheap: low reasoning, terse output, advisors off.");
+          engagedDetail.push("ultracheap: terse output, thinking and child agents off.");
         }
         if (ultrafast) {
-          engagedDetail.push("ultrafast: lowest-latency pipeline — low reasoning, fixed short thinking, advisors off.");
+          engagedDetail.push("ultrafast: lowest-latency pipeline — thinking and child agents off.");
         }
         if (ultrafocus) {
           engagedDetail.push(`ultrafocus: the agent stays inside ${ultra.focusPath}.`);
@@ -1545,11 +1197,6 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       let turnAttachmentPaths: string[] = [];
       try {
         const runnableSettings = await resolveRunnableSettings(settings, modelOptions, appendLine, setModelOptions, (message) => {
-          if (settings.provider === "gemini-wrapper" && isGeminiCookieError(message)) {
-            setReauthPrompt({ task });
-            setStatus("gemini cookies expired");
-            setWorkState("waiting_approval");
-          }
         });
         if (!runnableSettings) {
           return;
@@ -1607,8 +1254,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
               : ultraLean
                 ? Math.min(runnableSettings.maxSteps, 12)
                 : runnableSettings.maxSteps,
-          reasoningEffort: ultramaxx ? "xhigh" : ultraLean ? "low" : runnableSettings.reasoningEffort,
-          thinkingMode: ultramaxx || ultraloop ? "adaptive" : ultraLean ? "fixed" : runnableSettings.thinkingMode,
+          thinking: ultramaxx ? "on" : ultraLean ? "off" : runnableSettings.thinking,
           subagents: ultramaxx || ultraloop ? true : ultraLean ? false : runnableSettings.subagents,
           ultramaxx,
           allowExternalFileAnalysis: experimentalFlags.fileAnalysis,
@@ -1686,18 +1332,6 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
             continue;
           }
 
-          if (event.type === "subagent") {
-            setTelemetry(event.metrics);
-            setSessionTelemetry((currentSession) => addTelemetryToSession(currentSession, event.metrics));
-            setToolTelemetry((currentTools) => addToolTelemetry(currentTools, "subagent", true));
-            setAdvisorNotes((currentNotes) =>
-              upsertAdvisorNote(currentNotes, {
-                role: event.role,
-                message: event.message
-              })
-            );
-          }
-
           if (event.type === "todo") {
             setTodos(event.items);
             setStatus(event.summary);
@@ -1720,24 +1354,42 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           }
 
           if (event.type === "tool") {
-            setToolTelemetry((currentTools) => addToolTelemetry(currentTools, event.name, event.ok));
+            const telemetryTool = typeof event.metadata?.subagent === "string" ? "subagent" : event.name;
+            setToolTelemetry((currentTools) => addToolTelemetry(currentTools, telemetryTool, event.ok));
           }
 
           if (event.type === "approval") {
             setToolTelemetry((currentTools) => addApprovalTelemetry(currentTools, event.decision));
           }
 
-          // Expired Gemini-Wrapper cookies arrive as an error event (the run
-          // does not throw) — offer the y/n re-auth prompt here too.
-          if (
-            event.type === "error" &&
-            settings.provider === "gemini-wrapper" &&
-            isGeminiCookieError(event.message)
-          ) {
-            setReauthPrompt({ task });
-            setWorkState("waiting_approval");
+          if (event.type === "context") {
+            setContextUsage({
+              usedTokens: event.usedTokens,
+              limitTokens: event.limitTokens,
+              ratio: event.ratio,
+              pressure: event.pressure
+            });
+            continue;
           }
 
+          if (event.type === "stream") {
+            setStreamProgress({
+              phase: event.phase,
+              elapsedMs: event.elapsedMs,
+              tokens: event.tokens,
+              tokensPerSecond: event.tokensPerSecond,
+              writing: event.writing ?? null
+            });
+            // The answer renders as it is written. Once the turn completes the
+            // finished entry lands in the static transcript and this clears,
+            // so the same text is never on screen twice.
+            setStreamingText(event.content);
+            setStatus(eventToStatus(event));
+            continue;
+          }
+
+          setStreamProgress(null);
+          setStreamingText("");
           setStatus(eventToStatus(event));
           appendLine(eventToLine(event));
         }
@@ -1761,13 +1413,6 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           text: message,
           workState: "error"
         });
-        // Expired Gemini-Wrapper cookies: offer a one-key re-auth + retry
-        // instead of making the user restart and re-type the prompt.
-        if (settings.provider === "gemini-wrapper" && isGeminiCookieError(message)) {
-          setReauthPrompt({ task });
-          setStatus("gemini cookies expired");
-          setWorkState("waiting_approval");
-        }
       } finally {
         abortControllerRef.current = null;
         setIsRunning(false);
@@ -1804,61 +1449,6 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       }
     },
     [agentMode, appendLine, experimentalFlags, isRunning, modelOptions, registerCreatedArtifact, resumeContext, settings]
-  );
-
-  const resolveReauthPrompt = useCallback(
-    async (accept: boolean): Promise<void> => {
-      const pending = reauthPrompt;
-      if (!pending || reauthBusy) {
-        return;
-      }
-
-      if (!accept) {
-        setReauthPrompt(null);
-        setStatus("idle");
-        setWorkState("idle");
-        appendLine({
-          tone: "warning",
-          label: "gemini",
-          text: "Cookie refresh declined.",
-          detail: "Run /onboarding to re-authenticate Gemini-Wrapper when you are ready."
-        });
-        return;
-      }
-
-      // Keep the panel on screen and show the busy animation while the
-      // browser cookies are imported.
-      setReauthBusy(true);
-      try {
-        const result = await importGeminiWrapperBrowserCookies();
-        process.env.PATCHPILOT_GEMINI_WRAPPER_MODE = "python";
-        process.env.PATCHPILOT_GEMINI_WRAPPER_COOKIES_JSON = result.cookiesPath;
-        savePatchPilotEnvValues({
-          PATCHPILOT_GEMINI_WRAPPER_MODE: "python",
-          PATCHPILOT_GEMINI_WRAPPER_COOKIES_JSON: result.cookiesPath
-        });
-        setReauthBusy(false);
-        setReauthPrompt(null);
-        appendLine({
-          tone: "success",
-          label: "gemini",
-          text: `Imported ${result.cookieCount} fresh cookies from ${result.source}. Retrying your task...`
-        });
-        await runTask(pending.task);
-      } catch (error) {
-        setReauthBusy(false);
-        setReauthPrompt(null);
-        setStatus("idle");
-        setWorkState("idle");
-        appendLine({
-          tone: "danger",
-          label: "gemini",
-          text: error instanceof Error ? error.message : String(error),
-          detail: "Cookie refresh failed. Sign in to Gemini in your browser, then retry the prompt."
-        });
-      }
-    },
-    [appendLine, reauthBusy, reauthPrompt, runTask]
   );
 
   const handleSlashCommand = useCallback(
@@ -1913,16 +1503,17 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           return;
         case "provider": {
           const nextProvider = args[0]?.toLowerCase();
-          if (nextProvider !== "ollama" && nextProvider !== "gemini" && nextProvider !== "gemini-wrapper" && nextProvider !== "codex" && nextProvider !== "openrouter" && nextProvider !== "nvidia") {
+          if (nextProvider !== "ollama" && nextProvider !== "local-openai") {
             appendLine({
               tone: "accent",
               label: "provider",
-              text: `current ${settings.provider}. Use /provider ollama, gemini, gemini-wrapper, openrouter, nvidia, or codex.`
+              text: `current ${settings.provider}. Use /provider ollama or local-openai.`,
+              detail: "local-openai covers LM Studio, llama.cpp and vLLM over an OpenAI-compatible endpoint."
             });
             return;
           }
 
-          const nextModel = defaultModelForProvider(nextProvider, settings.model);
+          const nextModel = defaultModelForProvider(nextProvider, settings.model, settings.provider);
           setTelemetry(null);
           setModelOptions([]);
           setSettings((currentSettings) => ({
@@ -1934,16 +1525,10 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
             PATCHPILOT_PROVIDER: nextProvider,
             PATCHPILOT_MODEL: nextModel
           });
-          if (needsApiKey(nextProvider) && !hasApiKey(nextProvider)) {
-            openApiKeyChoice(nextProvider, setOnboarding, setOnboardingIndex);
-          }
           appendLine({
-            tone: needsApiKey(nextProvider) && !hasApiKey(nextProvider) ? "warning" : "success",
+            tone: "success",
             label: "provider",
-            text:
-              needsApiKey(nextProvider) && !hasApiKey(nextProvider)
-                ? `${nextProvider} needs setup. Setup opened.`
-                : `switched to ${nextProvider} using ${nextModel}`
+            text: `switched to ${nextProvider} using ${nextModel}`
           });
           return;
         }
@@ -1969,55 +1554,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           appendLine({
             tone: "success",
             label: "agents",
-            text: `planner/reviewer subagents ${subagentsEnabled ? "enabled" : "disabled"}`
-          });
-          return;
-        }
-        case "think":
-        case "thinking": {
-          const nextMode = args[0]?.toLowerCase();
-          if (nextMode !== "fixed" && nextMode !== "adaptive") {
-            appendLine({
-              tone: "accent",
-              label: "think",
-              text: `current ${settings.thinkingMode}. Use /think fixed or /think adaptive.`
-            });
-            return;
-          }
-
-          setSettings((currentSettings) => ({
-            ...currentSettings,
-            thinkingMode: nextMode
-          }));
-          appendLine({
-            tone: "success",
-            label: "think",
-            text: `thinking mode ${nextMode}`
-          });
-          return;
-        }
-        case "reasoning": {
-          const nextEffort = args[0]?.toLowerCase();
-          if (!isReasoningEffort(nextEffort)) {
-            appendLine({
-              tone: "accent",
-              label: "reasoning",
-              text: `current ${settings.reasoningEffort}. Use /reasoning none, low, medium, high, xhigh, or adaptive.`
-            });
-            return;
-          }
-
-          setSettings((currentSettings) => ({
-            ...currentSettings,
-            reasoningEffort: nextEffort
-          }));
-          savePatchPilotEnvValues({
-            PATCHPILOT_REASONING_EFFORT: nextEffort
-          });
-          appendLine({
-            tone: "success",
-            label: "reasoning",
-            text: formatReasoningSupport(settings.provider, settings.model, nextEffort === "adaptive" ? undefined : nextEffort)
+            text: `explore/general child agents ${subagentsEnabled ? "enabled" : "disabled"}`
           });
           return;
         }
@@ -2064,7 +1601,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           const requestedModel = normalizeModelAlias(args.join(" ").trim());
           if (!requestedModel) {
             const models = await loadKnownOrAvailableModels(settings.provider, settings.ollamaUrl, modelOptions, setModelOptions, appendLine, {
-              refresh: settings.provider === "gemini-wrapper"
+              refresh: false
             });
             if (!models) {
               return;
@@ -2081,7 +1618,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
 
           {
             const models = await loadKnownOrAvailableModels(settings.provider, settings.ollamaUrl, modelOptions, setModelOptions, appendLine, {
-              refresh: settings.provider === "gemini-wrapper"
+              refresh: false
             });
             if (!models) {
               return;
@@ -2106,7 +1643,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           const requestedModel = args.join(" ").trim();
           if (requestedModel) {
             const installedModels = await loadKnownOrAvailableModels(settings.provider, settings.ollamaUrl, modelOptions, setModelOptions, appendLine, {
-              refresh: settings.provider === "gemini-wrapper"
+              refresh: false
             });
             if (!installedModels) {
               return;
@@ -2144,15 +1681,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
                 detail:
                   settings.provider === "ollama"
                     ? "Pull a model on the selected host first."
-                    : settings.provider === "gemini"
-                      ? "Check GEMINI_API_KEY in PatchPilot config."
-                      : settings.provider === "gemini-wrapper"
-                        ? "Check gemini_webapi install and PATCHPILOT_GEMINI_WRAPPER_COOKIES_JSON in PatchPilot config."
-                        : settings.provider === "openrouter"
-                          ? "Check OPENROUTER_API_KEY in PatchPilot config."
-                          : settings.provider === "nvidia"
-                            ? "Check NVIDIA_API_KEY in PatchPilot config."
-                            : "Run codex login first."
+                    : "Load a model in your local server, or check PATCHPILOT_LOCAL_URL."
               });
               return;
             }
@@ -2185,13 +1714,10 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
               model: settings.model,
               agentMode,
               subagents: settings.subagents,
-              thinkingMode: settings.thinkingMode,
-              reasoningEffort: settings.reasoningEffort,
               workspace: settings.workspace,
               ollamaUrl: settings.ollamaUrl,
               sessionId: sessionStoreRef.current.sessionId,
               activeHost,
-              advisorNotes,
               toolTelemetry,
               sessionTelemetry,
               telemetry,
@@ -2418,27 +1944,28 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           setPaletteIndex(0);
           return;
         case "eject": {
-          if (settings.provider !== "ollama") {
+          const target = args.join(" ").trim();
+          let ejectedModels: string[];
+          try {
+            ejectedModels = await ejectModels({
+              target,
+              settings,
+              activeHost,
+              usedModels: usedOllamaModelsRef.current
+            });
+          } catch (error) {
             appendLine({
-              tone: "warning",
+              tone: "danger",
               label: "eject",
-              text: "Eject is only available for Ollama models."
+              text: error instanceof Error ? error.message : String(error)
             });
             return;
           }
-
-          const target = args.join(" ").trim();
-          const ejectedModels = await ejectOllamaModels({
-            target,
-            settings,
-            activeHost,
-            usedModels: usedOllamaModelsRef.current
-          });
           if (ejectedModels.length === 0) {
             appendLine({
               tone: "warning",
               label: "eject",
-              text: "No Ollama model was ejected."
+              text: "No matching loaded model was found."
             });
             return;
           }
@@ -2448,7 +1975,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
             label: "eject",
             text: `ejected ${ejectedModels.join(", ")}`
           });
-          if (activeHost) {
+          if (settings.provider === "ollama" && activeHost) {
             const details = await readOllamaHostDetails(activeHost.host, true).catch(() => activeHost);
             setActiveHost(details);
           }
@@ -2500,7 +2027,6 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
             await sessionStoreRef.current.create();
             setResumeContext("");
             setLines([]);
-            setAdvisorNotes([]);
             setTelemetry(null);
             setSessionTelemetry(emptySessionTelemetry());
             setToolTelemetry(emptyToolTelemetry());
@@ -2562,7 +2088,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         }
         case "theme": {
           const requested = args[0]?.toLowerCase();
-          if (requested === "new" || requested === "legacy") {
+          if (requested === "flow" || requested === "new" || requested === "legacy") {
             setUiTheme(requested);
             savePatchPilotEnvValues({ PATCHPILOT_UI_THEME: requested });
             appendLine({
@@ -2592,8 +2118,8 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           return;
         }
         case "clear":
+          setTranscriptEpoch((epoch) => epoch + 1);
           setLines([]);
-          setAdvisorNotes([]);
           setTodos([]);
           setTelemetry(null);
           setResumeContext("");
@@ -2625,7 +2151,6 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           });
           await sessionStoreRef.current.create();
           setLines([]);
-          setAdvisorNotes([]);
           setTodos([]);
           setTelemetry(null);
           setSessionTelemetry(emptySessionTelemetry());
@@ -2689,6 +2214,10 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         return;
       }
 
+      // Slash commands are recalled too: re-running /diff or /models is at
+      // least as common as re-running a prompt.
+      promptHistoryRef.current = rememberPrompt(promptHistoryRef.current, nextValue);
+
       if (isRunning && nextValue.startsWith("/")) {
         await handleSlashCommand(nextValue);
         return;
@@ -2704,21 +2233,14 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       }
 
       if (nextValue.startsWith("/")) {
-        const selectedItem = paletteItems[paletteIndex];
-        const commandHasArgs = /^\/\S+\s+\S/.test(nextValue);
-        const shouldApplySuggestion =
-          selectedItem &&
-          (!commandHasArgs || selectedItem.command !== selectedItem.label) &&
-          (selectedItem.execute || selectedItem.command === nextValue || nextValue === "/" || nextValue.endsWith(" "));
-        const commandToRun = shouldApplySuggestion ? selectedItem.command : nextValue;
-
-        if (selectedItem && !selectedItem.execute && commandToRun !== nextValue) {
-          setInput(commandToRun);
+        const submission = resolveSlashSubmission(nextValue, paletteItems, paletteIndex);
+        if (submission.action === "complete") {
+          setInput(submission.input);
           return;
         }
 
         setInput("");
-        await handleSlashCommand(commandToRun);
+        await handleSlashCommand(submission.command);
         return;
       }
 
@@ -2870,6 +2392,70 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   }, [hostOptions.length, input, isLoadingHosts, isLoadingModels, isRunning, loadHostSuggestions, loadProviderModels, modelOptions.length, onboarding, settings.provider]);
 
   useInput((inputValue, key) => {
+    if (configOpen) {
+      const settingsList = visibleSettings(settings.provider, configQuery);
+      const selected = settingsList[configIndex];
+
+      if (key.escape) {
+        setConfigOpen(false);
+        setConfigNotice(null);
+        return;
+      }
+
+      if (key.upArrow || key.downArrow) {
+        const step = key.upArrow ? -1 : 1;
+        setConfigIndex((current) =>
+          settingsList.length === 0 ? 0 : (current + step + settingsList.length) % settingsList.length
+        );
+        setConfigNotice(null);
+        return;
+      }
+
+      if (key.return && selected) {
+        const current = readSettingValue(selected);
+        const next = cycleSettingValue(selected, current);
+        if (next === null) {
+          // Numbers and free text cannot be cycled; say how to change them
+          // rather than doing nothing when Enter is pressed.
+          setConfigNotice(
+            `${selected.name} is ${formatSettingValue(selected, current)}. Set it with: /set ${selected.key} <value>`
+          );
+          return;
+        }
+
+        const rejection = validateSettingValue(selected, next);
+        if (rejection) {
+          setConfigNotice(rejection);
+          return;
+        }
+
+        process.env[selected.key] = next;
+        savePatchPilotEnvValues({ [selected.key]: next });
+        setConfigNotice(null);
+        appendLine({
+          tone: "success",
+          label: "config",
+          text: `${selected.name} ${formatSettingValue(selected, next)}`,
+          detail: selected.appliesNextRun ? "applies to the next run" : undefined
+        });
+        return;
+      }
+
+      if (key.backspace || key.delete) {
+        setConfigQuery((current) => current.slice(0, -1));
+        setConfigIndex(0);
+        return;
+      }
+
+      if (inputValue && !key.ctrl && !key.meta) {
+        setConfigQuery((current) => current + inputValue);
+        setConfigIndex(0);
+        setConfigNotice(null);
+      }
+
+      return;
+    }
+
     if (themePickerOpen) {
       if (key.upArrow) {
         setThemePickerIndex((currentIndex) => (currentIndex - 1 + themeOptions.length) % themeOptions.length);
@@ -2929,10 +2515,10 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
             }));
           }
           savePatchPilotEnvValues({
-            PATCHPILOT_EXPERIMENTAL_FILE_ANALYSIS: nextFlags.fileAnalysis ? "1" : "0",
-            PATCHPILOT_EXPERIMENTAL_MEMORY: nextFlags.memory ? "1" : "0",
-            PATCHPILOT_EXPERIMENTAL_SUBAGENTS: nextFlags.subagents ? "1" : "0",
-            PATCHPILOT_EXPERIMENTAL_SHELL_METACHARACTERS: nextFlags.shellMetacharacters ? "1" : "0"
+            [experimentalFlagEnvName("fileAnalysis")]: nextFlags.fileAnalysis ? "1" : "0",
+            [experimentalFlagEnvName("memory")]: nextFlags.memory ? "1" : "0",
+            [experimentalFlagEnvName("subagents")]: nextFlags.subagents ? "1" : "0",
+            [experimentalFlagEnvName("shellMetacharacters")]: nextFlags.shellMetacharacters ? "1" : "0"
           });
           return nextFlags;
         });
@@ -2969,10 +2555,6 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       }
     }
 
-    if (reauthBusy) {
-      return;
-    }
-
     if (updateBusy) {
       return;
     }
@@ -2986,21 +2568,6 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
 
       if (normalizedInput === "n" || key.escape) {
         void resolveUpdatePrompt(false);
-        return;
-      }
-
-      return;
-    }
-
-    if (reauthPrompt) {
-      const normalizedInput = inputValue.toLowerCase();
-      if (normalizedInput === "y") {
-        void resolveReauthPrompt(true);
-        return;
-      }
-
-      if (normalizedInput === "n" || key.escape) {
-        void resolveReauthPrompt(false);
         return;
       }
 
@@ -3117,11 +2684,6 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
 
       if (optionCount > 0 && key.return) {
         void handleOnboardingSubmit(String(onboardingIndex + 1));
-        return;
-      }
-
-      if (onboarding.step === "codex-login" && key.return) {
-        void handleOnboardingSubmit("");
         return;
       }
 
@@ -3273,7 +2835,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
     );
   }
 
-  if (uiTheme === "new" && !experimentalOpen) {
+  if ((uiTheme === "new" || uiTheme === "flow") && !experimentalOpen) {
     if (onboarding) {
       return (
         <Box flexDirection="column" paddingX={1} height={rootHeight} overflowY="hidden">
@@ -3301,6 +2863,16 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
 
     return (
       <ExperimentalShell
+        onHistoryPrevious={(currentInput) => {
+          const step = recallPrevious(promptHistoryRef.current, currentInput);
+          promptHistoryRef.current = step.history;
+          return step.input;
+        }}
+        onHistoryNext={() => {
+          const step = recallNext(promptHistoryRef.current);
+          promptHistoryRef.current = step.history;
+          return step.input;
+        }}
         provider={settings.provider}
         model={settings.model}
         workspace={settings.workspace}
@@ -3312,6 +2884,11 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         workState={workState}
         status={status}
         isRunning={isRunning}
+        streamProgress={streamProgress}
+        streamingText={streamingText}
+        contextUsage={contextUsage}
+        flow={uiTheme === "flow"}
+        transcriptEpoch={transcriptEpoch}
         ultramaxxRun={ultramaxxRun}
         telemetry={telemetry}
         sessionTelemetry={sessionTelemetry}
@@ -3323,10 +2900,20 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         bypassConfirmation={bypassConfirmation}
         updatePrompt={updatePrompt}
         updateBusy={updateBusy}
-        reauthActive={Boolean(reauthPrompt) || reauthBusy}
-        reauthBusy={reauthBusy}
         transcriptScrollOffset={transcriptScrollOffset}
         input={input}
+        configPanel={
+          configOpen ? (
+            <ConfigPanel
+              provider={settings.provider}
+              query={configQuery}
+              selectedIndex={configIndex}
+              width={terminalColumns}
+              height={Math.min(24, Math.max(10, terminalRows - 12))}
+              notice={configNotice}
+            />
+          ) : null
+        }
         paletteItems={paletteItems}
         paletteIndex={paletteIndex}
         rows={terminalRows}
@@ -3352,8 +2939,6 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         allowShell={settings.allowShell}
         agentMode={agentMode}
         subagents={settings.subagents}
-        thinkingMode={settings.thinkingMode}
-        reasoningEffort={settings.reasoningEffort}
         ollamaUrl={settings.ollamaUrl}
         telemetry={telemetry}
         sessionTelemetry={sessionTelemetry}
@@ -3402,7 +2987,6 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
             draftTokens={draftTokens}
             height={bodyHeight}
             scrollOffset={sessionScrollOffset}
-            advisors={advisorNotes}
             isActive={activeScrollPane === "session"}
             activeHost={activeHost}
           />
@@ -3421,7 +3005,6 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
               workState={workState}
               isApprovalWaiting={blockingPromptActive}
             />
-            <ReauthPromptPanel active={reauthPromptActive} busy={reauthBusy} />
             <UpdatePromptPanel prompt={updatePromptActive ? updatePrompt : null} busy={updatePromptActive && updateBusy} />
             <ApprovalPanel request={approvalPromptActive ? pendingApproval : null} bypassConfirmation={approvalPromptActive && bypassConfirmation} />
             <Composer
@@ -3444,216 +3027,6 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   );
 }
 
-async function loadAvailableModels(
-  provider: ModelProvider,
-  ollamaUrl: string,
-  setModelOptions: React.Dispatch<React.SetStateAction<string[]>>,
-  refresh = false
-): Promise<string[]> {
-  const cacheKey = modelCacheKey(provider, ollamaUrl);
-  const cachedModels = modelCache.get(cacheKey);
-  if (!refresh && cachedModels && cachedModels.expiresAt > Date.now()) {
-    rememberModelDescriptors(cachedModels.descriptors);
-    setModelOptions(cachedModels.models);
-    return cachedModels.models;
-  }
-
-  const client = createModelClient({
-    provider,
-    ollamaUrl
-  });
-  const descriptors = client.listModelDescriptors
-    ? await client.listModelDescriptors()
-    : (await client.listModels()).map((model) => ({ id: model, displayName: model }));
-  const models = descriptors.map((model) => model.id);
-  rememberModelDescriptors(descriptors);
-  modelCache.set(cacheKey, {
-    models,
-    descriptors,
-    expiresAt: Date.now() + modelCacheTtlMs
-  });
-  setModelOptions(models);
-  return models;
-}
-
-function modelCacheKey(provider: ModelProvider, ollamaUrl: string): string {
-  if (provider === "ollama") {
-    return `${provider}:${ollamaUrl}`;
-  }
-
-  if (provider === "gemini-wrapper") {
-    return [
-      provider,
-      readGeminiWrapperMode(),
-      readGeminiWrapperBaseUrl() || "python",
-      readGeminiWrapperPythonCommand(),
-      readGeminiWrapperCookiesJson()
-    ].join(":");
-  }
-
-  return `${provider}:default`;
-}
-
-function rememberModelDescriptors(descriptors: ModelDescriptor[]): void {
-  for (const descriptor of descriptors) {
-    modelDescriptorIndex.set(descriptor.id, descriptor);
-    if (descriptor.modelName) {
-      modelDescriptorIndex.set(descriptor.modelName, descriptor);
-    }
-    if (descriptor.displayName) {
-      modelDescriptorIndex.set(descriptor.displayName, descriptor);
-    }
-  }
-}
-
-async function loadKnownOrAvailableModels(
-  provider: ModelProvider,
-  ollamaUrl: string,
-  modelOptions: string[],
-  setModelOptions: React.Dispatch<React.SetStateAction<string[]>>,
-  appendLine: (line: LogLineInput) => void,
-  options: {
-    refresh?: boolean;
-  } = {}
-): Promise<string[] | null> {
-  try {
-    return !options.refresh && modelOptions.length > 0 ? modelOptions : await loadAvailableModels(provider, ollamaUrl, setModelOptions, options.refresh);
-  } catch (error) {
-    appendLine({
-      tone: "danger",
-      label: "models",
-      text: error instanceof Error ? error.message : String(error)
-    });
-    return null;
-  }
-}
-
-async function switchModel(
-  provider: ModelProvider,
-  nextModel: string,
-  ollamaUrl: string,
-  currentModel: string,
-  appendLine: (line: LogLineInput) => void,
-  setModelOptions: React.Dispatch<React.SetStateAction<string[]>>,
-  setSettings: React.Dispatch<React.SetStateAction<AgentRunnerOptions>>,
-  setTelemetry: React.Dispatch<React.SetStateAction<ModelTelemetry | null>>,
-  knownModels?: string[]
-): Promise<void> {
-  const installedModels =
-    knownModels ??
-    (await loadAvailableModels(provider, ollamaUrl, setModelOptions).catch((error: unknown) => {
-      appendLine({
-        tone: "danger",
-        label: "models",
-        text: error instanceof Error ? error.message : String(error)
-      });
-      return null;
-    }));
-
-  if (!installedModels) {
-    return;
-  }
-
-  if (!installedModels.includes(nextModel) && !canUseUnverifiedCloudModel(provider, nextModel)) {
-    appendLine({
-      tone: "warning",
-      label: "model",
-      text: `${nextModel} is not available for ${provider}.`,
-      detail:
-        installedModels.length > 0
-          ? `Use /models and pick one of:\n${formatModelOptions(installedModels, currentModel)}`
-      : provider === "ollama"
-        ? "No models installed on the selected host."
-        : provider === "gemini"
-          ? "Check GEMINI_API_KEY in PatchPilot config."
-            : provider === "gemini-wrapper"
-              ? "Check PATCHPILOT_GEMINI_WRAPPER_BASE_URL in PatchPilot config."
-            : provider === "openrouter"
-            ? "Check OPENROUTER_API_KEY in PatchPilot config."
-            : "Run codex login first."
-    });
-    return;
-  }
-
-  setTelemetry(null);
-  setSettings((currentSettings) => ({
-    ...currentSettings,
-    model: nextModel
-  }));
-  savePatchPilotEnvValues({
-    PATCHPILOT_PROVIDER: provider,
-    PATCHPILOT_MODEL: nextModel
-  });
-  appendLine({
-    tone: installedModels.includes(nextModel) ? "success" : "warning",
-    label: "model",
-    text: installedModels.includes(nextModel) ? `switched to ${formatModelLabel(nextModel)}` : `switched to unverified ${provider} model ${nextModel}`,
-    detail: installedModels.includes(nextModel) ? undefined : "The provider did not list this model in discovery. PatchPilot will try it and surface the provider error if it is unavailable."
-  });
-  if (provider === "openrouter" && isOpenRouterFreeModel(nextModel)) {
-    appendLine({
-      tone: "warning",
-      label: "openrouter",
-      text: "Free OpenRouter models are rate-limited.",
-      detail: "OpenRouter documents 20 requests/minute for :free models, plus daily limits depending on account credits."
-    });
-  }
-}
-
-async function resolveRunnableSettings(
-  settings: AgentRunnerOptions,
-  modelOptions: string[],
-  appendLine: (line: LogLineInput) => void,
-  setModelOptions: React.Dispatch<React.SetStateAction<string[]>>,
-  onProviderError?: (message: string) => void
-): Promise<AgentRunnerOptions | null> {
-  let installedModels: string[];
-  try {
-    installedModels = modelOptions.includes(settings.model)
-      ? modelOptions
-      : await loadAvailableModels(settings.provider, settings.ollamaUrl, setModelOptions);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    appendLine({
-      tone: "danger",
-      label: settings.provider,
-      text: message
-    });
-    onProviderError?.(message);
-    return null;
-  }
-
-  if (installedModels.includes(settings.model) || canUseUnverifiedCloudModel(settings.provider, settings.model)) {
-    if (!installedModels.includes(settings.model)) {
-      appendLine({
-        tone: "warning",
-        label: "model",
-        text: `using unverified ${settings.provider} model ${settings.model}`,
-        detail: "Model discovery did not list it; the next provider request will be the compatibility check."
-      });
-    }
-    return settings;
-  }
-
-  appendLine({
-    tone: "warning",
-    label: "model",
-    text: `${settings.model} is not available for ${settings.provider}.`,
-    detail:
-      installedModels.length > 0
-        ? `Pick an installed model first:\n${formatModelOptions(installedModels, settings.model)}`
-        : settings.provider === "ollama"
-          ? "No models installed on the selected host."
-          : settings.provider === "gemini"
-            ? "No Gemini models listed. Check GEMINI_API_KEY in PatchPilot config."
-            : settings.provider === "gemini-wrapper"
-              ? "No Gemini-Wrapper models listed. Check gemini_webapi install and PATCHPILOT_GEMINI_WRAPPER_COOKIES_JSON in PatchPilot config."
-            : settings.provider === "openrouter"
-              ? "No OpenRouter models listed. Check OPENROUTER_API_KEY in PatchPilot config."
-              : "Codex OAuth is not ready. Run codex login."
-  });
-  return null;
-}
 
 function buildCommandSuggestionItems(options: {
   input: string;
@@ -3677,9 +3050,9 @@ function buildCommandSuggestionItems(options: {
         category: command.category,
         label: baseCommand,
         detail: command.description,
-        hint: command.usage.includes("<") || command.usage.includes("[") ? "fill" : "run",
+        hint: needsArgument(command.usage) ? "fill" : "run",
         command: baseCommand,
-        execute: !command.usage.includes("<") && !command.usage.includes("[")
+        execute: !needsArgument(command.usage)
       };
     });
 
@@ -3742,16 +3115,11 @@ function getOnboardingOptionCount(onboarding: OnboardingState): number {
     case "disclaimer":
       return 0;
     case "entry":
-      return 7;
+      return 3;
     case "host":
       return onboarding.hosts.length + 1;
-    case "api-key-choice":
-      if (onboarding.provider === "gemini-wrapper") {
-        return onboarding.hasExistingKey ? 3 : 2;
-      }
-      return onboarding.hasExistingKey ? 2 : 1;
-    case "gemini-wrapper-model-mode":
-      return geminiWrapperShortcutModels.length + 1;
+    case "local-url":
+      return 0;
     case "model":
       return onboarding.models.length;
     case "preferences":
@@ -3761,10 +3129,10 @@ function getOnboardingOptionCount(onboarding: OnboardingState): number {
   }
 }
 
-function readEntrySelection(value: string, selectedIndex: number): "local" | "host" | "gemini" | "gemini-wrapper" | "openrouter" | "nvidia" | "codex" | null {
+function readEntrySelection(value: string, selectedIndex: number): "local" | "host" | "local-openai" | null {
   const normalizedValue = value.trim().toLowerCase();
   if (!normalizedValue) {
-    return ["local", "host", "gemini", "gemini-wrapper", "openrouter", "nvidia", "codex"][selectedIndex] as "local" | "host" | "gemini" | "gemini-wrapper" | "openrouter" | "nvidia" | "codex";
+    return ["local", "host", "local-openai"][selectedIndex] as "local" | "host" | "local-openai";
   }
 
   if (normalizedValue === "1" || normalizedValue === "local" || normalizedValue === "this device") {
@@ -3775,24 +3143,18 @@ function readEntrySelection(value: string, selectedIndex: number): "local" | "ho
     return "host";
   }
 
-  if (normalizedValue === "3" || normalizedValue === "gemini" || normalizedValue === "google") {
-    return "gemini";
+  const runtime = resolveRuntimeAlias(value);
+  if (runtime?.provider === "ollama") {
+    return "local";
   }
 
-  if (normalizedValue === "4" || normalizedValue === "gemini-wrapper" || normalizedValue === "geminiwrapper" || normalizedValue === "google-wrapper") {
-    return "gemini-wrapper";
-  }
-
-  if (normalizedValue === "5" || normalizedValue === "openrouter" || normalizedValue === "open-router") {
-    return "openrouter";
-  }
-
-  if (normalizedValue === "6" || normalizedValue === "nvidia" || normalizedValue === "nim") {
-    return "nvidia";
-  }
-
-  if (normalizedValue === "7" || normalizedValue === "codex") {
-    return "codex";
+  if (
+    normalizedValue === "3" ||
+    normalizedValue === "local-openai" ||
+    normalizedValue === "local server" ||
+    runtime?.provider === "local-openai"
+  ) {
+    return "local-openai";
   }
 
   return null;
@@ -3845,10 +3207,6 @@ function experimentalFlagCommandName(flag: ExperimentalFlag): string {
       : flag;
 }
 
-function experimentalFlagEnvName(flag: ExperimentalFlag): string {
-  return `PATCHPILOT_EXPERIMENTAL_${experimentalFlagCommandName(flag).replace(/-/g, "_").toUpperCase()}`;
-}
-
 function readIndexedSelection(value: string, selectedIndex: number): number | null {
   const normalizedValue = value.trim();
   if (!normalizedValue) {
@@ -3859,167 +3217,6 @@ function readIndexedSelection(value: string, selectedIndex: number): number | nu
   return Number.isInteger(parsedIndex) ? parsedIndex - 1 : null;
 }
 
-function selectModelFromInput(value: string, models: string[], selectedIndex?: number, options: { allowManual?: boolean } = {}): string | null {
-  const normalizedValue = normalizeModelAlias(value.trim());
-  if (!normalizedValue && selectedIndex !== undefined) {
-    return models[selectedIndex] ?? null;
-  }
-
-  if (!normalizedValue) {
-    return null;
-  }
-
-  const modelIndex = Number.parseInt(normalizedValue, 10);
-  if (Number.isInteger(modelIndex)) {
-    return models[modelIndex - 1] ?? null;
-  }
-
-  if (models.includes(normalizedValue)) {
-    return normalizedValue;
-  }
-
-  const labelMatch = models.find((model) => formatModelLabel(model).toLowerCase() === normalizedValue.toLowerCase());
-  if (labelMatch) {
-    return labelMatch;
-  }
-
-  const matches = selectableModels(normalizedValue, models, formatModelLabel);
-  if (matches.length === 1) {
-    return matches[0] ?? null;
-  }
-
-  return options.allowManual && isPlausibleCloudModelId(normalizedValue) ? normalizedValue : null;
-}
-
-function isPlausibleCloudModelId(value: string): boolean {
-  return /^[A-Za-z0-9][A-Za-z0-9._:/+-]*$/.test(value) && value.length >= 3;
-}
-
-function canUseUnverifiedCloudModel(provider: ModelProvider, model: string): boolean {
-  return provider !== "ollama" && isPlausibleCloudModelId(model);
-}
-
-function defaultModelForProvider(provider: ModelProvider, currentModel: string): string {
-  if (provider === "nvidia") {
-    return currentModel.includes("/") && !currentModel.startsWith("openrouter/") ? currentModel : defaultNvidiaModel;
-  }
-
-  if (provider === "openrouter") {
-    return currentModel.includes("/") ? currentModel : defaultOpenRouterModel;
-  }
-
-  if (provider === "gemini-wrapper") {
-    return geminiWrapperCuratedModels.includes(currentModel as typeof geminiWrapperCuratedModels[number]) || currentModel.startsWith("gemini-") || modelDescriptorIndex.has(currentModel) ? currentModel : defaultGeminiWrapperModel;
-  }
-
-  if (provider === "gemini") {
-    return currentModel.startsWith("gemini-") ? currentModel : defaultGeminiModel;
-  }
-
-  if (provider === "codex") {
-    return currentModel.includes("codex") || currentModel === "codex-mini-latest" ? currentModel : defaultCodexModel;
-  }
-
-  return currentModel.startsWith("gemini-") || currentModel.includes("codex") || currentModel.includes("/") ? defaultOllamaModel : currentModel;
-}
-
-function openApiKeyChoice(
-  provider: ApiKeyProvider,
-  setOnboarding: React.Dispatch<React.SetStateAction<OnboardingState | null>>,
-  setOnboardingIndex: React.Dispatch<React.SetStateAction<number>>
-): void {
-  setOnboarding({
-    step: "api-key-choice",
-    provider,
-    hasExistingKey: hasApiKey(provider)
-  });
-  setOnboardingIndex(0);
-}
-
-function needsApiKey(provider: ModelProvider): provider is ApiKeyProvider {
-  return provider === "gemini" || provider === "gemini-wrapper" || provider === "openrouter" || provider === "nvidia";
-}
-
-function hasApiKey(provider: ApiKeyProvider): boolean {
-  if (provider === "gemini") {
-    return Boolean(readGeminiApiKey());
-  }
-
-  if (provider === "gemini-wrapper") {
-    const baseUrl = readGeminiWrapperBaseUrl();
-    if (readGeminiWrapperMode() === "http") {
-      return !geminiWrapperRequiresApiKey(baseUrl) || Boolean(readGeminiWrapperApiKey());
-    }
-
-    return Boolean(readGeminiWrapperCookiesJson());
-  }
-
-  if (provider === "openrouter") {
-    return Boolean(readOpenRouterApiKey());
-  }
-
-  return Boolean(readNvidiaApiKey());
-}
-
-async function unloadUsedOllamaModels(usedModels: Set<string>): Promise<void> {
-  const entries = [...usedModels];
-  usedModels.clear();
-  await Promise.allSettled(
-    entries.map(async (entry) => {
-      const [url, model] = entry.split("|");
-      if (!url || !model) {
-        return;
-      }
-
-      await new OllamaClient(url).unloadModel(model);
-    })
-  );
-}
-
-async function ejectOllamaModels(options: {
-  target: string;
-  settings: AgentRunnerOptions;
-  activeHost: OllamaHostDetails | null;
-  usedModels: Set<string>;
-}): Promise<string[]> {
-  const target = options.target.trim();
-  const client = new OllamaClient(options.settings.ollamaUrl);
-  const models =
-    target === "all"
-      ? [
-          ...new Set([
-            ...[...options.usedModels]
-              .map((entry) => entry.split("|"))
-              .filter(([url]) => url === options.settings.ollamaUrl)
-              .map(([, model]) => model)
-              .filter((model): model is string => Boolean(model)),
-            ...(options.activeHost?.runningModels.map((model) => model.name) ?? [])
-          ])
-        ]
-      : [target || options.settings.model];
-
-  const ejected: string[] = [];
-  for (const model of models) {
-    await client.unloadModel(model).then(
-      () => {
-        ejected.push(model);
-        options.usedModels.delete(`${options.settings.ollamaUrl}|${model}`);
-      },
-      () => undefined
-    );
-  }
-
-  return ejected;
-}
-
-function isReasoningEffort(value: string | undefined): value is AgentRunnerOptions["reasoningEffort"] {
-  return value === "none" || value === "low" || value === "medium" || value === "high" || value === "xhigh" || value === "adaptive";
-}
-
-function upsertAdvisorNote(notes: AdvisorNote[], nextNote: AdvisorNote): AdvisorNote[] {
-  const nextNotes = notes.filter((note) => note.role !== nextNote.role);
-  return [...nextNotes, nextNote].slice(-2);
-}
 
 function UpdatePromptPanel(props: {
   prompt: UpdatePromptState | null;
@@ -4062,436 +3259,13 @@ function UpdatePromptPanel(props: {
   );
 }
 
-function ReauthPromptPanel(props: {
-  active: boolean;
-  busy: boolean;
-}): React.ReactElement | null {
-  if (!props.active) {
-    return null;
-  }
-
-  return (
-    <Box borderStyle="double" borderColor="yellow" flexDirection="column" paddingX={1}>
-      <Text color="yellow" bold>
-        GEMINI COOKIES EXPIRED
-      </Text>
-      {props.busy ? (
-        <>
-          <Text color="cyan">Refreshing Gemini browser cookies...</Text>
-          <Text color="gray">PatchPilot will retry the prompt automatically on success.</Text>
-        </>
-      ) : (
-        <>
-          <Text color="white">Refresh Gemini browser cookies and retry the last prompt?</Text>
-          <Text color="gray">Secret cookie values are imported from your signed-in browser and are not printed.</Text>
-          <Text>
-            <Text color="green" bold>
-              [y]
-            </Text>
-            <Text color="gray"> refresh & retry   </Text>
-            <Text color="red" bold>
-              [n / esc]
-            </Text>
-            <Text color="gray"> dismiss</Text>
-          </Text>
-        </>
-      )}
-    </Box>
-  );
-}
-
-function emptyToolTelemetry(): ToolTelemetry {
-  return {
-    total: 0,
-    succeeded: 0,
-    failed: 0,
-    approvals: 0,
-    denied: 0,
-    byTool: {}
-  };
-}
-
-function addToolTelemetry(current: ToolTelemetry, tool: AgentToolName | "subagent", ok: boolean): ToolTelemetry {
-  return {
-    ...current,
-    total: current.total + 1,
-    succeeded: current.succeeded + (ok ? 1 : 0),
-    failed: current.failed + (ok ? 0 : 1),
-    byTool: {
-      ...current.byTool,
-      [tool]: (current.byTool[tool] ?? 0) + 1
-    }
-  };
-}
-
-function addApprovalTelemetry(current: ToolTelemetry, decision: PermissionDecision): ToolTelemetry {
-  return {
-    ...current,
-    approvals: current.approvals + (decision === "deny" ? 0 : 1),
-    denied: current.denied + (decision === "deny" ? 1 : 0)
-  };
-}
-
-/**
- * Dense operational status dock for `/status` — restores the always-available
- * "what mode am I in and what can happen" view the legacy sidebar provided,
- * without spending fixed screen rows in the new shell's header.
- */
-function formatStatusDock(options: {
-  provider: ModelProvider;
-  model: string;
-  agentMode: AgentMode;
-  subagents: boolean;
-  thinkingMode: string;
-  reasoningEffort: ReasoningSetting | "adaptive";
-  workspace: string;
-  ollamaUrl: string;
-  sessionId: string;
-  activeHost: OllamaHostDetails | null;
-  advisorNotes: AdvisorNote[];
-  toolTelemetry: ToolTelemetry;
-  sessionTelemetry: SessionTelemetry;
-  telemetry: ModelTelemetry | null;
-  draftTokens: number;
-}): string {
-  const isOllama = options.provider === "ollama";
-  const hostLine = isOllama
-    ? `${options.activeHost?.host.deviceName ?? "ollama"}  ${options.activeHost?.host.url ?? options.ollamaUrl}`
-    : `${options.provider} api`;
-  const computeKind = isOllama ? describeComputeTarget(options.ollamaUrl).kind : "cloud";
-  const reasoning = isOllama
-    ? `think ${options.thinkingMode}`
-    : `think ${options.thinkingMode} · reasoning ${formatReasoningSupport(
-        options.provider,
-        options.model,
-        options.reasoningEffort === "adaptive" ? undefined : options.reasoningEffort,
-      )}`;
-  const toolCounters = Object.entries(options.toolTelemetry.byTool)
-    .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
-    .slice(0, 6)
-    .map(([tool, count]) => `${tool} ${count}`)
-    .join(" · ");
-  const advisors = options.advisorNotes.length > 0
-    ? options.advisorNotes.map((note) => `  ${note.role}: ${note.message.replace(/\s+/g, " ").slice(0, 88)}`).join("\n")
-    : "  none yet";
-  return [
-    `provider   ${options.provider}/${options.model}`,
-    `host       ${hostLine}  ·  compute ${computeKind}  ·  tools local`,
-    `mode       ${options.agentMode}  ·  write ${modePermissionLabel(options.agentMode, "write")}  ·  shell ${modePermissionLabel(options.agentMode, "shell")}`,
-    `model cfg  ${reasoning}  ·  subagents ${options.subagents ? "on" : "off"}`,
-    `workspace  ${options.workspace}`,
-    `session    ${options.sessionId}`,
-    `tokens     draft ${options.draftTokens} · last ${formatTokens(options.telemetry)} · session ${formatSessionTokens(options.sessionTelemetry)} · cost ${formatCost(options.sessionTelemetry.estimatedCostUsd)}`,
-    options.toolTelemetry.total > 0
-      ? `tools      ${options.toolTelemetry.total} calls · ${options.toolTelemetry.succeeded} ok · ${options.toolTelemetry.failed} failed · ${options.toolTelemetry.approvals} approved · ${options.toolTelemetry.denied} denied`
-      : "tools      none yet",
-    toolCounters ? `counters   ${toolCounters}` : "",
-    `advisors\n${advisors}`,
-  ]
-    .filter(Boolean)
-    .join("\n");
-}
-
-function formatUsageSummary(options: {
-  provider: ModelProvider;
-  model: string;
-  telemetry: ModelTelemetry | null;
-  sessionTelemetry: SessionTelemetry;
-  toolTelemetry: ToolTelemetry;
-}): string {
-  const session = options.sessionTelemetry;
-  const cost = formatCost(session.estimatedCostUsd);
-  const saved = estimateSessionSavings(options.provider, options.model, session);
-  const pricingNote = pricingSourceLabel(session.costSource, saved.source);
-  return [
-    `${session.requests} request${session.requests === 1 ? "" : "s"}`,
-    `${session.promptTokens} in`,
-    `${session.responseTokens} out`,
-    `${session.cachedPromptTokens} cached`,
-    `${options.toolTelemetry.total} tool call${options.toolTelemetry.total === 1 ? "" : "s"}`,
-    `cost ${cost}`,
-    saved.costUsd !== null ? `saved ${formatCost(saved.costUsd)}` : "saved -",
-    pricingNote
-  ].join(" · ");
-}
-
-function formatUsageDetail(options: {
-  provider: ModelProvider;
-  model: string;
-  sessionTelemetry: SessionTelemetry;
-  toolTelemetry: ToolTelemetry;
-}): string {
-  const session = options.sessionTelemetry;
-  const saved = estimateSessionSavings(options.provider, options.model, session);
-  const toolRows = Object.entries(options.toolTelemetry.byTool)
-    .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
-    .map(([tool, count]) => `${tool}: ${count}`)
-    .join("\n");
-  return [
-    `model: ${options.provider}/${options.model}`,
-    `tokens: ${session.promptTokens} input, ${session.responseTokens} output, ${session.cachedPromptTokens} cached, ${session.cacheWriteTokens} cache-write, ${session.totalTokens} total`,
-    `cost: ${formatCost(session.estimatedCostUsd)} (${session.costSource})`,
-    saved.costUsd !== null ? `lifetime saved this session: ${formatCost(saved.costUsd)} (${saved.source})` : "lifetime saved this session: -",
-    options.toolTelemetry.total > 0
-      ? `tools: ${options.toolTelemetry.total} total, ${options.toolTelemetry.succeeded} ok, ${options.toolTelemetry.failed} failed, ${options.toolTelemetry.approvals} approved, ${options.toolTelemetry.denied} denied`
-      : "tools: none yet",
-    toolRows ? `tool counters:\n${toolRows}` : "",
-    session.costSource === "fallback-pricing" || saved.source === "fallback-pricing"
-      ? "pricing note: exact model pricing was not available, so PatchPilot used a conservative general cloud-model estimate."
-      : session.costSource === "unknown"
-        ? "pricing note: exact pricing is unavailable for this provider/model."
-        : ""
-  ]
-    .filter(Boolean)
-    .join("\n");
-}
-
-function estimateSessionSavings(provider: ModelProvider, model: string, session: SessionTelemetry): {
-  costUsd: number | null;
-  source: "api-pricing" | "fallback-pricing" | "unknown";
-} {
-  return estimateComparableApiCost(provider, model, session.promptTokens, session.responseTokens, session.cachedPromptTokens);
-}
-
-function pricingSourceLabel(costSource: SessionTelemetry["costSource"], savedSource: "api-pricing" | "fallback-pricing" | "unknown"): string {
-  if (costSource === "fallback-pricing" || savedSource === "fallback-pricing") {
-    return "fallback pricing";
-  }
-  if (costSource === "unknown" && savedSource === "unknown") {
-    return "pricing unknown";
-  }
-  if (costSource === "free-route") {
-    return "free route";
-  }
-  if (costSource === "mixed") {
-    return "mixed pricing";
-  }
-  return "priced";
-}
-
-const bytesPerMiB = 1024 * 1024;
-const geminiAppsPromptFileLimit = 10;
-const geminiNonVideoFileLimitBytes = 100 * bytesPerMiB;
-const geminiApiPdfLimitBytes = 50 * bytesPerMiB;
-const geminiPdfCautionBytes = 20 * bytesPerMiB;
-const geminiInlineRequestWarnBytes = 25 * bytesPerMiB;
-
-function attachmentLimitWarning(paths: string[], provider: ModelProvider): string | null {
-  if (paths.length === 0 || (provider !== "gemini" && provider !== "gemini-wrapper")) {
-    return null;
-  }
-
-  const files = paths.map((filePath) => ({
-    path: filePath,
-    type: attachmentTypeForPath(filePath),
-    size: readFileSize(filePath)
-  }));
-  const knownTotalBytes = files.reduce((total, file) => total + (file.size ?? 0), 0);
-  const tooLargePdf = files.find((file) => file.type === "PDF" && typeof file.size === "number" && file.size > geminiApiPdfLimitBytes);
-  const largePdf = files.find((file) => file.type === "PDF" && typeof file.size === "number" && file.size > geminiPdfCautionBytes);
-  const tooLargeFile = files.find((file) => typeof file.size === "number" && file.size > geminiNonVideoFileLimitBytes);
-
-  if (paths.length > geminiAppsPromptFileLimit) {
-    return `Attached ${paths.length} files; Gemini web-style uploads are capped around ${geminiAppsPromptFileLimit} files per prompt. Split this into smaller batches.`;
-  }
-
-  if (tooLargePdf) {
-    return `${attachmentTypeForPath(tooLargePdf.path)} file ${attachmentBasename(tooLargePdf.path)} is over 50 MiB; Gemini API PDF input can reject it.`;
-  }
-
-  if (tooLargeFile) {
-    return `${attachmentTypeForPath(tooLargeFile.path)} file ${attachmentBasename(tooLargeFile.path)} is over 100 MiB; Gemini file prompts may reject it.`;
-  }
-
-  if (largePdf) {
-    return `${attachmentTypeForPath(largePdf.path)} file ${attachmentBasename(largePdf.path)} is over 20 MiB; Gemini PDF analysis can be slow or incomplete.`;
-  }
-
-  if (knownTotalBytes > geminiInlineRequestWarnBytes) {
-    return `Attached files total about ${formatMiB(knownTotalBytes)}; Gemini analysis is more reliable in smaller batches.`;
-  }
-
-  if (paths.length > 3) {
-    return `Attached ${paths.length} files; PatchPilot will reference them, but Gemini/Gemini-Wrapper is more reliable if you split large batches.`;
-  }
-
-  return null;
-}
-
-function readFileSize(filePath: string): number | null {
-  try {
-    const stats = statSync(filePath);
-    return stats.isFile() ? stats.size : null;
-  } catch {
-    return null;
-  }
-}
-
-function formatMiB(bytes: number): string {
-  return `${Math.round((bytes / bytesPerMiB) * 10) / 10} MiB`;
-}
-
-function formatAttachedDocuments(paths: string[]): string {
-  const counts = new Map<string, number>();
-  return paths
-    .map((filePath) => {
-      const kind = attachmentKindForPath(filePath) ?? "file";
-      const type = attachmentTypeForPath(filePath);
-      const index = (counts.get(type) ?? 0) + 1;
-      counts.set(type, index);
-      return `- ${attachmentLabel(kind, index, filePath)} path=${JSON.stringify(filePath)}`;
-    })
-    .join("\n");
-}
-
-/** Last path segment, splitting on both POSIX and Windows separators. */
-function attachmentBasename(filePath: string): string {
-  return filePath.split(/[\\/]/).filter(Boolean).at(-1) ?? filePath;
-}
-
-function formatAttachmentDigestPath(filePath: string): string {
-  return JSON.stringify(filePath.split(/[\\/]/).filter(Boolean).at(-1) ?? filePath);
-}
-
-function randomLegacyVerbIndex(): number {
-  return Math.floor(Math.random() * 1_000_000);
-}
-
-function eventToLine(event: AgentEvent): LogLineInput {
-  switch (event.type) {
-    case "status":
-      return {
-        kind: "status",
-        tone: "muted",
-        label: event.workState,
-        text: event.message,
-        workState: event.workState
-      };
-    case "assistant":
-      return {
-        kind: "assistant",
-        tone: "accent",
-        label: "pilot",
-        text: event.message,
-        workState: event.workState
-      };
-    case "subagent":
-      return {
-        kind: "assistant",
-        tone: "accent",
-        label: event.role,
-        text: "advisor brief updated",
-        detail: event.message,
-        workState: event.workState
-      };
-    case "tool":
-      return {
-        kind: event.name === "git_diff" ? "diff" : "tool",
-        tone: event.ok ? "success" : "warning",
-        label: event.name,
-        text: event.summary,
-        detail: event.ok ? previewToolContent(event.content) : event.content,
-        workState: event.workState,
-        tool: event.name,
-        toolCallId: event.toolCallId,
-        category: event.category,
-        preview: event.preview
-      };
-    case "todo":
-      return {
-        kind: "status",
-        tone: "muted",
-        label: "todo",
-        text: event.summary,
-        workState: event.workState
-      };
-    case "approval":
-      return {
-        kind: "approval",
-        tone: event.decision === "deny" ? "warning" : "success",
-        label: "approval",
-        text: `${event.request.tool} ${event.decision.replace("_", " ")}`,
-        detail: event.request.preview,
-        workState: event.workState,
-        tool: event.request.tool,
-        preview: event.request.preview
-      };
-    case "final":
-      return {
-        kind: "final",
-        tone: "success",
-        label: "final",
-        text: event.message,
-        workState: event.workState
-      };
-    case "error":
-      return {
-        kind: "error",
-        tone: "danger",
-        label: "error",
-        text: event.message,
-        workState: event.workState
-      };
-    case "metrics":
-      return {
-        kind: "status",
-        tone: "muted",
-        label: "metrics",
-        text: formatTokens(event.metrics),
-        workState: event.workState
-      };
-  }
-}
-
-function previewToolContent(content: string | undefined): string | undefined {
-  const value = content?.trim();
-  if (!value) {
-    return undefined;
-  }
-
-  const lines = value.split(/\r?\n/);
-  const preview = lines.slice(0, 6).join("\n");
-  const suffix = lines.length > 6 ? `\n...[${lines.length - 6} more lines]` : "";
-  return `${preview}${suffix}`;
-}
-
-function eventToStatus(event: AgentEvent): string {
-  if (event.type === "status") {
-    return event.message;
-  }
-
-  if (event.type === "tool") {
-    return `${event.name}: ${event.summary}`;
-  }
-
-  if (event.type === "todo") {
-    return event.summary;
-  }
-
-  if (event.type === "subagent") {
-    return `${event.role} subagent`;
-  }
-
-  if (event.type === "approval") {
-    return `${event.request.tool}: ${event.decision.replace("_", " ")}`;
-  }
-
-  return event.type;
-}
-
-function workStateForApprovalTool(tool: AgentToolName): AgentWorkState {
-  const category = getToolSpec(tool).category;
-  if (category === "write") {
-    return "editing";
-  }
-  if (category === "shell" || category === "test") {
-    return "verifying";
-  }
-  if (category === "read" || category === "search" || category === "document" || category === "git") {
-    return "reading";
-  }
-  return "inspecting";
-}
+/** Context-window occupancy for the meter. */
+export type ContextUsageView = {
+  usedTokens: number;
+  limitTokens: number;
+  ratio: number;
+  pressure: "ok" | "warn" | "high" | "critical";
+};
 
 function defaultLogKind(line: LogLineInput): LogLine["kind"] {
   if (line.kind) {
@@ -4513,6 +3287,19 @@ function defaultLogKind(line: LogLineInput): LogLine["kind"] {
   return "status";
 }
 
+function workStateForApprovalTool(tool: AgentToolName): AgentWorkState {
+  const category = getToolSpec(tool).category;
+  if (category === "write") {
+    return "editing";
+  }
+  if (category === "shell" || category === "test") {
+    return "verifying";
+  }
+  if (category === "read" || category === "search" || category === "document" || category === "git") {
+    return "reading";
+  }
+  return "inspecting";
+}
 
 function formatHostOptions(hosts: OllamaHost[]): string {
   return hosts
@@ -4521,29 +3308,4 @@ function formatHostOptions(hosts: OllamaHost[]): string {
       return `${index + 1}. ${host.deviceName}  ${host.kind}  ${host.url}${version}`;
     })
     .join("\n");
-}
-
-function formatModelOptions(models: string[], currentModel: string): string {
-  return models
-    .map((model, index) => {
-      const currentMarker = model === currentModel ? "  current" : "";
-      return `${index + 1}. ${formatModelLabel(model)}${formatModelDescription(model)}${currentMarker}`;
-    })
-    .join("\n");
-}
-
-function formatModelLabel(model: string): string {
-  const descriptor = modelDescriptorIndex.get(model);
-  const label = descriptor?.displayName || descriptor?.modelName || model;
-  return label === model ? model : `${label} (${model})`;
-}
-
-function formatModelDescription(model: string): string {
-  const descriptor = modelDescriptorIndex.get(model);
-  if (!descriptor?.description) {
-    return "";
-  }
-
-  const legacySuffix = descriptor.legacy ? " legacy" : "";
-  return `  ${descriptor.description}${legacySuffix}`;
 }

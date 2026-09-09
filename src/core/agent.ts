@@ -2,10 +2,22 @@ import { formatParseError, parseAgentResponse } from "./json.js";
 import path from "node:path";
 import { platform, release, type } from "node:os";
 import { createModelClient } from "./modelClient.js";
-import { resolveProviderReasoning } from "./reasoning.js";
 import type { SessionStore } from "./session.js";
-import { formatSubagentContext, runSubagentAdvisors } from "./subagents.js";
-import { MAX_TOOL_CALLS_PER_RESPONSE, type AgentEvent, type AgentTodoItem, type AgentToolName, type AgentWorkState, type ApprovalRequest, type ChatMessage, type ModelChatResult, type ModelClient, type ModelProvider, type PermissionDecision, type ProviderReasoningEffort, type ToolCategory, type ToolResult } from "./types.js";
+import { MAX_TOOL_CALLS_PER_RESPONSE, type AgentEvent, type AgentEventToolName, type AgentTodoItem, type AgentToolName, type AgentWorkState, type ApprovalRequest, type ChatMessage, type ModelChatResult, type ModelClient, type ModelProvider, type PermissionDecision, type ThinkingSetting, type ProviderTool, type RawToolCall, type AgentToolCall, type ToolCategory, type ToolResult } from "./types.js";
+import { StreamTimer } from "./stream.js";
+import { probeModelCapabilities } from "./capability.js";
+import { stripTemplateTokens } from "./localOpenAI.js";
+import { formatEnvelope, runSubagent, subagentToolNames, type SubagentEnvelope, type SubagentRequest } from "./subagentRunner.js";
+import { measureContext, pruneToolResults } from "./contextWindow.js";
+import {
+  extractFencedToolCalls,
+  extractStringifiedToolCalls,
+  looksLikeAnnouncedAction,
+  looksLikePermissionRequest,
+  repairToolCall,
+  ToolCallLoopBreaker
+} from "./toolRepair.js";
+import { toolsForMode, toProviderTools, toWorkspaceCall, type ToolMode, type ToolName } from "./toolSchema.js";
 import { estimateTokens } from "./tokenAccounting.js";
 import { getToolSpec, WorkspaceTools } from "./workspace.js";
 
@@ -18,9 +30,16 @@ export type AgentRunnerOptions = {
   allowWrite: boolean;
   allowShell: boolean;
   maxSteps: number;
-  thinkingMode: "fixed" | "adaptive";
-  reasoningEffort: ProviderReasoningEffort | "adaptive";
+  /**
+   * How the step budget is chosen. Adaptive unless a caller insists: the model
+   * is a better judge of how many steps a task needs than a flag is.
+   */
+  thinkingMode?: "fixed" | "adaptive";
+  /** Left to the model unless explicitly forced. */
+  thinking?: ThinkingSetting;
   subagents: boolean;
+  /** Optional structural allowlist, used to keep child agents narrow. */
+  toolNames?: ToolName[];
   resumeContext?: string;
   allowExternalFileAnalysis?: boolean;
   allowShellMetacharacters?: boolean;
@@ -28,6 +47,8 @@ export type AgentRunnerOptions = {
   ultramaxx?: boolean;
   signal?: AbortSignal;
   shouldStopAfterStep?: () => boolean;
+  /** Test seam: supply a model client instead of building one from provider. */
+  client?: ModelClient;
   sessionStore?: SessionStore;
   approvalHandler?: (request: ApprovalRequest) => Promise<PermissionDecision>;
 };
@@ -39,11 +60,13 @@ export class AgentRunner {
 
   constructor(options: AgentRunnerOptions) {
     this.options = options;
-    this.client = createModelClient({
-      provider: options.provider,
-      ollamaUrl: options.ollamaUrl,
-      workspace: options.workspace
-    });
+    this.client =
+      options.client ??
+      createModelClient({
+        provider: options.provider,
+        ollamaUrl: options.ollamaUrl,
+        workspace: options.workspace
+      });
     const documentAnalyzer = this.client.analyzeFile && (this.client.supportsFileAnalysis?.() ?? true)
       ? async (request: { path: string; prompt: string; signal?: AbortSignal }) => {
           const result = await this.client.analyzeFile?.({
@@ -80,17 +103,44 @@ export class AgentRunner {
     });
     const workspaceSummary = await buildWorkspaceSummary(this.tools.root);
     const ultramaxx = Boolean(this.options.ultramaxx);
-    let maxSteps = resolveMaxSteps(task, this.options.maxSteps, this.options.thinkingMode, ultramaxx);
-    const reasoningEffort = resolveProviderReasoning({
+    let maxSteps = resolveMaxSteps(task, this.options.maxSteps, this.options.thinkingMode ?? "adaptive", ultramaxx);
+    const thinking = this.options.thinking ?? "auto";
+
+    // Ask the model once whether it can drive native tool calls. Advertising
+    // tools to a model that ignores them is worse than not advertising: it
+    // answers in prose, the loop sees no calls, and the run stalls looking
+    // like a refusal.
+    const capabilities = await probeModelCapabilities({
+      client: this.client,
       provider: this.options.provider,
       model: this.options.model,
-      requested: ultramaxx ? "xhigh" : resolveReasoningEffort(task, this.options.reasoningEffort)
+      signal: this.options.signal
     });
+    const mode = resolveToolMode(this.options);
+    const subagentsEnabled = shouldEnableSubagents(task, Boolean(this.options.subagents));
+    const allowedToolNames = this.options.toolNames ? new Set(this.options.toolNames) : null;
+    const availableTools = toolsForMode(mode, { subagents: subagentsEnabled })
+      .filter((tool) => !allowedToolNames || allowedToolNames.has(tool.name));
+    const providerTools = capabilities.nativeToolCalls ? toProviderTools(availableTools) : undefined;
+    const loopBreaker = new ToolCallLoopBreaker();
+    // The window the runtime actually loaded, which is not the num_ctx the
+    // harness sends and not necessarily what the model advertises.
+    const contextLimitTokens = await this.resolveContextLimit();
+    let sawPermissionRequest = false;
+    let pendingSubagents: SubagentRequest[] = [];
+    const completedTools: string[] = [];
+
+    yield {
+      type: "status",
+      message: capabilities.nativeToolCalls
+        ? `native tool calling: ${availableTools.length} tools in ${mode} mode`
+        : `tool protocol fallback: ${capabilities.detail}`,
+      workState: "planning"
+    };
     let stepIndex = 0;
     let repairs = 0;
     let malformedResponses = 0;
     let lastReadFilePath = "";
-    let subagentContext = "";
     let todos: AgentTodoItem[] = [];
     const expectsTodos = shouldExpectTodos(task, ultramaxx);
     let didNudgeForTodos = false;
@@ -99,47 +149,23 @@ export class AgentRunner {
     let hadWrite = false;
     let verifiedSinceLastWrite = true;
     let emptyToolBatches = 0;
+    let repeatedToolBatches = 0;
     const recentToolSignatures: string[] = [];
 
     if (ultramaxx) {
       yield {
         type: "status",
-        message: "ultramaxx backend escalation active: xhigh reasoning, mandatory todos, expanded verification guard",
+        message: "ultramaxx backend escalation active: thinking enabled, mandatory todos, expanded verification guard",
         workState: "planning"
       };
-    }
-    if (this.options.subagents && shouldUseSubagents(task)) {
-      yield {
-        type: "status",
-        message: "consulting planner and reviewer subagents",
-        workState: "planning"
-      };
-
-      const advice = await runSubagentAdvisors({
-        client: this.client,
-        model: this.options.model,
-        task,
-        workspaceRoot: this.tools.root,
-        workspaceSummary
-      });
-      subagentContext = formatSubagentContext(advice);
-
-      for (const item of advice) {
-        yield {
-          type: "subagent",
-          role: item.role,
-          message: item.message,
-          metrics: item.telemetry,
-          workState: "planning"
-        };
-      }
     }
 
     const messages: ChatMessage[] = [
       {
           role: "system",
-        content: buildSystemPrompt(this.tools.root, subagentContext, workspaceSummary, this.options.resumeContext ?? "", {
-          mode: this.options.mode ?? (this.options.allowWrite || this.options.allowShell ? "bypass" : "plan"),
+        content: buildSystemPrompt(this.tools.root, "", workspaceSummary, this.options.resumeContext ?? "", {
+          provider: this.options.provider,
+          mode,
           allowWrite: this.options.allowWrite,
           allowShell: this.options.allowShell,
           hasApprovalHandler: Boolean(this.options.approvalHandler)
@@ -148,7 +174,8 @@ export class AgentRunner {
           memoryEnabled: Boolean(this.options.memoryEnabled),
           allowShellMetacharacters: Boolean(this.options.allowShellMetacharacters),
           ultramaxx,
-          expectsTodos
+          expectsTodos,
+          nativeTools: capabilities.nativeToolCalls
         })
       },
       {
@@ -168,11 +195,6 @@ export class AgentRunner {
       }
 
       const requestWorkState = stepIndex === 0 ? "planning" : "inspecting";
-      yield {
-        type: "status",
-        message: `thinking step ${stepIndex + 1}/${maxSteps}${this.options.thinkingMode === "adaptive" ? " adaptive" : ""}`,
-        workState: requestWorkState
-      };
       await this.options.sessionStore?.append({
         type: "model.request",
         runId,
@@ -188,7 +210,8 @@ export class AgentRunner {
         const chatAttempts = this.chatWithRetry({
           model: this.options.model,
           messages,
-          reasoningEffort,
+          thinking,
+          tools: providerTools,
           requestWorkState,
           attemptLabel: `step ${stepIndex + 1}`
         });
@@ -201,6 +224,15 @@ export class AgentRunner {
           yield nextAttempt.value;
         }
       } catch (error) {
+        // A stop the user asked for is a normal outcome, not a failure. It
+        // surfaces here as a rejected fetch, and rethrowing it turns a
+        // deliberate cancel into an error the UI has to special-case — and
+        // leaves the run looking alive if that special case is ever missed.
+        if (isAbortError(error, this.options.signal)) {
+          yield { type: "final", message: "Stopped.", workState: "done" };
+          return;
+        }
+
         const message = error instanceof Error ? error.message : String(error);
         await this.options.sessionStore?.append({
           type: "run.failed",
@@ -226,6 +258,90 @@ export class AgentRunner {
       }
 
       let parsedResponse;
+
+      // Native tool calls, when the runtime produced any, bypass the envelope
+      // entirely. L2 also covers the measured case where a model prints a
+      // well-formed call inside a fence and makes no real call at all.
+      const nativeCalls =
+        modelResponse.toolCalls && modelResponse.toolCalls.length > 0
+          ? modelResponse.toolCalls
+          : providerTools
+            ? // L0 first: a serving-layer parser failure puts a correct call
+              // into content as a string, which looks exactly like a refusal.
+              firstNonEmpty(extractStringifiedToolCalls(rawResponse), extractFencedToolCalls(rawResponse))
+            : [];
+
+      if (nativeCalls.length > 0) {
+        const resolved = this.resolveNativeToolCalls(nativeCalls, loopBreaker);
+        if (resolved.problems.length > 0 && resolved.toolCalls.length === 0) {
+          // Every call was unusable: hand the guidance back and let the model
+          // correct within the same turn rather than ending the run.
+          // Two truncations of the same kind mean the model cannot fit this
+          // call in its budget; more attempts only cost minutes each.
+          repairs += resolved.truncatedCalls > 0 ? 2 : 1;
+          for (const problem of resolved.problems) {
+            yield { type: "status", message: problem, workState: "planning" };
+          }
+          messages.push({ role: "assistant", content: clipPromptValue(rawResponse, 2000) });
+          messages.push({ role: "user", content: resolved.problems.join("\n") });
+          if (repairs >= 3) {
+            yield {
+              type: "final",
+              message:
+                resolved.truncatedCalls > 0
+                  ? `The model kept running out of output tokens mid-call. Raise PATCHPILOT_NUM_PREDICT (currently the generation budget), or ask for a smaller change — writing a whole large file in one call does not fit.`
+                  : `The model could not produce a usable tool call: ${resolved.problems[0] ?? "unknown"}`,
+              workState: "error"
+            };
+            return;
+          }
+          continue;
+        }
+
+        for (const note of resolved.notes) {
+          yield { type: "status", message: note, workState: "planning" };
+        }
+
+        pendingSubagents = resolved.subagents;
+        parsedResponse = {
+          action: "tools" as const,
+          // The step message is narration, not an answer; it must never
+          // survive to become the final message shown to the user.
+          message: rawResponse.trim(),
+          tool_calls: resolved.toolCalls
+        };
+
+        // A turn that only delegated still did work, so it must not trip the
+        // empty-batch guard.
+        if (resolved.toolCalls.length === 0 && pendingSubagents.length > 0) {
+          parsedResponse = { ...parsedResponse, tool_calls: [] };
+        }
+      } else if (providerTools) {
+        // Capable model, no calls, no fence: it answered. Guard against a
+        // permission request made despite an explicit act-don't-ask prompt.
+        // An answer that announces the next step without taking it is the
+        // same failure as asking permission: the model decided and stopped.
+        if (!sawPermissionRequest && (looksLikePermissionRequest(rawResponse) || looksLikeAnnouncedAction(rawResponse))) {
+          sawPermissionRequest = true;
+          yield {
+            type: "status",
+            message: "model described the next step instead of taking it; re-prompting to act",
+            workState: "planning"
+          };
+          messages.push({ role: "assistant", content: clipPromptValue(rawResponse, 2000) });
+          messages.push({
+            role: "user",
+            content:
+              "You described what you would do but did not do it. Carry out that exact step now by calling the tool, then report the result. Do not ask, and do not describe it again."
+          });
+          continue;
+        }
+
+        // A model coming off the legacy protocol sometimes narrates an
+        // envelope as prose. Presenting that raw as the answer looks like a
+        // crash, so it is stripped down to its message.
+        parsedResponse = { action: "final" as const, message: readFinalMessage(rawResponse) };
+      } else {
       try {
         parsedResponse = parseAgentResponse(rawResponse);
       } catch (error) {
@@ -258,7 +374,7 @@ export class AgentRunner {
           if (repairs >= 3 || malformedResponses >= 3) {
             yield {
               type: "final",
-              message: "The model kept returning invalid tool protocol. Try a stronger coding model or switch advisors off for this task.",
+              message: "The model kept returning invalid tool protocol. Try a stronger coding model or switch child agents off for this task.",
               workState: "error"
             };
             await this.options.sessionStore?.append({
@@ -271,6 +387,7 @@ export class AgentRunner {
           }
           continue;
         }
+      }
       }
 
       repairs = 0;
@@ -316,25 +433,30 @@ export class AgentRunner {
           continue;
         }
 
+        // A model that stops without saying anything still did work; report
+        // that rather than showing the user an empty answer.
+        const finalMessage = parsedResponse.message.trim() || describeCompletedWork(completedTools);
         yield {
           type: "final",
-          message: parsedResponse.message,
+          message: finalMessage,
           workState: "done"
         };
         await this.options.sessionStore?.append({
           type: "run.completed",
           runId,
-          message: parsedResponse.message,
+          message: finalMessage,
           completedAt: new Date().toISOString()
         });
         return;
       }
 
-      yield {
-        type: "assistant",
-        message: parsedResponse.message,
-        workState: "planning"
-      };
+      if (isMeaningfulAssistantMessage(parsedResponse.message)) {
+        yield {
+          type: "assistant",
+          message: parsedResponse.message,
+          workState: "planning"
+        };
+      }
 
       const toolCalls = parsedResponse.tool_calls.slice(0, MAX_TOOL_CALLS_PER_RESPONSE).map(normalizeToolCall);
       if (toolCalls.length === 0 && looksLikeClarification(parsedResponse.message)) {
@@ -401,8 +523,19 @@ export class AgentRunner {
         continue;
       }
 
-      const repeatedCall = findRepeatedToolCall(workspaceCalls, recentToolSignatures);
+      // Todo is a real tool call too. Excluding it here let a weak model spend
+      // every remaining turn submitting the same unchanged checklist.
+      const repeatedCall = findRepeatedToolCall(toolCalls, recentToolSignatures);
       if (repeatedCall) {
+        repeatedToolBatches += 1;
+        if (repeatedToolBatches >= 2) {
+          yield {
+            type: "final",
+            message: `Stopped because the model repeated ${repeatedCall.name} without making progress.`,
+            workState: "error"
+          };
+          return;
+        }
         messages.push({
           role: "assistant",
           content: JSON.stringify({
@@ -413,11 +546,15 @@ export class AgentRunner {
         });
         messages.push({
           role: "user",
-          content: `You already ran ${repeatedCall.name} with the same arguments repeatedly. Act on the previous result or return final instead of repeating it.`
+          content:
+            repeatedCall.name === "update_todo" && subagentsEnabled
+              ? "The todo list is unchanged. The user explicitly requested delegation: call the task tool now, or perform the first concrete read. Do not update the todo list again."
+              : `You already ran ${repeatedCall.name} with the same arguments repeatedly. Act on the previous result or return final instead of repeating it.`
         });
         stepIndex += 1;
         continue;
       }
+      repeatedToolBatches = 0;
 
       const todoResults: Awaited<ReturnType<typeof executeToolSafely>>[] = [];
       for (const todoCall of todoCalls) {
@@ -452,6 +589,57 @@ export class AgentRunner {
         });
       }
 
+      // Children run one at a time: each starts with a cold prefix cache, and
+      // two at once on a single machine evict the parent's cache as well.
+      const subagentResults: Array<Omit<Awaited<ReturnType<typeof executeToolSafely>>, "tool"> & { tool: AgentEventToolName }> = [];
+      for (const request of pendingSubagents) {
+        yield {
+          type: "status",
+          message: `delegating to ${request.type} subagent: ${request.description}`,
+          workState: "planning"
+        };
+
+        const envelope = await this.runChildAgent(request);
+        yield {
+          type: "tool",
+          name: "subagent",
+          summary: `${request.type} subagent ${envelope.status}: ${request.description}`,
+          content: formatEnvelope(envelope),
+          ok: envelope.status === "ok",
+          workState: "planning",
+          category: "state",
+          metadata: {
+            subagent: request.type,
+            transcript: envelope.transcript,
+            steps: envelope.steps,
+            toolCalls: envelope.toolCalls,
+            durationMs: envelope.durationMs
+          }
+        };
+
+        subagentResults.push({
+          tool: "subagent",
+          ok: envelope.status === "ok",
+          summary: `${request.type} subagent ${envelope.status}: ${request.description}`,
+          content: formatEnvelope(envelope),
+          toolCallId: createToolCallId("subagent"),
+          category: "state",
+          preview: undefined,
+          approval: undefined,
+          metadata: { subagent: request.type, transcript: envelope.transcript },
+          workState: "planning"
+        });
+      }
+      pendingSubagents = [];
+
+      // A child can be the long-running part of a mixed native-tool batch. If
+      // the user stops it, sibling writes from that already-issued batch must
+      // not continue afterwards.
+      if (this.options.signal?.aborted) {
+        yield { type: "final", message: "Stopped.", workState: "done" };
+        return;
+      }
+
       const toolCallRecords = workspaceCalls.map((toolCall) => ({
         id: createToolCallId(toolCall.name),
         call: toolCall,
@@ -471,10 +659,24 @@ export class AgentRunner {
       }
       const toolResults = [
         ...todoResults,
+        ...subagentResults,
         ...(await executeToolCallsWithReadParallelism(this.tools, toolCallRecords))
       ];
 
       for (const toolResult of toolResults) {
+        // L5 counts only failures: a call that worked should never be refused
+        // later just because it was repeated.
+        if (!toolResult.ok) {
+          const failedCall = workspaceCallById.get(toolResult.toolCallId);
+          if (failedCall) {
+            loopBreaker.recordFailure(failedCall.name as never, failedCall.arguments);
+          }
+        }
+
+        if (toolResult.ok) {
+          completedTools.push(toolResult.tool);
+        }
+
         if (isWriteToolResult(toolResult)) {
           hadWrite = true;
           verifiedSinceLastWrite = false;
@@ -543,7 +745,33 @@ export class AgentRunner {
         role: "user",
         content: formatToolResultsForPrompt(toolResults)
       });
-      compactTranscript(messages);
+      if (contextLimitTokens) {
+        const usage = measureContext(messages, {
+          limitTokens: contextLimitTokens,
+          reserveTokens: Math.min(2048, Math.floor(contextLimitTokens / 8))
+        });
+        yield {
+          type: "context",
+          usedTokens: usage.usedTokens,
+          limitTokens: usage.limitTokens,
+          ratio: usage.ratio,
+          pressure: usage.pressure,
+          workState: "verifying"
+        };
+      }
+
+      // Prune old tool output before anything else: it is what actually
+      // floods a small window, and it is the cheapest thing to discard.
+      const pruned = pruneToolResults(messages);
+      if (pruned.prunedCount > 0) {
+        messages.length = 0;
+        messages.push(...pruned.messages);
+        yield {
+          type: "status",
+          message: `pruned ${pruned.prunedCount} older tool result${pruned.prunedCount === 1 ? "" : "s"} (~${pruned.prunedTokens} tokens)`,
+          workState: "verifying"
+        };
+      }
 
       stepIndex += 1;
       if (this.options.shouldStopAfterStep?.()) {
@@ -560,7 +788,7 @@ export class AgentRunner {
         });
         return;
       }
-      if (this.options.thinkingMode === "adaptive" && stepIndex >= maxSteps && shouldExtendAdaptiveRun(task, toolResults, maxSteps, ultramaxx ? 60 : 32)) {
+      if ((this.options.thinkingMode ?? "adaptive") === "adaptive" && stepIndex >= maxSteps && shouldExtendAdaptiveRun(task, toolResults, maxSteps, ultramaxx ? 60 : 32)) {
         const nextMaxSteps = Math.min(ultramaxx ? 60 : 32, maxSteps + 4);
         if (nextMaxSteps > maxSteps) {
           maxSteps = nextMaxSteps;
@@ -586,10 +814,118 @@ export class AgentRunner {
     });
   }
 
+  /**
+   * Asks the runtime what window the model is really loaded with. Returns null
+   * when the runtime does not say, in which case no meter is shown — a wrong
+   * number is worse than none.
+   */
+  private async resolveContextLimit(): Promise<number | null> {
+    try {
+      const descriptors = await this.client.listModelDescriptors?.();
+      const match = descriptors?.find((descriptor) => descriptor.id === this.options.model);
+      if (match?.capacity && Number.isFinite(match.capacity)) {
+        return match.capacity;
+      }
+    } catch {
+      // Discovery is best-effort; a run must not fail because of a meter.
+    }
+
+    return null;
+  }
+
+  /**
+   * Runs the repair ladder over one batch of native calls. Calls that survive
+   * are executed; calls that do not come back as guidance the model can act on
+   * in the same turn. A batch is never abandoned because one call was bad.
+   */
+  private resolveNativeToolCalls(
+    rawCalls: RawToolCall[],
+    loopBreaker: ToolCallLoopBreaker
+  ): { toolCalls: AgentToolCall[]; subagents: SubagentRequest[]; problems: string[]; notes: string[]; truncatedCalls: number } {
+    const toolCalls: AgentToolCall[] = [];
+    const subagents: SubagentRequest[] = [];
+    const problems: string[] = [];
+    const notes: string[] = [];
+    let truncatedCalls = 0;
+
+    for (const rawCall of rawCalls.slice(0, MAX_TOOL_CALLS_PER_RESPONSE)) {
+      const repaired = repairToolCall(rawCall);
+      if ("message" in repaired) {
+        problems.push(repaired.message);
+        // A truncated call cannot be fixed by retrying it, so count it against
+        // the loop budget immediately rather than letting the model regenerate
+        // the same oversized payload until the step budget runs out.
+        if (repaired.truncated) {
+          truncatedCalls += 1;
+        }
+        continue;
+      }
+
+      const looping = loopBreaker.check(repaired.name, repaired.arguments);
+      if (looping) {
+        problems.push(looping.message);
+        continue;
+      }
+
+      if (repaired.repairs.length > 0) {
+        notes.push(`repaired ${repaired.name} call: ${repaired.repairs.join(", ")}`);
+      }
+
+      // Subagents are dispatched by the loop, not by the workspace, so they
+      // never reach the tool executor.
+      if (repaired.name === "task") {
+        subagents.push({
+          type: repaired.arguments.subagent_type === "general" ? "general" : "explore",
+          description: String(repaired.arguments.description ?? "subtask"),
+          prompt: String(repaired.arguments.prompt ?? "")
+        });
+        continue;
+      }
+
+      toolCalls.push(toWorkspaceCall(repaired.name, repaired.arguments));
+    }
+
+    return { toolCalls, subagents, problems, notes, truncatedCalls };
+  }
+
+  /**
+   * Runs one child loop with its own context and a narrower tool set. A child
+   * failure is a result the parent reasons about, never an exception that ends
+   * the parent's run.
+   */
+  private async runChildAgent(request: SubagentRequest): Promise<SubagentEnvelope> {
+    const parent = this.options;
+    return await runSubagent(request, {
+      client: this.client,
+      transcriptDir: path.join(parent.workspace, ".patchpilot", "subagents"),
+      signal: parent.signal,
+      run: (childOptions) =>
+        new AgentRunner({
+          ...parent,
+          // Isolated context: the child never sees this conversation.
+          resumeContext: "",
+          // Read-only children cannot be talked into writing by what they read.
+          allowWrite: childOptions.readOnly ? false : parent.allowWrite,
+          allowShell: false,
+          mode: childOptions.readOnly ? "plan" : parent.mode,
+          toolNames: subagentToolNames(childOptions.readOnly),
+          // Thinking budget belongs to the orchestrator; children answer.
+          thinking: "off",
+          thinkingMode: "fixed",
+          // No grandchildren: depth is bounded by construction.
+          subagents: false,
+          ultramaxx: false,
+          sessionStore: undefined,
+          maxSteps: Math.min(parent.maxSteps, 8)
+        }).run(childOptions.task)
+    });
+  }
+
   private async *chatWithRetry(options: {
     model: string;
     messages: ChatMessage[];
-    reasoningEffort: ProviderReasoningEffort | undefined;
+    thinking: ThinkingSetting | undefined;
+    tools?: ProviderTool[];
     requestWorkState: AgentWorkState;
     attemptLabel: string;
   }): AsyncGenerator<AgentEvent, ModelChatResult> {
@@ -598,13 +934,14 @@ export class AgentRunner {
 
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       try {
-        return await this.client.chat({
-          model: options.model,
-          messages: options.messages,
-          formatJson: true,
-          reasoningEffort: options.reasoningEffort,
-          signal: this.options.signal
-        });
+        const attempt = this.streamChat(options);
+        for (;;) {
+          const next = await attempt.next();
+          if (next.done) {
+            return next.value;
+          }
+          yield next.value;
+        }
       } catch (error) {
         lastError = error;
         if (this.options.signal?.aborted || attempt >= maxAttempts || !isRetryableModelError(error)) {
@@ -622,6 +959,134 @@ export class AgentRunner {
 
     throw lastError;
   }
+
+  /**
+   * Bridges the provider's push-based delta callback into this pull-based
+   * generator. Progress events are throttled and coalesced: one per token
+   * would flood the transcript and cost more to render than to generate.
+   */
+  private async *streamChat(options: {
+    model: string;
+    messages: ChatMessage[];
+    thinking: ThinkingSetting | undefined;
+    tools?: ProviderTool[];
+    requestWorkState: AgentWorkState;
+  }): AsyncGenerator<AgentEvent, ModelChatResult> {
+    const timer = new StreamTimer();
+    let thinkingChars = 0;
+    let visibleText = "";
+    let writing: { tool: string; chars: number } | null = null;
+    let tokens = 0;
+    let wake: (() => void) | null = null;
+    let finished = false;
+
+    const nudge = (): void => {
+      wake?.();
+      wake = null;
+    };
+
+    const chat = this.client
+      .chat({
+        model: options.model,
+        messages: options.messages,
+        // The envelope needs a JSON response; native tool calling does not,
+        // and asking for both makes a model describe a call instead of making
+        // one.
+        formatJson: !options.tools,
+        tools: options.tools,
+        thinking: options.thinking,
+        signal: this.options.signal,
+        onDelta: (delta) => {
+          if (delta.content) {
+            timer.markFirstToken();
+            tokens += estimateTokens(delta.content);
+            visibleText += delta.content;
+          }
+          if (delta.thinking) {
+            timer.markFirstToken();
+            thinkingChars += delta.thinking.length;
+          }
+          if (delta.toolCall) {
+            timer.markFirstToken();
+            writing = { tool: delta.toolCall.name, chars: delta.toolCall.argumentChars };
+          }
+          nudge();
+        }
+      })
+      .finally(() => {
+        finished = true;
+        nudge();
+      });
+
+    // Surface progress on a fixed cadence rather than per delta, so a fast
+    // model and a slow one produce the same update rate.
+    while (!finished) {
+      await Promise.race([
+        chat.catch(() => undefined),
+        new Promise<void>((resolve) => {
+          wake = resolve;
+          setTimeout(resolve, streamProgressIntervalMs).unref?.();
+        })
+      ]);
+
+      if (finished) {
+        break;
+      }
+
+      // Reasoning arrives token by token. Flushing on every tick would emit
+      // one transcript line per word, so it is buffered into readable blocks.
+      const generating = timer.timeToFirstTokenMs !== null;
+      void thinkingChars;
+      yield {
+        type: "stream",
+        phase: generating ? "generating" : "prompt",
+        elapsedMs: timer.elapsedMs,
+        tokens,
+        content: stripTemplateTokens(visibleText),
+        ...(writing ? { writing } : {}),
+        tokensPerSecond: generating && timer.generationMs > 0 ? tokens / (timer.generationMs / 1000) : null,
+        workState: options.requestWorkState
+      };
+    }
+
+
+    return await chat;
+  }
+}
+
+/** A last-resort answer built from what actually ran. */
+function describeCompletedWork(tools: string[]): string {
+  if (tools.length === 0) {
+    return "No changes were made.";
+  }
+
+  const counts = new Map<string, number>();
+  for (const tool of tools) {
+    counts.set(tool, (counts.get(tool) ?? 0) + 1);
+  }
+
+  const summary = [...counts.entries()]
+    .sort(([, left], [, right]) => right - left)
+    .map(([tool, count]) => (count === 1 ? tool : `${tool} ×${count}`))
+    .join(", ");
+
+  return `Done. Tools used: ${summary}.`;
+}
+
+function firstNonEmpty<T>(...candidates: T[][]): T[] {
+  return candidates.find((candidate) => candidate.length > 0) ?? [];
+}
+
+/** How often streaming progress is reported, in milliseconds. */
+const streamProgressIntervalMs = 120;
+
+/** Reasoning is buffered to at least this many characters before it is shown. */
+const thinkingFlushChars = 280;
+
+/** Prefers to break reasoning at a sentence end rather than mid-word. */
+function lastSentenceBoundary(value: string): number {
+  const match = value.slice(0, thinkingFlushChars * 2).match(/^[\s\S]*[.!?\n]\s/);
+  return match ? match[0].length : value.length;
 }
 
 export function recoverMalformedToolResponse(rawContent: string): { action: "tools"; message: string; tool_calls: Array<{ name: "write_file"; arguments: { path: string; content: string } }> } | null {
@@ -736,6 +1201,7 @@ function buildSystemPrompt(
   workspaceSummary: string,
   resumeContext: string,
   permissions: {
+    provider: ModelProvider;
     mode: "plan" | "build" | "bypass";
     allowWrite: boolean;
     allowShell: boolean;
@@ -747,6 +1213,8 @@ function buildSystemPrompt(
     allowShellMetacharacters: boolean;
     ultramaxx: boolean;
     expectsTodos: boolean;
+    /** Native tool calling replaces the JSON envelope protocol section. */
+    nativeTools: boolean;
   }
 ): string {
   const workspaceLabel = path.basename(workspaceRoot) || "workspace";
@@ -806,6 +1274,7 @@ function buildSystemPrompt(
     experimental.allowShellMetacharacters
       ? "Experimental shell metacharacters are enabled: run_shell may use pipes, &&, and ;. Redirects, shell expansion, background jobs, OR chains, and multiline commands still require explicit approval even in bypass."
       : "Experimental shell metacharacters are disabled: run_shell may use simple commands and pipes only.",
+    "You can reach the web with the fetch_url tool. Never claim you cannot access the internet; if you need a specific page, call fetch_url with a public http(s) URL.",
     workspaceSummary ? ["", "Workspace context:", workspaceSummary].join("\n") : "",
     resumeContext
       ? [
@@ -826,6 +1295,20 @@ function buildSystemPrompt(
         ].join("\n")
       : "",
     "",
+    // Native tool calling: the runtime enforces the shape, so the prompt only
+    // has to carry intent. Repeating a JSON protocol alongside real tools makes
+    // some models describe a call in prose instead of emitting one.
+    ...(experimental.nativeTools
+      ? [
+          "Use the provided tools to do the work. Call a tool whenever you need to read, search, change, or run something.",
+          "Do not describe a tool call in prose or in a code block — actually call the tool.",
+          "You may call several independent tools at once. Read a file before editing it.",
+          "Never repeat a tool call that just failed with the same arguments. Change the arguments or try a different approach.",
+          "Answer in plain prose only when the work is done or you genuinely cannot proceed.",
+          "Keep the todo list current: exactly one item in_progress, finished items completed.",
+          "Use bash for git, tests and scripts. Prefer read, glob and grep for reading and searching — they are faster and need no approval."
+        ]
+      : [
     "Return only JSON. Do not use Markdown outside JSON.",
     "Return exactly one JSON object. Never return a JSON array.",
     "",
@@ -843,6 +1326,7 @@ function buildSystemPrompt(
     "- read_range: {\"path\":\"src/index.ts\",\"start\":1,\"end\":80}",
     "- file_info: {\"path\":\"src/index.ts\"}",
     "- search_text: {\"query\":\"functionName\"}",
+    "- fetch_url: {\"url\":\"https://example.com/page\",\"max_chars\":20000} to fetch a public web page or HTTP API and read it as text. Keyless and available to every model. Pass a plain URL (no Markdown link syntax). Network access needs approval in build mode and is blocked in plan mode; private/loopback hosts are blocked and redirects are not auto-followed.",
     "- inspect_document: {\"path\":\"docs/spec.pdf\",\"mode\":\"auto\"} for pdf, docx, images, and text/code files. Use mode \"local\" or \"ocr\" only when the user explicitly asks for local text/OCR extraction.",
     ...(experimental.memoryEnabled
       ? [
@@ -866,7 +1350,8 @@ function buildSystemPrompt(
     "- apply_patch: {\"patch\":\"unified git patch\"}",
     "- run_script: {\"script\":\"test\"}",
     "- run_tests: {}",
-    "- run_shell: {\"command\":\"single simple command to run in the workspace\"}",
+    "- run_shell: {\"command\":\"single simple command to run in the workspace\"}"
+        ]),
     "",
     "Act like a coding agent. For simple create/edit/run requests, use tools directly instead of over-warning.",
     "Do not call search_text with an empty query. Use list_files {\"path\":\".\"} to inspect a directory.",
@@ -876,6 +1361,51 @@ function buildSystemPrompt(
     "In final answers, separate verified facts from remaining risks.",
     "Keep tool requests and final answers compact."
   ].join("\n");
+}
+
+/** Unwraps a narrated protocol envelope so it never reaches the user raw. */
+/**
+ * A tool-calling turn often carries no prose at all. Rendering the placeholder
+ * puts an empty heading above every tool call, which is pure noise.
+ */
+export function isMeaningfulAssistantMessage(message: string): boolean {
+  const normalized = message.trim();
+  return normalized.length > 0 && normalized !== "working" && !/^\{.*\}$/s.test(normalized);
+}
+
+export function readFinalMessage(rawResponse: string): string {
+  const trimmed = rawResponse.trim();
+  if (!trimmed.startsWith("{") || !trimmed.includes('"action"')) {
+    return trimmed;
+  }
+
+  const message = /"message"\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(trimmed)?.[1];
+  if (!message) {
+    return "Done.";
+  }
+
+  try {
+    return JSON.parse(`"${message}"`) as string;
+  } catch {
+    return message;
+  }
+}
+
+/**
+ * Recognises a cancelled request. The signal is authoritative when present;
+ * the message check covers a client that surfaces the abort without having
+ * been given the signal.
+ */
+export function isAbortError(error: unknown, signal?: AbortSignal): boolean {
+  if (signal?.aborted) {
+    return true;
+  }
+
+  if (error instanceof Error) {
+    return error.name === "AbortError" || /\babort(ed)?\b/i.test(error.message);
+  }
+
+  return false;
 }
 
 function looksLikeClarification(message: string): boolean {
@@ -890,6 +1420,24 @@ export function shouldStopAfterEmptyToolBatches(emptyToolBatches: number): boole
   return emptyToolBatches >= 2;
 }
 
+/** An explicit delegation request should work without a hidden /agents toggle. */
+export function shouldEnableSubagents(task: string, configured: boolean): boolean {
+  return configured || /\b(?:sub[ -]?agents?|child[ -]?agents?|delegate|delegat(?:e|ion))\b/i.test(task);
+}
+
+/** Normalize legacy permission flags into the same mode used by tools and prompts. */
+export function resolveToolMode(options: Pick<AgentRunnerOptions, "mode" | "allowWrite" | "allowShell">): ToolMode {
+  if (options.mode) {
+    return options.mode;
+  }
+
+  if (options.allowWrite && options.allowShell) {
+    return "bypass";
+  }
+
+  return options.allowWrite || options.allowShell ? "build" : "plan";
+}
+
 export function findRepeatedToolCall(toolCalls: Parameters<WorkspaceTools["execute"]>[0][], recentSignatures: string[]): Parameters<WorkspaceTools["execute"]>[0] | null {
   for (const toolCall of toolCalls) {
     const signature = toolCallSignature(toolCall);
@@ -898,7 +1446,8 @@ export function findRepeatedToolCall(toolCalls: Parameters<WorkspaceTools["execu
       recentSignatures.shift();
     }
 
-    if (recentSignatures.filter((item) => item === signature).length >= 3) {
+    const threshold = toolCall.name === "update_todo" ? 2 : 3;
+    if (recentSignatures.filter((item) => item === signature).length >= threshold) {
       return toolCall;
     }
   }
@@ -960,7 +1509,14 @@ export function normalizeTodoItems(argumentsValue: Record<string, unknown>, exis
     if (!isRecord(rawItem)) {
       continue;
     }
-    const content = readTodoString(rawItem.content) || readTodoString(rawItem.text) || readTodoString(rawItem.task);
+    // "title" is what the nine-tool schema asks for; the rest are shapes
+    // models reach for unprompted.
+    const content =
+      readTodoString(rawItem.content) ||
+      readTodoString(rawItem.title) ||
+      readTodoString(rawItem.text) ||
+      readTodoString(rawItem.task) ||
+      readTodoString(rawItem.description);
     if (!content) {
       continue;
     }
@@ -1066,11 +1622,11 @@ function isParallelSafeToolCall(toolCall: WorkspaceToolCallRecord): boolean {
   return spec.sideEffects === "none" && spec.permission === "none" && spec.category !== "state";
 }
 
-function isWriteToolResult(toolResult: { ok: boolean; category?: ToolCategory; tool: AgentToolName }): boolean {
-  return toolResult.ok && (toolResult.category === "write" || getToolSpec(toolResult.tool).sideEffects === "write");
+function isWriteToolResult(toolResult: { ok: boolean; category?: ToolCategory; tool: AgentEventToolName }): boolean {
+  return toolResult.ok && (toolResult.category === "write" || (toolResult.tool !== "subagent" && getToolSpec(toolResult.tool).sideEffects === "write"));
 }
 
-function isVerificationToolResult(toolResult: { ok: boolean; category?: ToolCategory; tool: AgentToolName }): boolean {
+function isVerificationToolResult(toolResult: { ok: boolean; category?: ToolCategory; tool: AgentEventToolName }): boolean {
   return toolResult.ok && (toolResult.category === "test" || toolResult.category === "shell" || toolResult.tool === "git_diff");
 }
 
@@ -1099,7 +1655,7 @@ async function executeToolSafely(tools: WorkspaceTools, toolCall: Parameters<Wor
 
 function formatToolResultsForPrompt(
   toolResults: Array<{
-    tool: AgentToolName;
+    tool: AgentEventToolName;
     ok: boolean;
     summary: string;
     content: string;
@@ -1197,7 +1753,7 @@ function createRunId(): string {
   return `run-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-function createToolCallId(tool: AgentToolName): string {
+function createToolCallId(tool: AgentEventToolName): string {
   return `${tool}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
@@ -1256,7 +1812,7 @@ function shouldExtendAdaptiveRun(
   toolResults: Array<{
     ok: boolean;
     summary: string;
-    tool?: AgentToolName;
+    tool?: AgentEventToolName;
     category?: ToolCategory;
     metadata?: Record<string, unknown>;
   }>,
@@ -1282,23 +1838,6 @@ function shouldExtendAdaptiveRun(
 function todoMetadataHasCompletedItem(metadata: Record<string, unknown> | undefined): boolean {
   const items = Array.isArray(metadata?.items) ? metadata.items : [];
   return items.some((item) => isRecord(item) && item.status === "completed");
-}
-
-function resolveReasoningEffort(task: string, effort: AgentRunnerOptions["reasoningEffort"]): ProviderReasoningEffort {
-  if (effort !== "adaptive") {
-    return effort;
-  }
-
-  const wordCount = task.trim().split(/\s+/).filter(Boolean).length;
-  if (wordCount > 40 || /\b(large|complex|refactor|architecture|architektur|debug|provider|pipeline|performance|security|release)\b/i.test(task)) {
-    return "high";
-  }
-
-  if (wordCount < 8 && !shouldUseSubagents(task)) {
-    return "low";
-  }
-
-  return "medium";
 }
 
 function clipPromptValue(value: string, maxLength: number): string {

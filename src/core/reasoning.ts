@@ -1,152 +1,64 @@
-import type { ModelProvider, ReasoningEffort } from "./types.js";
+import type { ModelProvider, ThinkingSetting } from "./types.js";
 
-export type ReasoningSetting = ReasoningEffort | "none";
+/**
+ * Thinking is a model capability, not a PatchPilot abstraction.
+ *
+ * Earlier versions mapped a four-level "reasoning effort" scale onto every
+ * provider, which mostly produced settings the model ignored. Local runtimes
+ * expose exactly one meaningful control — whether the model thinks before it
+ * answers — so that is all this module models. `"auto"` leaves the decision to
+ * the runtime's own default.
+ */
 
-export function resolveProviderReasoning(options: {
-  provider: ModelProvider;
-  model: string;
-  requested: ReasoningSetting | undefined;
-}): ReasoningSetting | undefined {
-  if (!options.requested) {
+/** Families whose Ollama builds accept the `think` parameter. */
+const thinkingCapablePattern = /gpt-oss|qwen3|deepseek-r1|deepseek-v3\.[1-9]|magistral|granite3\.\d+-dense/i;
+
+/** gpt-oss takes a graded effort string rather than a boolean. */
+const gradedThinkingPattern = /gpt-oss/i;
+
+export function supportsThinking(provider: ModelProvider, model: string): boolean {
+  if (provider === "ollama") {
+    return thinkingCapablePattern.test(model);
+  }
+
+  // OpenAI-compatible servers expose no portable thinking switch; models that
+  // reason do so on their own and stream it inline.
+  return false;
+}
+
+/**
+ * Resolves to Ollama's `think` parameter. `undefined` means "send nothing and
+ * let the runtime decide", which is the correct default for models that have
+ * no thinking mode at all.
+ */
+export function getOllamaThinkValue(
+  model: string,
+  requested: ThinkingSetting | undefined
+): boolean | "low" | "medium" | "high" | undefined {
+  if (!requested || requested === "auto" || !thinkingCapablePattern.test(model)) {
     return undefined;
   }
 
-  if (options.provider === "ollama") {
-    return getOllamaThinkValue(options.model, options.requested) === undefined ? undefined : options.requested;
+  if (gradedThinkingPattern.test(model)) {
+    // gpt-oss cannot be fully silenced; "off" falls back to the lowest effort.
+    return requested === "off" ? "low" : "high";
   }
 
-  if (options.provider === "nvidia") {
-    return supportsNvidiaReasoningEffort(options.model) && options.requested !== "none" ? clampReasoningEffort(options.requested, "high") : undefined;
-  }
-
-  if (options.provider === "gemini") {
-    return getGeminiThinkingConfig(options.model, options.requested) === undefined ? undefined : options.requested;
-  }
-
-  if (options.provider === "gemini-wrapper") {
-    return undefined;
-  }
-
-  if (options.provider === "codex") {
-    return options.requested === "none" ? undefined : options.requested;
-  }
-
-  return options.requested;
+  return requested === "on";
 }
 
-export function getGeminiThinkingConfig(model: string, requested: ReasoningSetting | undefined): Record<string, unknown> | undefined {
-  if (!requested) {
-    return undefined;
+export function formatThinkingSupport(provider: ModelProvider, model: string, requested: ThinkingSetting | undefined): string {
+  if (!supportsThinking(provider, model)) {
+    return `${model} has no thinking mode; using model default`;
   }
 
-  const normalizedModel = model.toLowerCase();
-  if (requested === "none") {
-    return /gemini-2\.5-(flash|flash-lite)/i.test(normalizedModel)
-      ? {
-          thinkingBudget: 0
-        }
-      : undefined;
+  if (!requested || requested === "auto") {
+    return "model default";
   }
 
-  if (/gemini-2\.5/i.test(normalizedModel)) {
-    return {
-      thinkingBudget: reasoningBudget(requested)
-    };
+  if (requested === "off" && gradedThinkingPattern.test(model)) {
+    return "gpt-oss thinking cannot be fully disabled; using lowest effort";
   }
 
-  if (/gemini-3/i.test(normalizedModel)) {
-    return {
-      thinkingLevel: requested === "xhigh" ? "high" : requested
-    };
-  }
-
-  return undefined;
-}
-
-export function getOpenRouterReasoningConfig(requested: ReasoningSetting | undefined): Record<string, unknown> | undefined {
-  return requested
-    ? {
-        effort: requested,
-        exclude: true
-      }
-    : undefined;
-}
-
-export function getOllamaThinkValue(model: string, requested: ReasoningSetting | undefined): boolean | "low" | "medium" | "high" | undefined {
-  if (!requested) {
-    return undefined;
-  }
-
-  const normalizedModel = model.toLowerCase();
-  if (/gpt-oss/.test(normalizedModel)) {
-    return requested === "none" ? undefined : clampReasoningEffort(requested, "high");
-  }
-
-  if (/qwen3|deepseek-r1|deepseek-v3\.1/.test(normalizedModel)) {
-    return requested === "none" ? false : true;
-  }
-
-  return undefined;
-}
-
-export function getNvidiaReasoningEffort(model: string, requested: ReasoningSetting | undefined): "low" | "medium" | "high" | undefined {
-  if (!requested || requested === "none" || !supportsNvidiaReasoningEffort(model)) {
-    return undefined;
-  }
-
-  return clampReasoningEffort(requested, "high");
-}
-
-export function formatReasoningSupport(provider: ModelProvider, model: string, requested: ReasoningSetting | undefined): string {
-  const resolved = resolveProviderReasoning({
-    provider,
-    model,
-    requested
-  });
-
-  if (!requested) {
-    return "provider default";
-  }
-
-  if (!resolved) {
-    if (provider === "gemini-wrapper") {
-      return "Gemini-Wrapper does not expose Gemini Web Denkaufwand controls yet; using the selected Web model";
-    }
-
-    return `${requested} not supported by ${provider} for ${model}; using provider default`;
-  }
-
-  if (provider === "gemini" && requested === "none" && !/gemini-2\.5-(flash|flash-lite)/i.test(model)) {
-    return "Gemini thinking cannot be disabled for this model; using provider default";
-  }
-
-  if (provider === "ollama" && /gpt-oss/i.test(model) && requested === "none") {
-    return "gpt-oss reasoning cannot be fully disabled in Ollama; using provider default";
-  }
-
-  return `${provider} reasoning ${resolved}`;
-}
-
-function reasoningBudget(effort: ReasoningEffort): number {
-  if (effort === "low") {
-    return 512;
-  }
-
-  if (effort === "medium") {
-    return 2048;
-  }
-
-  if (effort === "high") {
-    return 8192;
-  }
-
-  return 12_288;
-}
-
-function clampReasoningEffort(effort: ReasoningEffort, xhighFallback: "high"): "low" | "medium" | "high" {
-  return effort === "xhigh" ? xhighFallback : effort;
-}
-
-function supportsNvidiaReasoningEffort(model: string): boolean {
-  return /gpt-oss-(20b|120b)|gpt-oss/i.test(model.toLowerCase());
+  return `thinking ${requested}`;
 }

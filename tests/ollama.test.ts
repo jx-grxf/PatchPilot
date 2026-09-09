@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  minimumUsableContextTokens,
   OllamaClient,
   normalizeOllamaBaseUrl,
   readOllamaRuntimeOptions,
@@ -8,6 +9,95 @@ import {
 
 afterEach(() => {
   vi.restoreAllMocks();
+});
+
+describe("OllamaClient streaming", () => {
+  it("streams deltas, separates thinking, and reports telemetry from the final chunk", async () => {
+    const chunks = [
+      { message: { thinking: "let me look" }, done: false },
+      { message: { content: "hel" }, done: false },
+      { message: { content: "lo" }, done: false },
+      {
+        message: { content: "" },
+        done: true,
+        prompt_eval_count: 5,
+        eval_count: 2,
+        prompt_eval_duration: 100_000_000,
+        eval_duration: 200_000_000,
+        total_duration: 300_000_000
+      }
+    ];
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(chunks.map((chunk) => JSON.stringify(chunk)).join("\n"), { status: 200 })
+    );
+
+    const content: string[] = [];
+    const thinking: string[] = [];
+    const result = await new OllamaClient().chat({
+      model: "qwen3:8b",
+      messages: [{ role: "user", content: "hi" }],
+      onDelta: (delta) => {
+        if (delta.content) content.push(delta.content);
+        if (delta.thinking) thinking.push(delta.thinking);
+      }
+    });
+
+    expect(content).toEqual(["hel", "lo"]);
+    expect(thinking).toEqual(["let me look"]);
+    expect(result.content).toBe("hello");
+    expect(result.telemetry.promptTokens).toBe(5);
+    expect(result.telemetry.timeToFirstTokenMs).not.toBeNull();
+  });
+
+  it("requests a stream only when a delta handler is supplied", async () => {
+    // A fresh Response per call: a body can only be consumed once.
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async () => new Response(JSON.stringify({ message: { content: "ok" }, done: true }), { status: 200 }));
+
+    await new OllamaClient().chat({ model: "m", messages: [{ role: "user", content: "hi" }] });
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)).stream).toBe(false);
+
+    await new OllamaClient().chat({
+      model: "m",
+      messages: [{ role: "user", content: "hi" }],
+      onDelta: () => undefined
+    });
+    expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body)).stream).toBe(true);
+  });
+
+  it("surfaces a mid-stream error instead of returning partial content", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        [JSON.stringify({ message: { content: "par" } }), JSON.stringify({ error: "model crashed" })].join("\n"),
+        { status: 200 }
+      )
+    );
+
+    await expect(
+      new OllamaClient().chat({
+        model: "m",
+        messages: [{ role: "user", content: "hi" }],
+        onDelta: () => undefined
+      })
+    ).rejects.toThrow("model crashed");
+  });
+
+  it("does not let a throwing delta handler abort the call", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ message: { content: "ok" }, done: true }), { status: 200 })
+    );
+
+    const result = await new OllamaClient().chat({
+      model: "m",
+      messages: [{ role: "user", content: "hi" }],
+      onDelta: () => {
+        throw new Error("renderer blew up");
+      }
+    });
+
+    expect(result.content).toBe("ok");
+  });
 });
 
 describe("OllamaClient", () => {
@@ -53,9 +143,9 @@ describe("OllamaClient", () => {
     expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toMatchObject({
       keep_alive: "15m",
       options: {
-        num_ctx: 8192,
-        num_predict: 8192,
-        temperature: 0.1
+        num_ctx: 32_768,
+        num_predict: 16_384,
+        temperature: 0.2
       }
     });
     expect(result.content).toBe("{\"action\":\"final\",\"message\":\"ok\"}");
@@ -67,6 +157,7 @@ describe("OllamaClient", () => {
       totalTokens: 20,
       evalTokensPerSecond: 20,
       promptDurationMs: 200,
+      timeToFirstTokenMs: null,
       responseDurationMs: 400,
       totalDurationMs: 700,
       estimatedCostUsd: 0,
@@ -306,7 +397,37 @@ describe("Ollama URL config", () => {
       keepAlive: "30m",
       numCtx: 4096,
       numPredict: 768,
-      temperature: 0
+      temperature: 0,
+      topP: 0.9,
+      topK: 20,
+      repeatPenalty: 1
     });
+  });
+});
+
+describe("sampling defaults for tool calling", () => {
+  it("disables the repetition penalty, which corrupts structured output", () => {
+    expect(readOllamaRuntimeOptions({}).repeatPenalty).toBe(1);
+  });
+
+  it("sends a context window an agent loop can survive", () => {
+    expect(readOllamaRuntimeOptions({}).numCtx).toBeGreaterThanOrEqual(minimumUsableContextTokens);
+  });
+
+  it("sends every sampling knob explicitly rather than trusting server defaults", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async () => new Response(JSON.stringify({ message: { content: "ok" }, done: true }), { status: 200 }));
+
+    await new OllamaClient().chat({ model: "m", messages: [{ role: "user", content: "hi" }] });
+    const options = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)).options;
+
+    expect(options).toMatchObject({ repeat_penalty: 1, num_ctx: 32_768, top_k: 20 });
+    expect(options.top_p).toBeGreaterThan(0);
+  });
+
+  it("still honours an explicit override", () => {
+    expect(readOllamaRuntimeOptions({ PATCHPILOT_REPEAT_PENALTY: "1.15" }).repeatPenalty).toBeCloseTo(1.15);
+    expect(readOllamaRuntimeOptions({ PATCHPILOT_NUM_CTX: "8192" }).numCtx).toBe(8192);
   });
 });

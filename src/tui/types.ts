@@ -1,10 +1,11 @@
-import type { AgentToolName, AgentWorkState, SubagentRole, ToolCategory } from "../core/types.js";
+import type { AgentWorkState, AgentToolName, ToolCategory } from "../core/types.js";
+
 
 export type AgentMode = "plan" | "build" | "bypass";
 
 export type LogTone = "muted" | "normal" | "success" | "warning" | "danger" | "accent";
 
-export type TranscriptBlockKind = "user" | "assistant" | "tool" | "diff" | "approval" | "error" | "final" | "status";
+export type TranscriptBlockKind = "user" | "assistant" | "thinking" | "tool" | "diff" | "approval" | "error" | "final" | "status";
 
 export type LogLine = {
   id: number;
@@ -25,11 +26,6 @@ export type LogLineInput = Omit<LogLine, "id" | "kind"> & {
 };
 
 export type AppendLine = (line: LogLineInput) => void;
-
-export type AdvisorNote = {
-  role: SubagentRole;
-  message: string;
-};
 
 export type ToolTelemetry = {
   total: number;

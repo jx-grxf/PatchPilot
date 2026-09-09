@@ -1,4 +1,3 @@
-import type { ReasoningSetting } from "../core/reasoning.js";
 import type { AgentMode } from "./types.js";
 
 /**
@@ -8,15 +7,11 @@ import type { AgentMode } from "./types.js";
  */
 export type OnboardingPreferences = {
   mode: AgentMode;
-  reasoning: ReasoningSetting | "adaptive";
-  thinking: "fixed" | "adaptive";
   subagents: boolean;
 };
 
 export const defaultOnboardingPreferences: OnboardingPreferences = {
   mode: "build",
-  reasoning: "medium",
-  thinking: "adaptive",
   subagents: false,
 };
 
@@ -35,18 +30,8 @@ export const preferenceRows: PreferenceRow[] = [
     values: ["plan", "build"],
   },
   {
-    key: "reasoning",
-    label: "Reasoning effort",
-    values: ["none", "low", "medium", "high", "xhigh", "adaptive"],
-  },
-  {
-    key: "thinking",
-    label: "Thinking budget",
-    values: ["fixed", "adaptive"],
-  },
-  {
     key: "subagents",
-    label: "Planner / Reviewer subagents",
+    label: "Explore / General subagents",
     values: ["off", "on"],
   },
 ];
@@ -61,23 +46,9 @@ export function describePreferenceValue(key: keyof OnboardingPreferences, value:
         : "Use /mode bypass after setup when you want trusted-workspace bypass.";
   }
 
-  if (key === "reasoning") {
-    return value === "none"
-      ? "Fastest, cheapest. No extra reasoning budget."
-      : value === "adaptive"
-        ? "The agent scales reasoning to the task. Good general default."
-        : `Fixed ${value} reasoning budget on every step.`;
-  }
-
-  if (key === "thinking") {
-    return value === "adaptive"
-      ? "Thinking budget flexes with task difficulty."
-      : "Thinking budget stays fixed for predictable latency.";
-  }
-
   return value === "on"
-    ? "Advisory planner and reviewer run before the main loop. Slower, higher quality."
-    : "Skip advisors for faster, leaner local runs.";
+    ? "Allow bounded child-agent delegation with isolated context and narrow tools."
+    : "Keep all work in the primary local-model context.";
 }
 
 /** Current displayed value for a preference row given the working prefs. */
@@ -113,19 +84,13 @@ export function cyclePreference(
     return { ...prefs, mode: nextValue as AgentMode };
   }
 
-  if (key === "thinking") {
-    return { ...prefs, thinking: nextValue === "adaptive" ? "adaptive" : "fixed" };
-  }
-
-  return { ...prefs, reasoning: nextValue as OnboardingPreferences["reasoning"] };
+  return { ...prefs, subagents: nextValue === "on" };
 }
 
 /** Env payload for `savePatchPilotEnvValues` derived from the chosen prefs. */
 export function preferencesEnvValues(prefs: OnboardingPreferences): Record<string, string> {
   return {
     PATCHPILOT_DEFAULT_MODE: prefs.mode,
-    PATCHPILOT_REASONING_EFFORT: prefs.reasoning,
-    PATCHPILOT_THINKING_MODE: prefs.thinking,
     PATCHPILOT_SUBAGENTS: prefs.subagents ? "1" : "0",
   };
 }
@@ -133,22 +98,10 @@ export function preferencesEnvValues(prefs: OnboardingPreferences): Record<strin
 /** Read persisted preferences back into a typed shape, falling back safely. */
 export function readOnboardingPreferences(env: NodeJS.ProcessEnv = process.env): OnboardingPreferences {
   const mode = env.PATCHPILOT_DEFAULT_MODE?.trim().toLowerCase();
-  const reasoning = env.PATCHPILOT_REASONING_EFFORT?.trim().toLowerCase();
-  const thinking = env.PATCHPILOT_THINKING_MODE?.trim().toLowerCase();
   const subagents = env.PATCHPILOT_SUBAGENTS?.trim().toLowerCase();
 
   return {
     mode: mode === "plan" || mode === "build" || mode === "bypass" ? mode : defaultOnboardingPreferences.mode,
-    reasoning:
-      reasoning === "none" ||
-      reasoning === "low" ||
-      reasoning === "medium" ||
-      reasoning === "high" ||
-      reasoning === "xhigh" ||
-      reasoning === "adaptive"
-        ? reasoning
-        : defaultOnboardingPreferences.reasoning,
-    thinking: thinking === "fixed" ? "fixed" : thinking === "adaptive" ? "adaptive" : defaultOnboardingPreferences.thinking,
     subagents: subagents === undefined ? defaultOnboardingPreferences.subagents : ["1", "true", "yes", "on", "enabled"].includes(subagents),
   };
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { compactTranscript, executeToolCallsWithReadParallelism, findRepeatedToolCall, isTodoOnlyFinalResponse, normalizeTodoItems, recoverMalformedToolResponse, shouldExpectTodos, shouldStopAfterEmptyToolBatches } from "../src/core/agent.js";
+import { compactTranscript, executeToolCallsWithReadParallelism, findRepeatedToolCall, isTodoOnlyFinalResponse, normalizeTodoItems, recoverMalformedToolResponse, resolveToolMode, shouldEnableSubagents, shouldExpectTodos, shouldStopAfterEmptyToolBatches, readFinalMessage } from "../src/core/agent.js";
 import type { AgentToolCall, ToolResult } from "../src/core/types.js";
 import type { WorkspaceTools } from "../src/core/workspace.js";
 
@@ -123,6 +123,13 @@ describe("normalizeTodoItems", () => {
 });
 
 describe("agent loop guards", () => {
+  it("uses one canonical mode for tool exposure and prompt policy", () => {
+    expect(resolveToolMode({ allowWrite: false, allowShell: false })).toBe("plan");
+    expect(resolveToolMode({ allowWrite: true, allowShell: false })).toBe("build");
+    expect(resolveToolMode({ allowWrite: true, allowShell: true })).toBe("bypass");
+    expect(resolveToolMode({ mode: "build", allowWrite: true, allowShell: true })).toBe("build");
+  });
+
   it("detects multi-step implementation tasks that should start with todos", () => {
     expect(shouldExpectTodos("fix provider retries and run the tests after changing the backend")).toBe(true);
     expect(shouldExpectTodos("what stack is this")).toBe(false);
@@ -134,6 +141,20 @@ describe("agent loop guards", () => {
     expect(findRepeatedToolCall([{ name: "read_file", arguments: { path: "src/a.ts", mode: "full" } }], recent)).toBeNull();
     expect(findRepeatedToolCall([{ name: "read_file", arguments: { mode: "full", path: "src/a.ts" } }], recent)).toBeNull();
     expect(findRepeatedToolCall([{ name: "read_file", arguments: { path: "src/a.ts", mode: "full" } }], recent)?.name).toBe("read_file");
+  });
+
+  it("stops identical todo snapshots on the first no-op repeat", () => {
+    const recent: string[] = [];
+    const todo = { name: "update_todo" as const, arguments: { items: [{ title: "Inspect", status: "in_progress" }] } };
+    expect(findRepeatedToolCall([todo], recent)).toBeNull();
+    expect(findRepeatedToolCall([todo], recent)?.name).toBe("update_todo");
+  });
+
+  it("enables task delegation when the prompt explicitly asks for a subagent", () => {
+    expect(shouldEnableSubagents("spawn a subagent and inspect the repo", false)).toBe(true);
+    expect(shouldEnableSubagents("Delegate this audit to a child agent", false)).toBe(true);
+    expect(shouldEnableSubagents("inspect the repo", false)).toBe(false);
+    expect(shouldEnableSubagents("inspect the repo", true)).toBe(true);
   });
 
   it("stops after repeated empty tool batches", () => {
@@ -206,3 +227,40 @@ function toolResultMessage(tool: string, content: string) {
     ].join("\n")
   };
 }
+
+describe("final message unwrapping", () => {
+  it("strips a narrated protocol envelope down to its message", () => {
+    expect(readFinalMessage('{"action":"final","message":"Added farewell()."}')).toBe("Added farewell().");
+    expect(readFinalMessage('{"action":"tools","message":"working","tool_calls":[{"name":"read"}]}')).toBe("working");
+  });
+
+  it("leaves ordinary prose alone", () => {
+    expect(readFinalMessage("  I added the function and tests pass.  ")).toBe("I added the function and tests pass.");
+  });
+
+  it("decodes escapes inside the message", () => {
+    expect(readFinalMessage('{"action":"final","message":"Edited \\"hello.py\\"."}')).toBe('Edited "hello.py".');
+  });
+
+  it("falls back rather than showing raw JSON when there is no message", () => {
+    expect(readFinalMessage('{"action":"final"}')).toBe("Done.");
+  });
+});
+
+describe("todo item shapes", () => {
+  it("accepts the title key the tool schema asks for", () => {
+    const items = normalizeTodoItems({ items: [{ title: "Read the parser", status: "in_progress" }] });
+    expect(items).toEqual([{ id: "read-the-parser", content: "Read the parser", status: "in_progress" }]);
+  });
+
+  it("still accepts the shapes models reach for unprompted", () => {
+    for (const key of ["content", "text", "task", "description"]) {
+      const items = normalizeTodoItems({ items: [{ [key]: "Do the thing", status: "pending" }] });
+      expect(items[0]?.content).toBe("Do the thing");
+    }
+  });
+
+  it("drops items with no usable text rather than showing a blank row", () => {
+    expect(normalizeTodoItems({ items: [{ status: "pending" }, { title: "  " }] })).toEqual([]);
+  });
+});

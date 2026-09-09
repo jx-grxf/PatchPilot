@@ -14,6 +14,13 @@ export type ShellRow = {
   effect?: "rainbow";
   bold?: boolean;
   dim?: boolean;
+  /**
+   * Drops the fixed label column for this row. The transcript needs that
+   * column reserved even when a row's label is empty, so continuation lines
+   * stay aligned under their heading — but a list whose rows never carry a
+   * label just loses twelve columns to nothing.
+   */
+  compact?: boolean;
 };
 
 const LABEL_WIDTH = 12;
@@ -76,7 +83,7 @@ function labelAccentColor(
   if (normalized === "planning" || workState === "planning" || normalized === "usage") {
     return "blue";
   }
-  if (normalized === "gemini-wrapper" || normalized === "gemini" || normalized === "attach") {
+  if (normalized === "attach") {
     return "cyan";
   }
   if (normalized === "update" || normalized === "approval" || workState === "waiting_approval" || workState === "editing" || workState === "verifying") {
@@ -138,14 +145,18 @@ export function buildTodoDock(todos: AgentTodoItem[], width: number, frame: numb
             ? symbols.todoActive
             : symbols.bullet
           : symbols.todoPending;
-    const color: InkColor = todo.status === "completed" ? "green" : isActive ? "yellow" : "gray";
+    const color: InkColor = todo.status === "completed" ? "green" : isActive ? "yellow" : "white";
     rows.push({
-      symbol: "",
-      label: marker,
-      text: truncate(todo.content, textWidth),
+      // The marker belongs in the symbol column: putting it in the label
+      // column pads it out to the label width and leaves a gap the size of a
+      // word between the marker and the item it marks.
+      symbol: marker,
+      label: "",
+      compact: true,
+      text: truncate(todo.content, textWidth + LABEL_WIDTH),
       color,
       bold: isActive,
-      dim: todo.status === "pending",
+      dim: false,
     });
   }
 
