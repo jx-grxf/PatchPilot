@@ -1568,6 +1568,20 @@ describe("WorkspaceTools fetch_url", () => {
     expect(result.content).not.toContain("x{}");
   });
 
+  it("decodes HTML entities once without turning escaped entities into markup", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response("<p>&amp;lt; &lt; &amp;</p>", {
+        status: 200,
+        headers: { "content-type": "text/html" }
+      })
+    );
+
+    const result = await fetchTools().execute({ name: "fetch_url", arguments: { url: "https://93.184.216.34/" } });
+
+    expect(result.ok).toBe(true);
+    expect(result.content).toBe("&lt; < &");
+  });
+
   it("caps and cancels large response bodies before decoding all of them", async () => {
     const cancel = vi.fn();
     const oversized = new TextEncoder().encode("x".repeat(300_000));
