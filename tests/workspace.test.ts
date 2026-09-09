@@ -1568,6 +1568,26 @@ describe("WorkspaceTools fetch_url", () => {
     expect(result.content).not.toContain("x{}");
   });
 
+  it("caps and cancels large response bodies before decoding all of them", async () => {
+    const cancel = vi.fn();
+    const oversized = new TextEncoder().encode("x".repeat(300_000));
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(oversized);
+        },
+        cancel
+      }), { status: 200, headers: { "content-type": "text/plain" } })
+    );
+
+    const result = await fetchTools().execute({ name: "fetch_url", arguments: { url: "https://93.184.216.34/" } });
+
+    expect(result.ok).toBe(true);
+    expect(result.metadata).toMatchObject({ bytes: 256_000, truncated: true });
+    expect(result.content.length).toBeLessThan(21_000);
+    expect(cancel).toHaveBeenCalledTimes(1);
+  });
+
   it("recovers a URL from Markdown link / angle-bracket / bare-domain shapes", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response("ok", { status: 200, headers: { "content-type": "text/plain" } })

@@ -14,7 +14,7 @@ export const slashCommands: SlashCommand[] = [
     usage: "/help",
     description: "Show available PatchPilot commands.",
     category: "utility",
-    detail: "Use /help to list commands. Use /help <command> for focused help, for example /help think or /help model."
+    detail: "Use /help to list commands. Use /help <command> for focused help, for example /help model or /help connect."
   },
   {
     name: "permissions",
@@ -26,29 +26,22 @@ export const slashCommands: SlashCommand[] = [
   {
     name: "agents",
     usage: "/agents on|off",
-    description: "Enable or disable explorer/planner/reviewer subagents.",
+    description: "Enable or disable isolated explore/general child agents.",
     category: "session",
     aliases: ["subagents"],
-    detail: "Advisor subagents add short explorer/planner/reviewer briefs before larger workspace tasks. They are off by default; turn them on with /agents on when you want extra review context."
+    detail: "The model can delegate bounded work into a fresh context. Explore children are read-only; general children may edit but never receive shell or recursive task access."
   },
   {
     name: "provider",
-    usage: "/provider ollama|gemini|gemini-wrapper|openrouter|nvidia|codex",
-    description: "Switch between Ollama, Gemini, Gemini-Wrapper, OpenRouter, NVIDIA, and Codex inference.",
+    usage: "/provider ollama|local-openai",
+    description: "Switch between Ollama and an OpenAI-compatible local runtime.",
     category: "model",
-    detail: "Provider controls where inference runs. Gemini-Wrapper runs the installed gemini_webapi bridge with pasted cookies or an explicit local browser-cookie import."
-  },
-  {
-    name: "reasoning",
-    usage: "/reasoning low|medium|high|xhigh|adaptive",
-    description: "Set provider reasoning effort where the provider supports it.",
-    category: "model",
-    detail: "Codex supports low, medium, high, and xhigh. OpenRouter receives reasoning.effort for compatible models. Gemini maps xhigh to high. Gemini-Wrapper does not expose Gemini Web Denkaufwand controls yet. Ollama has no common reasoning-effort API, so the value is ignored there. adaptive chooses effort from task complexity."
+    detail: "Use Ollama's native API, or local-openai for LM Studio, llama.cpp, MLX, vLLM, and compatible local servers."
   },
   {
     name: "onboarding",
     usage: "/onboarding",
-    description: "Choose provider, configure API key, and select a model.",
+    description: "Choose a local runtime, endpoint, and model.",
     category: "model"
   },
   {
@@ -56,7 +49,7 @@ export const slashCommands: SlashCommand[] = [
     usage: "/new",
     description: "Start a fresh PatchPilot session and clear the current context.",
     category: "session",
-    detail: "Clears the visible transcript, telemetry, advisor notes, approvals, and starts a new session file. Provider, model, mode, and permissions stay unchanged."
+    detail: "Clears the visible transcript, telemetry, todos, approvals, and starts a new session file. Provider, model, mode, and permissions stay unchanged."
   },
   {
     name: "recap",
@@ -132,7 +125,7 @@ export const slashCommands: SlashCommand[] = [
     usage: "/model <name|uncensored|default>",
     description: "Switch the active provider model for this session.",
     category: "model",
-    detail: "Use /model to show cached provider models. Use /model <query> to search and select a unique model. OpenRouter supports IDs such as openrouter/auto and :free models."
+    detail: "Use /model to show cached runtime models. Use /model <query> to search and select a unique local model."
   },
   {
     name: "models",
@@ -176,9 +169,9 @@ export const slashCommands: SlashCommand[] = [
   {
     name: "eject",
     usage: "/eject [model|all]",
-    description: "Unload Ollama models from the active host.",
+    description: "Unload models from Ollama, LM Studio, or Bionic.",
     category: "compute",
-    detail: "/eject unloads the current Ollama model with keep_alive: 0. /eject all unloads models PatchPilot used in this session plus running models reported by /api/ps. Cloud providers do not need eject."
+    detail: "/eject unloads the current model. /eject all unloads every running Ollama model or every loaded LM Studio/Bionic instance reported by the active runtime."
   },
   {
     name: "hosts",
@@ -201,7 +194,7 @@ export const slashCommands: SlashCommand[] = [
   {
     name: "status",
     usage: "/status",
-    description: "Operational dock: provider/model, permissions, compute target, session, advisors, tool counters.",
+    description: "Operational dock: provider/model, permissions, compute target, session, child agents, tool counters.",
     category: "session"
   },
   {
@@ -285,7 +278,7 @@ export const slashCommands: SlashCommand[] = [
     usage: "/doctor [fix]",
     description: "Check Node, Git, and active provider diagnostics.",
     category: "utility",
-    detail: "/doctor checks requirements without changing the machine. /doctor fix applies safe repairs such as installing the managed Gemini-API bridge."
+    detail: "/doctor checks Node, Git, the configured local endpoint, and the selected model without changing the machine."
   },
   {
     name: "cleanup",
@@ -303,10 +296,10 @@ export const slashCommands: SlashCommand[] = [
   },
   {
     name: "theme",
-    usage: "/theme [new|legacy]",
-    description: "Switch between the New experimental shell and the Legacy TUI.",
+    usage: "/theme [flow|new|legacy]",
+    description: "Switch between the Flow, fullscreen, and legacy terminal interfaces.",
     category: "utility",
-    detail: "Run /theme to open the picker, or /theme new / /theme legacy directly. New is the default fullscreen shell; Legacy is the original sidebar TUI. The choice is remembered."
+    detail: "Run /theme to open the picker, or pass flow, new, or legacy directly. Flow uses native terminal scrollback and is the default; the choice is remembered."
   },
   {
     name: "init",

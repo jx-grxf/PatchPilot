@@ -21,9 +21,9 @@ export type SlashSubmission =
   /** Put this in the composer and wait; the user still has to say what to act on. */
   | { action: "complete"; input: string };
 
-/** A usage string with <required> or [optional] placeholders needs an argument. */
+/** A usage string with a <required> placeholder needs more input. */
 export function needsArgument(usage: string): boolean {
-  return usage.includes("<") || usage.includes("[");
+  return usage.includes("<");
 }
 
 /** True once the input carries something after the command name. */
@@ -51,9 +51,10 @@ export function resolveSlashSubmission(
     return { action: "run", command: selected.command };
   }
 
-  // The suggestion is a bare command that still wants an argument. If the user
-  // already typed one, honour what they typed rather than truncating it.
-  if (hasArgument(typed)) {
+  // A fully typed command is intentional. Running it lets commands such as
+  // /model and /connect open their own picker instead of requiring a second
+  // Enter just to reach the next step.
+  if (typed === selected.command || hasArgument(typed)) {
     return { action: "run", command: typed };
   }
 

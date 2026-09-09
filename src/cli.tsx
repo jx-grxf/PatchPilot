@@ -35,7 +35,7 @@ program.enablePositionalOptions();
 
 program
   .name("patchpilot")
-  .description("Local-first coding agent TUI powered by Ollama and OpenAI-compatible providers.")
+  .description("Local-only coding agent TUI powered by Ollama and OpenAI-compatible runtimes.")
   .version(readPackageVersion());
 
 program
@@ -173,8 +173,8 @@ program
   .option("--steps <count>", "Maximum agent steps", "8")
   .option("--apply", "Allow file writes inside the workspace.", false)
   .option("--allow-shell", "Allow shell commands inside the workspace.", false)
-  .option("--subagents", "Enable planner and reviewer subagents.", readBooleanEnv(process.env.PATCHPILOT_SUBAGENTS, false))
-  .option("--no-subagents", "Disable planner and reviewer subagents for faster local runs.")
+  .option("--subagents", "Enable isolated explore/general child agents.", readBooleanEnv(process.env.PATCHPILOT_SUBAGENTS, false))
+  .option("--no-subagents", "Disable child-agent delegation for faster local runs.")
   .addHelpText(
     "after",
     [

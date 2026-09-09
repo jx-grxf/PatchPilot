@@ -57,6 +57,18 @@ type ModelsResponse = {
   }>;
 };
 
+type NativeModelsResponse = {
+  models?: Array<{
+    key?: string;
+    loaded_instances?: Array<{ id?: string }>;
+  }>;
+};
+
+export type LocalModelInstance = {
+  model: string;
+  instanceId: string;
+};
+
 type LocalOpenAIRuntimeOptions = {
   apiKey: string;
   maxTokens: number;
@@ -182,17 +194,22 @@ export class LocalOpenAIClient {
         finishReason = choice.finish_reason;
       }
 
+      const delta: ModelStreamDelta = {};
+
       for (const [position, fragment] of (choice?.delta?.tool_calls ?? []).entries()) {
         const index = fragment.index ?? position;
         const existing = partialCalls.get(index) ?? { name: "", arguments: "" };
-        partialCalls.set(index, {
+        const merged = {
           name: fragment.function?.name ?? existing.name,
           arguments: existing.arguments + (fragment.function?.arguments ?? "")
-        });
+        };
+        partialCalls.set(index, merged);
+        if (merged.name) {
+          delta.toolCall = { name: merged.name, argumentChars: merged.arguments.length };
+        }
       }
 
       const thinking = choice?.delta?.reasoning_content ?? choice?.delta?.reasoning;
-      const delta: ModelStreamDelta = {};
       if (choice?.delta?.content) {
         content += choice.delta.content;
         delta.content = choice.delta.content;
@@ -201,7 +218,7 @@ export class LocalOpenAIClient {
         delta.thinking = thinking;
       }
 
-      if (delta.content || delta.thinking) {
+      if (delta.content || delta.thinking || delta.toolCall) {
         timer.markFirstToken();
         emitDelta(options.onDelta, delta);
       }
@@ -223,6 +240,45 @@ export class LocalOpenAIClient {
         .filter((id) => id.length > 0)
         .sort() ?? []
     );
+  }
+
+  /** Loaded LM Studio/Bionic instances exposed by the native model API. */
+  async listLoadedModelInstances(): Promise<LocalModelInstance[]> {
+    const response = await this.fetchNative("/api/v1/models", { headers: this.buildHeaders() });
+    if (!response.ok) {
+      throw new Error(`This local runtime does not support model eject (HTTP ${response.status}).`);
+    }
+
+    const payload = (await response.json()) as NativeModelsResponse;
+    if (!Array.isArray(payload.models)) {
+      throw new Error("This local runtime does not expose loaded model instances.");
+    }
+
+    return payload.models.flatMap((model) =>
+      (model.loaded_instances ?? []).flatMap((instance) => {
+        const modelName = model.key?.trim();
+        const instanceId = instance.id?.trim();
+        return modelName && instanceId ? [{ model: modelName, instanceId }] : [];
+      })
+    );
+  }
+
+  /** Unload one LM Studio/Bionic model instance without affecting other runtimes. */
+  async unloadModelInstance(instanceId: string): Promise<void> {
+    const normalizedId = instanceId.trim();
+    if (!normalizedId) {
+      throw new Error("Local model eject requires an instance id.");
+    }
+
+    const response = await this.fetchNative("/api/v1/models/unload", {
+      method: "POST",
+      headers: this.buildHeaders(),
+      body: JSON.stringify({ instance_id: normalizedId })
+    });
+    if (!response.ok) {
+      const payload = (await readJsonSafely(response)) as ChatCompletionResponse;
+      throw new Error(`Local model eject failed for "${normalizedId}": HTTP ${response.status}.${formatServerError(payload)}`);
+    }
   }
 
   /**
@@ -324,6 +380,19 @@ export class LocalOpenAIClient {
         timeoutMs: init?.method === "POST" ? 120_000 : 3000,
         retries: init?.method === "POST" ? 2 : 1,
         label: `Local model server ${path} at ${this.baseUrl}`
+      });
+    } catch (error) {
+      throw new Error(formatLocalConnectionError(this.baseUrl, error));
+    }
+  }
+
+  private async fetchNative(path: string, init?: RequestInit): Promise<Response> {
+    const origin = new URL(this.baseUrl).origin;
+    try {
+      return await fetchWithTimeout(`${origin}${path}`, init, {
+        timeoutMs: 5000,
+        retries: 0,
+        label: `Local model server ${path} at ${origin}`
       });
     } catch (error) {
       throw new Error(formatLocalConnectionError(this.baseUrl, error));
@@ -463,7 +532,7 @@ export function readLocalOpenAIRuntimeOptions(env: NodeJS.ProcessEnv = process.e
   return {
     apiKey: readLocalOpenAIApiKey(env),
     maxTokens: readPositiveInteger(env.PATCHPILOT_NUM_PREDICT, 16_384),
-    temperature: readTemperature(env.PATCHPILOT_TEMPERATURE, 0.1)
+    temperature: readTemperature(env.PATCHPILOT_TEMPERATURE, 0.2)
   };
 }
 

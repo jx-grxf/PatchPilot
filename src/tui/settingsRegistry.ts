@@ -106,6 +106,7 @@ export const settingsRegistry: SettingDefinition[] = [
     group: "generation",
     kind: { type: "number", min: 2048, max: 1_000_000 },
     defaultValue: "32768",
+    appliesTo: "ollama",
     appliesNextRun: true
   },
   {
@@ -134,6 +135,7 @@ export const settingsRegistry: SettingDefinition[] = [
     group: "generation",
     kind: { type: "number", min: 0, max: 1 },
     defaultValue: "0.9",
+    appliesTo: "ollama",
     appliesNextRun: true
   },
   {
@@ -142,7 +144,8 @@ export const settingsRegistry: SettingDefinition[] = [
     description: "Candidate cutoff. 0 disables it.",
     group: "generation",
     kind: { type: "number", min: 0, max: 200 },
-    defaultValue: "40",
+    defaultValue: "20",
+    appliesTo: "ollama",
     appliesNextRun: true
   },
   {
@@ -153,6 +156,7 @@ export const settingsRegistry: SettingDefinition[] = [
     group: "generation",
     kind: { type: "number", min: 0.5, max: 2 },
     defaultValue: "1.0",
+    appliesTo: "ollama",
     appliesNextRun: true
   },
 

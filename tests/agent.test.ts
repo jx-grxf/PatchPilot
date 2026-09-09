@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { compactTranscript, executeToolCallsWithReadParallelism, findRepeatedToolCall, isTodoOnlyFinalResponse, normalizeTodoItems, recoverMalformedToolResponse, shouldExpectTodos, shouldStopAfterEmptyToolBatches, readFinalMessage } from "../src/core/agent.js";
+import { compactTranscript, executeToolCallsWithReadParallelism, findRepeatedToolCall, isTodoOnlyFinalResponse, normalizeTodoItems, recoverMalformedToolResponse, resolveToolMode, shouldEnableSubagents, shouldExpectTodos, shouldStopAfterEmptyToolBatches, readFinalMessage } from "../src/core/agent.js";
 import type { AgentToolCall, ToolResult } from "../src/core/types.js";
 import type { WorkspaceTools } from "../src/core/workspace.js";
 
@@ -123,6 +123,13 @@ describe("normalizeTodoItems", () => {
 });
 
 describe("agent loop guards", () => {
+  it("uses one canonical mode for tool exposure and prompt policy", () => {
+    expect(resolveToolMode({ allowWrite: false, allowShell: false })).toBe("plan");
+    expect(resolveToolMode({ allowWrite: true, allowShell: false })).toBe("build");
+    expect(resolveToolMode({ allowWrite: true, allowShell: true })).toBe("bypass");
+    expect(resolveToolMode({ mode: "build", allowWrite: true, allowShell: true })).toBe("build");
+  });
+
   it("detects multi-step implementation tasks that should start with todos", () => {
     expect(shouldExpectTodos("fix provider retries and run the tests after changing the backend")).toBe(true);
     expect(shouldExpectTodos("what stack is this")).toBe(false);
@@ -134,6 +141,20 @@ describe("agent loop guards", () => {
     expect(findRepeatedToolCall([{ name: "read_file", arguments: { path: "src/a.ts", mode: "full" } }], recent)).toBeNull();
     expect(findRepeatedToolCall([{ name: "read_file", arguments: { mode: "full", path: "src/a.ts" } }], recent)).toBeNull();
     expect(findRepeatedToolCall([{ name: "read_file", arguments: { path: "src/a.ts", mode: "full" } }], recent)?.name).toBe("read_file");
+  });
+
+  it("stops identical todo snapshots on the first no-op repeat", () => {
+    const recent: string[] = [];
+    const todo = { name: "update_todo" as const, arguments: { items: [{ title: "Inspect", status: "in_progress" }] } };
+    expect(findRepeatedToolCall([todo], recent)).toBeNull();
+    expect(findRepeatedToolCall([todo], recent)?.name).toBe("update_todo");
+  });
+
+  it("enables task delegation when the prompt explicitly asks for a subagent", () => {
+    expect(shouldEnableSubagents("spawn a subagent and inspect the repo", false)).toBe(true);
+    expect(shouldEnableSubagents("Delegate this audit to a child agent", false)).toBe(true);
+    expect(shouldEnableSubagents("inspect the repo", false)).toBe(false);
+    expect(shouldEnableSubagents("inspect the repo", true)).toBe(true);
   });
 
   it("stops after repeated empty tool batches", () => {

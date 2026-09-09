@@ -1,4 +1,4 @@
-import { modelDescriptorIndex } from "./modelRuntime.js";
+import { modelDescriptorIndex } from "./modelDescriptors.js";
 
 export function selectableModels(query: string, models: string[], labelForModel: (model: string) => string = (model) => model): string[] {
   const normalizedQuery = query.trim().toLowerCase();

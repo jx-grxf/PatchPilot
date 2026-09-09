@@ -3,11 +3,11 @@ import path from "node:path";
 import { platform, release, type } from "node:os";
 import { createModelClient } from "./modelClient.js";
 import type { SessionStore } from "./session.js";
-import { MAX_TOOL_CALLS_PER_RESPONSE, type AgentEvent, type AgentTodoItem, type AgentToolName, type AgentWorkState, type ApprovalRequest, type ChatMessage, type ModelChatResult, type ModelClient, type ModelProvider, type PermissionDecision, type ThinkingSetting, type ProviderTool, type RawToolCall, type AgentToolCall, type ToolCategory, type ToolResult } from "./types.js";
+import { MAX_TOOL_CALLS_PER_RESPONSE, type AgentEvent, type AgentEventToolName, type AgentTodoItem, type AgentToolName, type AgentWorkState, type ApprovalRequest, type ChatMessage, type ModelChatResult, type ModelClient, type ModelProvider, type PermissionDecision, type ThinkingSetting, type ProviderTool, type RawToolCall, type AgentToolCall, type ToolCategory, type ToolResult } from "./types.js";
 import { StreamTimer } from "./stream.js";
 import { probeModelCapabilities } from "./capability.js";
 import { stripTemplateTokens } from "./localOpenAI.js";
-import { formatEnvelope, runSubagent, type SubagentEnvelope, type SubagentRequest } from "./subagentRunner.js";
+import { formatEnvelope, runSubagent, subagentToolNames, type SubagentEnvelope, type SubagentRequest } from "./subagentRunner.js";
 import { measureContext, pruneToolResults } from "./contextWindow.js";
 import {
   extractFencedToolCalls,
@@ -17,7 +17,7 @@ import {
   repairToolCall,
   ToolCallLoopBreaker
 } from "./toolRepair.js";
-import { toolsForMode, toProviderTools, toWorkspaceCall, type ToolMode } from "./toolSchema.js";
+import { toolsForMode, toProviderTools, toWorkspaceCall, type ToolMode, type ToolName } from "./toolSchema.js";
 import { estimateTokens } from "./tokenAccounting.js";
 import { getToolSpec, WorkspaceTools } from "./workspace.js";
 
@@ -38,6 +38,8 @@ export type AgentRunnerOptions = {
   /** Left to the model unless explicitly forced. */
   thinking?: ThinkingSetting;
   subagents: boolean;
+  /** Optional structural allowlist, used to keep child agents narrow. */
+  toolNames?: ToolName[];
   resumeContext?: string;
   allowExternalFileAnalysis?: boolean;
   allowShellMetacharacters?: boolean;
@@ -114,8 +116,11 @@ export class AgentRunner {
       model: this.options.model,
       signal: this.options.signal
     });
-    const mode: ToolMode = this.options.mode ?? (this.options.allowWrite || this.options.allowShell ? "build" : "plan");
-    const availableTools = toolsForMode(mode, { subagents: Boolean(this.options.subagents) });
+    const mode = resolveToolMode(this.options);
+    const subagentsEnabled = shouldEnableSubagents(task, Boolean(this.options.subagents));
+    const allowedToolNames = this.options.toolNames ? new Set(this.options.toolNames) : null;
+    const availableTools = toolsForMode(mode, { subagents: subagentsEnabled })
+      .filter((tool) => !allowedToolNames || allowedToolNames.has(tool.name));
     const providerTools = capabilities.nativeToolCalls ? toProviderTools(availableTools) : undefined;
     const loopBreaker = new ToolCallLoopBreaker();
     // The window the runtime actually loaded, which is not the num_ctx the
@@ -144,12 +149,13 @@ export class AgentRunner {
     let hadWrite = false;
     let verifiedSinceLastWrite = true;
     let emptyToolBatches = 0;
+    let repeatedToolBatches = 0;
     const recentToolSignatures: string[] = [];
 
     if (ultramaxx) {
       yield {
         type: "status",
-        message: "ultramaxx backend escalation active: xhigh reasoning, mandatory todos, expanded verification guard",
+        message: "ultramaxx backend escalation active: thinking enabled, mandatory todos, expanded verification guard",
         workState: "planning"
       };
     }
@@ -159,7 +165,7 @@ export class AgentRunner {
           role: "system",
         content: buildSystemPrompt(this.tools.root, "", workspaceSummary, this.options.resumeContext ?? "", {
           provider: this.options.provider,
-          mode: this.options.mode ?? (this.options.allowWrite || this.options.allowShell ? "bypass" : "plan"),
+          mode,
           allowWrite: this.options.allowWrite,
           allowShell: this.options.allowShell,
           hasApprovalHandler: Boolean(this.options.approvalHandler)
@@ -368,7 +374,7 @@ export class AgentRunner {
           if (repairs >= 3 || malformedResponses >= 3) {
             yield {
               type: "final",
-              message: "The model kept returning invalid tool protocol. Try a stronger coding model or switch advisors off for this task.",
+              message: "The model kept returning invalid tool protocol. Try a stronger coding model or switch child agents off for this task.",
               workState: "error"
             };
             await this.options.sessionStore?.append({
@@ -517,8 +523,19 @@ export class AgentRunner {
         continue;
       }
 
-      const repeatedCall = findRepeatedToolCall(workspaceCalls, recentToolSignatures);
+      // Todo is a real tool call too. Excluding it here let a weak model spend
+      // every remaining turn submitting the same unchanged checklist.
+      const repeatedCall = findRepeatedToolCall(toolCalls, recentToolSignatures);
       if (repeatedCall) {
+        repeatedToolBatches += 1;
+        if (repeatedToolBatches >= 2) {
+          yield {
+            type: "final",
+            message: `Stopped because the model repeated ${repeatedCall.name} without making progress.`,
+            workState: "error"
+          };
+          return;
+        }
         messages.push({
           role: "assistant",
           content: JSON.stringify({
@@ -529,11 +546,15 @@ export class AgentRunner {
         });
         messages.push({
           role: "user",
-          content: `You already ran ${repeatedCall.name} with the same arguments repeatedly. Act on the previous result or return final instead of repeating it.`
+          content:
+            repeatedCall.name === "update_todo" && subagentsEnabled
+              ? "The todo list is unchanged. The user explicitly requested delegation: call the task tool now, or perform the first concrete read. Do not update the todo list again."
+              : `You already ran ${repeatedCall.name} with the same arguments repeatedly. Act on the previous result or return final instead of repeating it.`
         });
         stepIndex += 1;
         continue;
       }
+      repeatedToolBatches = 0;
 
       const todoResults: Awaited<ReturnType<typeof executeToolSafely>>[] = [];
       for (const todoCall of todoCalls) {
@@ -570,7 +591,7 @@ export class AgentRunner {
 
       // Children run one at a time: each starts with a cold prefix cache, and
       // two at once on a single machine evict the parent's cache as well.
-      const subagentResults: Awaited<ReturnType<typeof executeToolSafely>>[] = [];
+      const subagentResults: Array<Omit<Awaited<ReturnType<typeof executeToolSafely>>, "tool"> & { tool: AgentEventToolName }> = [];
       for (const request of pendingSubagents) {
         yield {
           type: "status",
@@ -581,20 +602,27 @@ export class AgentRunner {
         const envelope = await this.runChildAgent(request);
         yield {
           type: "tool",
-          name: "update_todo",
+          name: "subagent",
           summary: `${request.type} subagent ${envelope.status}: ${request.description}`,
           content: formatEnvelope(envelope),
           ok: envelope.status === "ok",
           workState: "planning",
-          category: "state"
+          category: "state",
+          metadata: {
+            subagent: request.type,
+            transcript: envelope.transcript,
+            steps: envelope.steps,
+            toolCalls: envelope.toolCalls,
+            durationMs: envelope.durationMs
+          }
         };
 
         subagentResults.push({
-          tool: "update_todo",
+          tool: "subagent",
           ok: envelope.status === "ok",
           summary: `${request.type} subagent ${envelope.status}: ${request.description}`,
           content: formatEnvelope(envelope),
-          toolCallId: createToolCallId("update_todo"),
+          toolCallId: createToolCallId("subagent"),
           category: "state",
           preview: undefined,
           approval: undefined,
@@ -603,6 +631,14 @@ export class AgentRunner {
         });
       }
       pendingSubagents = [];
+
+      // A child can be the long-running part of a mixed native-tool batch. If
+      // the user stops it, sibling writes from that already-issued batch must
+      // not continue afterwards.
+      if (this.options.signal?.aborted) {
+        yield { type: "final", message: "Stopped.", workState: "done" };
+        return;
+      }
 
       const toolCallRecords = workspaceCalls.map((toolCall) => ({
         id: createToolCallId(toolCall.name),
@@ -862,6 +898,7 @@ export class AgentRunner {
     return await runSubagent(request, {
       client: this.client,
       transcriptDir: path.join(parent.workspace, ".patchpilot", "subagents"),
+      signal: parent.signal,
       run: (childOptions) =>
         new AgentRunner({
           ...parent,
@@ -871,10 +908,14 @@ export class AgentRunner {
           allowWrite: childOptions.readOnly ? false : parent.allowWrite,
           allowShell: false,
           mode: childOptions.readOnly ? "plan" : parent.mode,
+          toolNames: subagentToolNames(childOptions.readOnly),
           // Thinking budget belongs to the orchestrator; children answer.
           thinking: "off",
+          thinkingMode: "fixed",
           // No grandchildren: depth is bounded by construction.
           subagents: false,
+          ultramaxx: false,
+          sessionStore: undefined,
           maxSteps: Math.min(parent.maxSteps, 8)
         }).run(childOptions.task)
     });
@@ -934,6 +975,7 @@ export class AgentRunner {
     const timer = new StreamTimer();
     let thinkingChars = 0;
     let visibleText = "";
+    let writing: { tool: string; chars: number } | null = null;
     let tokens = 0;
     let wake: (() => void) | null = null;
     let finished = false;
@@ -963,6 +1005,10 @@ export class AgentRunner {
           if (delta.thinking) {
             timer.markFirstToken();
             thinkingChars += delta.thinking.length;
+          }
+          if (delta.toolCall) {
+            timer.markFirstToken();
+            writing = { tool: delta.toolCall.name, chars: delta.toolCall.argumentChars };
           }
           nudge();
         }
@@ -997,6 +1043,7 @@ export class AgentRunner {
         elapsedMs: timer.elapsedMs,
         tokens,
         content: stripTemplateTokens(visibleText),
+        ...(writing ? { writing } : {}),
         tokensPerSecond: generating && timer.generationMs > 0 ? tokens / (timer.generationMs / 1000) : null,
         workState: options.requestWorkState
       };
@@ -1373,6 +1420,24 @@ export function shouldStopAfterEmptyToolBatches(emptyToolBatches: number): boole
   return emptyToolBatches >= 2;
 }
 
+/** An explicit delegation request should work without a hidden /agents toggle. */
+export function shouldEnableSubagents(task: string, configured: boolean): boolean {
+  return configured || /\b(?:sub[ -]?agents?|child[ -]?agents?|delegate|delegat(?:e|ion))\b/i.test(task);
+}
+
+/** Normalize legacy permission flags into the same mode used by tools and prompts. */
+export function resolveToolMode(options: Pick<AgentRunnerOptions, "mode" | "allowWrite" | "allowShell">): ToolMode {
+  if (options.mode) {
+    return options.mode;
+  }
+
+  if (options.allowWrite && options.allowShell) {
+    return "bypass";
+  }
+
+  return options.allowWrite || options.allowShell ? "build" : "plan";
+}
+
 export function findRepeatedToolCall(toolCalls: Parameters<WorkspaceTools["execute"]>[0][], recentSignatures: string[]): Parameters<WorkspaceTools["execute"]>[0] | null {
   for (const toolCall of toolCalls) {
     const signature = toolCallSignature(toolCall);
@@ -1381,7 +1446,8 @@ export function findRepeatedToolCall(toolCalls: Parameters<WorkspaceTools["execu
       recentSignatures.shift();
     }
 
-    if (recentSignatures.filter((item) => item === signature).length >= 3) {
+    const threshold = toolCall.name === "update_todo" ? 2 : 3;
+    if (recentSignatures.filter((item) => item === signature).length >= threshold) {
       return toolCall;
     }
   }
@@ -1556,11 +1622,11 @@ function isParallelSafeToolCall(toolCall: WorkspaceToolCallRecord): boolean {
   return spec.sideEffects === "none" && spec.permission === "none" && spec.category !== "state";
 }
 
-function isWriteToolResult(toolResult: { ok: boolean; category?: ToolCategory; tool: AgentToolName }): boolean {
-  return toolResult.ok && (toolResult.category === "write" || getToolSpec(toolResult.tool).sideEffects === "write");
+function isWriteToolResult(toolResult: { ok: boolean; category?: ToolCategory; tool: AgentEventToolName }): boolean {
+  return toolResult.ok && (toolResult.category === "write" || (toolResult.tool !== "subagent" && getToolSpec(toolResult.tool).sideEffects === "write"));
 }
 
-function isVerificationToolResult(toolResult: { ok: boolean; category?: ToolCategory; tool: AgentToolName }): boolean {
+function isVerificationToolResult(toolResult: { ok: boolean; category?: ToolCategory; tool: AgentEventToolName }): boolean {
   return toolResult.ok && (toolResult.category === "test" || toolResult.category === "shell" || toolResult.tool === "git_diff");
 }
 
@@ -1589,7 +1655,7 @@ async function executeToolSafely(tools: WorkspaceTools, toolCall: Parameters<Wor
 
 function formatToolResultsForPrompt(
   toolResults: Array<{
-    tool: AgentToolName;
+    tool: AgentEventToolName;
     ok: boolean;
     summary: string;
     content: string;
@@ -1687,7 +1753,7 @@ function createRunId(): string {
   return `run-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-function createToolCallId(tool: AgentToolName): string {
+function createToolCallId(tool: AgentEventToolName): string {
   return `${tool}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
@@ -1746,7 +1812,7 @@ function shouldExtendAdaptiveRun(
   toolResults: Array<{
     ok: boolean;
     summary: string;
-    tool?: AgentToolName;
+    tool?: AgentEventToolName;
     category?: ToolCategory;
     metadata?: Record<string, unknown>;
   }>,

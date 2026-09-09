@@ -1,6 +1,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { AgentEvent, AgentToolName, ModelClient } from "./types.js";
+import type { AgentEvent, ModelClient } from "./types.js";
+import type { ToolName } from "./toolSchema.js";
 
 /**
  * Child agent loops with isolated context.
@@ -67,6 +68,7 @@ export type SubagentDependencies = {
   client: ModelClient;
   /** Directory for transcripts, normally .patchpilot/subagents. */
   transcriptDir: string;
+  signal?: AbortSignal;
   now?: () => number;
 };
 
@@ -89,6 +91,12 @@ export async function runSubagent(request: SubagentRequest, deps: SubagentDepend
 
   try {
     for await (const event of deps.run({ task: request.prompt, readOnly: access.readOnly, client: deps.client })) {
+      if (deps.signal?.aborted) {
+        finalMessage = "Stopped.";
+        status = "aborted";
+        break;
+      }
+
       switch (event.type) {
         case "metrics":
           steps += 1;
@@ -105,7 +113,7 @@ export async function runSubagent(request: SubagentRequest, deps: SubagentDepend
           break;
         case "final":
           finalMessage = event.message;
-          status = "ok";
+          status = /^Stopped\b/i.test(event.message) ? "aborted" : "ok";
           break;
         case "error":
           finalMessage = event.message;
@@ -117,7 +125,7 @@ export async function runSubagent(request: SubagentRequest, deps: SubagentDepend
     }
   } catch (error) {
     finalMessage = error instanceof Error ? error.message : String(error);
-    status = "failed";
+    status = deps.signal?.aborted ? "aborted" : "failed";
   }
 
   const transcriptPath = await writeTranscript(deps.transcriptDir, request.description, transcript.join("\n"));
@@ -168,10 +176,10 @@ export function clampSummary(summary: string): string {
   return `${window.slice(0, cut).trimEnd()}…`;
 }
 
-/** Read-only children get exactly these tools; nothing else is advertised. */
-export function subagentWorkspaceTools(readOnly: boolean): AgentToolName[] {
-  const readTools: AgentToolName[] = ["read_file", "read_range", "list_files", "find_files", "search_text", "file_info"];
-  return readOnly ? readTools : [...readTools, "write_file", "edit_file", "apply_patch"];
+/** Exact public tool surface advertised to a child. Shell and recursion stay absent. */
+export function subagentToolNames(readOnly: boolean): ToolName[] {
+  const readTools: ToolName[] = ["read", "glob", "grep"];
+  return readOnly ? readTools : [...readTools, "write", "edit"];
 }
 
 async function writeTranscript(directory: string, description: string, body: string): Promise<string | null> {

@@ -31,7 +31,7 @@ export const preferenceRows: PreferenceRow[] = [
   },
   {
     key: "subagents",
-    label: "Planner / Reviewer subagents",
+    label: "Explore / General subagents",
     values: ["off", "on"],
   },
 ];
@@ -47,8 +47,8 @@ export function describePreferenceValue(key: keyof OnboardingPreferences, value:
   }
 
   return value === "on"
-    ? "Advisory planner and reviewer run before the main loop. Slower, higher quality."
-    : "Skip advisors for faster, leaner local runs.";
+    ? "Allow bounded child-agent delegation with isolated context and narrow tools."
+    : "Keep all work in the primary local-model context.";
 }
 
 /** Current displayed value for a preference row given the working prefs. */

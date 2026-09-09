@@ -83,7 +83,7 @@ function labelAccentColor(
   if (normalized === "planning" || workState === "planning" || normalized === "usage") {
     return "blue";
   }
-  if (normalized === "gemini-wrapper" || normalized === "gemini" || normalized === "attach") {
+  if (normalized === "attach") {
     return "cyan";
   }
   if (normalized === "update" || normalized === "approval" || workState === "waiting_approval" || workState === "editing" || workState === "verifying") {
@@ -145,7 +145,7 @@ export function buildTodoDock(todos: AgentTodoItem[], width: number, frame: numb
             ? symbols.todoActive
             : symbols.bullet
           : symbols.todoPending;
-    const color: InkColor = todo.status === "completed" ? "green" : isActive ? "yellow" : "gray";
+    const color: InkColor = todo.status === "completed" ? "green" : isActive ? "yellow" : "white";
     rows.push({
       // The marker belongs in the symbol column: putting it in the label
       // column pads it out to the label width and leaves a gap the size of a
@@ -156,7 +156,7 @@ export function buildTodoDock(todos: AgentTodoItem[], width: number, frame: numb
       text: truncate(todo.content, textWidth + LABEL_WIDTH),
       color,
       bold: isActive,
-      dim: todo.status === "pending",
+      dim: false,
     });
   }
 

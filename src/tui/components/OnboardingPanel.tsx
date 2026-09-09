@@ -222,7 +222,7 @@ function WelcomeStep(): React.ReactElement {
   return (
     <Box marginTop={1} flexDirection="column">
       <Text color="cyan" bold>{symbols.assistant} A coding agent you can watch work</Text>
-      <Text color="gray">Local-first. Every read, write, command, and model route stays visible and inspectable.</Text>
+      <Text color="gray">Local-only inference. Every read, write, command, and model route stays visible and inspectable.</Text>
       <Box marginTop={1} flexDirection="column">
         <Text color="white">{symbols.todoActive} Plan {symbols.bullet} read files, map the architecture, keep a live todo list</Text>
         <Text color="white">{symbols.todoActive} Build {symbols.bullet} scoped approvals for edits, scripts, tests, and shell</Text>

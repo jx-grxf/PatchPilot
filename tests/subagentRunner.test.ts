@@ -8,7 +8,7 @@ import {
   maxEnvelopeChars,
   runSubagent,
   subagentToolAccess,
-  subagentWorkspaceTools,
+  subagentToolNames,
   type SubagentEnvelope
 } from "../src/core/subagentRunner.js";
 import type { AgentEvent, ModelChatResult, ModelClient } from "../src/core/types.js";
@@ -130,6 +130,19 @@ describe("subagent envelope", () => {
 
     expect(envelope.summary).toContain("no answer");
   });
+
+  it("classifies a stopped child as aborted instead of successful", async () => {
+    const envelope = await runSubagent(
+      { type: "explore", description: "stop", prompt: "x" },
+      {
+        client: stubClient,
+        transcriptDir: await scratchDir(),
+        run: events({ type: "final", message: "Stopped.", workState: "done" })
+      }
+    );
+
+    expect(envelope.status).toBe("aborted");
+  });
 });
 
 describe("transcript on disk", () => {
@@ -221,15 +234,16 @@ describe("summary clamping", () => {
 describe("tool access", () => {
   it("gives explore no way to change anything", () => {
     expect(subagentToolAccess.explore.readOnly).toBe(true);
-    const tools = subagentWorkspaceTools(true);
-    expect(tools).not.toContain("write_file");
-    expect(tools).not.toContain("edit_file");
-    expect(tools).toContain("read_file");
+    const tools = subagentToolNames(true);
+    expect(tools).not.toContain("write");
+    expect(tools).not.toContain("edit");
+    expect(tools).toContain("read");
   });
 
   it("lets a general child edit but never run shell", () => {
-    const tools = subagentWorkspaceTools(false);
-    expect(tools).toContain("edit_file");
-    expect(tools).not.toContain("run_shell");
+    const tools = subagentToolNames(false);
+    expect(tools).toContain("edit");
+    expect(tools).not.toContain("bash");
+    expect(tools).not.toContain("task");
   });
 });

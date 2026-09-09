@@ -33,6 +33,8 @@ export type StreamProgress = {
   elapsedMs: number;
   tokens: number;
   tokensPerSecond: number | null;
+  /** Set while the model is writing a tool call rather than prose. */
+  writing?: { tool: string; chars: number } | null;
 };
 
 /**
@@ -115,19 +117,21 @@ export function eventToLine(event: AgentEvent): LogLineInput {
         text: formatStreamProgress(event.phase, event.elapsedMs, event.tokens, event.tokensPerSecond),
         workState: event.workState
       };
-    case "tool":
+    case "tool": {
+      const subagentType = typeof event.metadata?.subagent === "string" ? event.metadata.subagent : null;
       return {
         kind: event.name === "git_diff" ? "diff" : "tool",
         tone: event.ok ? "success" : "warning",
-        label: event.name,
+        label: subagentType ? `${subagentType} agent` : event.name,
         text: event.summary,
         detail: event.ok ? previewToolContent(event.content) : event.content,
         workState: event.workState,
-        tool: event.name,
+        tool: event.name === "subagent" ? undefined : event.name,
         toolCallId: event.toolCallId,
         category: event.category,
         preview: event.preview
       };
+    }
     case "todo":
       return {
         kind: "status",
@@ -213,7 +217,3 @@ export function eventToStatus(event: AgentEvent): string {
 
   return event.type;
 }
-
-
-
-

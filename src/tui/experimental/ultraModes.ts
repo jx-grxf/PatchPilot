@@ -4,9 +4,9 @@
  * long as they do not conflict; an incompatible pair is reported so the TUI can
  * block the send instead of running a contradictory request.
  *
- *  - `ultramaxx`  — escalate: xhigh reasoning, large step budget, advisors on.
- *  - `ultracheap` — minimize: cheapest model, low reasoning, terse, advisors off.
- *  - `ultrafast`  — speed: lowest-latency settings, fixed short thinking, no advisors.
+ *  - `ultramaxx`  — escalate: thinking on, large step budget, child agents on.
+ *  - `ultracheap` — minimize: terse output, thinking and child agents off.
+ *  - `ultrafast`  — speed: lowest-latency settings, thinking and child agents off.
  *  - `ultrafocus` — restrict the agent to a single file/folder (`ultrafocus:path`).
  *  - `ultraloop`  — expand the run budget and require explicit self-verification
  *                   before the final answer.

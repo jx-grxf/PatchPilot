@@ -1,4 +1,5 @@
 import { LocalOpenAIClient, resolveLocalOpenAIBaseUrl } from "./localOpenAI.js";
+import { resolveRuntimeAlias } from "./localRuntimes.js";
 import { OllamaClient } from "./ollama.js";
 import type { ModelClient, ModelProvider } from "./types.js";
 
@@ -26,18 +27,15 @@ export function readModelProvider(env: NodeJS.ProcessEnv = process.env): ModelPr
  */
 export function normalizeModelProvider(value: string): ModelProvider {
   const normalizedValue = value.trim().toLowerCase();
+  const runtime = resolveRuntimeAlias(value);
+  if (runtime) {
+    return runtime.provider;
+  }
+
   if (
     normalizedValue === "local-openai" ||
     normalizedValue === "local" ||
-    normalizedValue === "openai-compatible" ||
-    normalizedValue === "lmstudio" ||
-    normalizedValue === "lm-studio" ||
-    normalizedValue === "bionic" ||
-    normalizedValue === "llamacpp" ||
-    normalizedValue === "llama.cpp" ||
-    normalizedValue === "mlx" ||
-    normalizedValue === "mlx-lm" ||
-    normalizedValue === "vllm"
+    normalizedValue === "openai-compatible"
   ) {
     return "local-openai";
   }

@@ -1,6 +1,7 @@
 import { render } from "ink-testing-library";
 import { describe, expect, it } from "vitest";
 import { ExperimentalShell, type ExperimentalShellProps } from "../src/tui/experimental/ExperimentalShell.js";
+import { ThemePicker } from "../src/tui/experimental/ThemePicker.js";
 import { emptySessionTelemetry } from "../src/core/tokenAccounting.js";
 import type { LogLine } from "../src/tui/types.js";
 
@@ -80,6 +81,22 @@ describe("shell renders at rest", () => {
 });
 
 describe("shell renders live state", () => {
+  it("marks the flow interface as the default", () => {
+    const { lastFrame } = render(
+      <ThemePicker
+        options={[
+          { value: "flow", label: "Flow", description: "Terminal scrollback" },
+          { value: "new", label: "New", description: "Fullscreen" }
+        ]}
+        selectedIndex={0}
+        currentValue="flow"
+        height={12}
+      />
+    );
+    expect(lastFrame()).toContain("Flow · current · default");
+    expect(lastFrame()).not.toContain("New · default");
+  });
+
   it("shows prompt evaluation distinctly from generation", () => {
     const reading = frame({
       isRunning: true,
@@ -92,6 +109,18 @@ describe("shell renders live state", () => {
       streamProgress: { phase: "generating", elapsedMs: 8100, tokens: 142, tokensPerSecond: 15.6 }
     });
     expect(writing).toContain("15.6 tok/s");
+
+    const toolCall = frame({
+      isRunning: true,
+      streamProgress: {
+        phase: "generating",
+        elapsedMs: 12_000,
+        tokens: 0,
+        tokensPerSecond: null,
+        writing: { tool: "write_file", chars: 12_400 }
+      }
+    });
+    expect(toolCall).toContain("write_file · 12k chars");
   });
 
   it("shows the context meter with a bar and a percentage", () => {

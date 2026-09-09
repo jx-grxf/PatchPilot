@@ -28,6 +28,13 @@ describe("what Enter does", () => {
     });
   });
 
+  it("runs a fully typed command even when it can take a required argument", () => {
+    expect(resolveSlashSubmission("/model", [suggestion("/model", false)], 0)).toEqual({
+      action: "run",
+      command: "/model"
+    });
+  });
+
   it("runs it once the argument is there, instead of truncating back to the command", () => {
     expect(resolveSlashSubmission("/model qwen3:8b", [suggestion("/model", false)], 0)).toEqual({
       action: "run",
@@ -71,18 +78,17 @@ describe("what Enter does", () => {
     });
   });
 
-  it("only ever completes, never runs, when an argument is still missing", () => {
-    // The whole point: a command that needs input must not fire without it.
-    for (const input of ["/model", "/model ", "/mod"]) {
+  it("completes partial command names that still need input", () => {
+    for (const input of ["/mod", "/mode"]) {
       expect(resolveSlashSubmission(input, [suggestion("/model", false)], 0).action).toBe("complete");
     }
   });
 });
 
 describe("classifying usage strings", () => {
-  it("treats required and optional placeholders as needing an argument", () => {
+  it("only treats required placeholders as needing an argument", () => {
     expect(needsArgument("/model <name>")).toBe(true);
-    expect(needsArgument("/compact [now|auto]")).toBe(true);
+    expect(needsArgument("/compact [now|auto]")).toBe(false);
     expect(needsArgument("/diff")).toBe(false);
   });
 

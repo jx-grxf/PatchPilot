@@ -27,7 +27,7 @@ export function CommandSuggestions(props: {
   return (
     <Box borderStyle="round" borderColor="cyan" flexDirection="column" paddingX={1} height={Math.min(maxRows, props.items.length) + (hasPreview ? 7 : 4)} overflowY="hidden">
       <Text color="gray">
-        Command palette  use up/down to pick, Enter to apply, Escape to clear. {startIndex + 1}-{endIndex}/{props.items.length}
+        Command palette  use up/down to pick, Enter to select, Escape to clear. {startIndex + 1}-{endIndex}/{props.items.length}
       </Text>
       <Box marginTop={1}>
         <Text color="cyan" bold>Commands</Text>

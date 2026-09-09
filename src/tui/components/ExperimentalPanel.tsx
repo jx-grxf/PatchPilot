@@ -23,7 +23,7 @@ const experimentalRows: Array<{
   {
     key: "subagents",
     label: "Subagents",
-    description: "Enable explorer, planner, and reviewer advisors for larger workspace tasks."
+    description: "Enable bounded explore/general child agents with isolated context and narrow tools."
   },
   {
     key: "shellMetacharacters",
@@ -75,4 +75,17 @@ export function experimentalFlagAt(index: number): ExperimentalFlag {
 
 export function experimentalFlagCount(): number {
   return experimentalRows.length;
+}
+
+export function experimentalFlagEnvName(flag: ExperimentalFlag): string {
+  switch (flag) {
+    case "fileAnalysis":
+      return "PATCHPILOT_EXPERIMENTAL_FILE_ANALYSIS";
+    case "memory":
+      return "PATCHPILOT_EXPERIMENTAL_MEMORY";
+    case "subagents":
+      return "PATCHPILOT_SUBAGENTS";
+    case "shellMetacharacters":
+      return "PATCHPILOT_EXPERIMENTAL_SHELL_METACHARACTERS";
+  }
 }

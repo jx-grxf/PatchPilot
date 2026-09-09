@@ -70,8 +70,8 @@ function buildSidebarRows(props: {
   activeHost: OllamaHostDetails | null;
 }): SidebarLine[] {
   const hostDeviceName = props.provider === "ollama" ? props.activeHost?.host.deviceName ?? formatOllamaHost(props.ollamaUrl) : `${props.provider} api`;
-  const hostRoute = props.provider === "ollama" ? props.activeHost?.host.url ?? props.ollamaUrl : `${props.provider} cloud`;
-  const hostNetwork = props.provider === "ollama" ? props.activeHost?.host.kind ?? "local" : "cloud";
+  const hostRoute = props.provider === "ollama" ? props.activeHost?.host.url ?? props.ollamaUrl : `${props.provider} local`;
+  const hostNetwork = props.provider === "ollama" ? props.activeHost?.host.kind ?? "local" : "local";
   const hostVersion = props.activeHost?.host.version ?? "-";
   const hostModels = props.activeHost ? `${props.activeHost.models.length} available` : "-";
   const hostLoaded = props.activeHost?.runningModels.length ? props.activeHost.runningModels.map((model) => formatRunningModel(model)).join(", ") : "idle";

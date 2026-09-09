@@ -7,8 +7,10 @@
  * parsed payloads.
  */
 
+const defaultStreamIdleTimeoutMs = 120_000;
+
 /** Yields complete lines from a response body, tolerating chunk boundaries. */
-export async function* readLines(response: Response, signal?: AbortSignal): AsyncGenerator<string> {
+export async function* readLines(response: Response, signal?: AbortSignal, idleTimeoutMs = defaultStreamIdleTimeoutMs): AsyncGenerator<string> {
   const body = response.body;
   if (!body) {
     throw new Error("Streaming response had no body.");
@@ -24,7 +26,7 @@ export async function* readLines(response: Response, signal?: AbortSignal): Asyn
         return;
       }
 
-      const { done, value } = await reader.read();
+      const { done, value } = await readNextChunk(reader, signal, idleTimeoutMs);
       if (done) {
         break;
       }
@@ -46,10 +48,95 @@ export async function* readLines(response: Response, signal?: AbortSignal): Asyn
       yield tail;
     }
   } finally {
-    // Releasing the lock lets an aborted request tear the socket down instead
-    // of leaving the body half-read.
+    if (signal?.aborted) {
+      await reader.cancel().catch(() => undefined);
+    }
     reader.releaseLock();
   }
+}
+
+/** Read at most maxBytes from a response and cancel the body once the cap is reached. */
+export async function readTextLimited(
+  response: Response,
+  maxBytes: number,
+  signal?: AbortSignal,
+  idleTimeoutMs = defaultStreamIdleTimeoutMs
+): Promise<{ text: string; bytes: number; truncated: boolean }> {
+  const body = response.body;
+  if (!body) {
+    return { text: "", bytes: 0, truncated: false };
+  }
+
+  const byteLimit = Math.max(1, Math.trunc(maxBytes));
+  const decoder = new TextDecoder();
+  const reader = body.getReader();
+  let text = "";
+  let bytes = 0;
+
+  try {
+    while (bytes < byteLimit) {
+      const { done, value } = await readNextChunk(reader, signal, idleTimeoutMs);
+      if (signal?.aborted) {
+        throw new Error("Response body read was aborted.");
+      }
+      if (done) {
+        text += decoder.decode();
+        return { text, bytes, truncated: false };
+      }
+
+      const remaining = byteLimit - bytes;
+      const accepted = value.byteLength > remaining ? value.subarray(0, remaining) : value;
+      bytes += accepted.byteLength;
+      text += decoder.decode(accepted, { stream: true });
+      if (value.byteLength > remaining || bytes >= byteLimit) {
+        text += decoder.decode();
+        await reader.cancel().catch(() => undefined);
+        return { text, bytes, truncated: true };
+      }
+    }
+
+    return { text, bytes, truncated: true };
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+async function readNextChunk(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  signal: AbortSignal | undefined,
+  idleTimeoutMs: number
+): Promise<ReadableStreamReadResult<Uint8Array>> {
+  return await new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (callback: () => void): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timeout);
+      signal?.removeEventListener("abort", abort);
+      callback();
+    };
+    const abort = (): void => {
+      void reader.cancel().catch(() => undefined);
+      finish(() => resolve({ done: true, value: undefined }));
+    };
+    const timeout = setTimeout(() => {
+      void reader.cancel().catch(() => undefined);
+      finish(() => reject(new Error(`Streaming response was idle for ${idleTimeoutMs} ms.`)));
+    }, idleTimeoutMs);
+
+    if (signal?.aborted) {
+      abort();
+      return;
+    }
+
+    signal?.addEventListener("abort", abort, { once: true });
+    reader.read().then(
+      (result) => finish(() => resolve(result)),
+      (error: unknown) => finish(() => reject(error))
+    );
+  });
 }
 
 /**

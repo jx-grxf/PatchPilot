@@ -21,7 +21,7 @@ import { resolveLocalOpenAIBaseUrl } from "../../core/localOpenAI.js";
 import { Markdown } from "../components/Markdown.js";
 import { FlowShell } from "./FlowShell.js";
 import { symbols, workStateColor } from "./theme.js";
-import { formatCompact, pressureColor, shimmerIndex, smoothBar, sparkline, trackedBar } from "../motion.js";
+import { formatCompact, motionEnabled, pressureColor, shimmerIndex, smoothBar, sparkline, trackedBar } from "../motion.js";
 import { buildShellRows, buildTodoDock, truncate } from "./transcriptRows.js";
 import { hasUltraMode, splitUltraSegments, type UltraMode } from "./ultraModes.js";
 
@@ -209,9 +209,10 @@ function ShellUpdate(props: {
   busy: boolean;
 }): React.ReactElement {
   const [frame, setFrame] = useState(0);
+  const animationsEnabled = motionEnabled();
 
   useEffect(() => {
-    if (!props.busy) {
+    if (!animationsEnabled || !props.busy) {
       setFrame(0);
       return;
     }
@@ -223,7 +224,7 @@ function ShellUpdate(props: {
     return () => {
       clearInterval(timer);
     };
-  }, [props.busy]);
+  }, [animationsEnabled, props.busy]);
 
   const latestVersion = props.prompt?.latestVersion ?? "";
   const command = props.prompt?.command ?? "npm install -g @jx-grxf/patchpilot@latest";
@@ -403,11 +404,12 @@ function ShellTranscript(props: {
 }): React.ReactElement {
   const rows = buildShellRows(props.lines, props.width);
   const [frame, setFrame] = useState(0);
+  const animationsEnabled = motionEnabled();
   // Animate when a row is rainbow-tagged, or when any row spells an ultra
   // keyword — so submitted ultra keywords keep flowing their gradient.
   const hasRainbowRows = rows.some((row) => row.effect === "rainbow" || hasUltraMode(row.text));
   useEffect(() => {
-    if (!hasRainbowRows) {
+    if (!animationsEnabled || !hasRainbowRows) {
       setFrame(0);
       return;
     }
@@ -419,7 +421,7 @@ function ShellTranscript(props: {
     return () => {
       clearInterval(timer);
     };
-  }, [hasRainbowRows]);
+  }, [animationsEnabled, hasRainbowRows]);
 
   const preferredBannerHeight = props.width >= 88 && props.height >= 20 ? 12 : 3;
   const bannerHeight = Math.max(0, Math.min(props.height - 2, preferredBannerHeight));
@@ -650,7 +652,7 @@ function ShellComposer(props: {
 
   // Animate while running, and also while the draft contains an ultra keyword
   // so its gradient flows as you type.
-  const animating = props.isRunning || hasUltraMode(props.input);
+  const animating = motionEnabled() && (props.isRunning || hasUltraMode(props.input));
   useEffect(() => {
     if (!props.isRunning) {
       setRunningSince(null);
@@ -843,7 +845,9 @@ function ShellComposer(props: {
             {props.streamProgress
               ? props.streamProgress.phase === "prompt"
                 ? `reading prompt · ${formatElapsed(props.streamProgress.elapsedMs)}`
-                : `${formatElapsed(props.streamProgress.elapsedMs)} · ↓ ${formatCompactTokens(props.streamProgress.tokens)} tok`
+                : // Naming the tool being assembled is the difference between
+                  // five silent minutes and five minutes of visible progress.
+                  `${props.streamProgress.writing ? `${props.streamProgress.writing.tool} · ${formatCompactTokens(props.streamProgress.writing.chars)} chars · ` : ""}${formatElapsed(props.streamProgress.elapsedMs)} · ↓ ${formatCompactTokens(props.streamProgress.tokens)} tok`
               : `${formatElapsed(elapsedMs)} · ↓ ${formatCompactTokens(runOutputTokens)} tok`}
             {")"}
           </Text>

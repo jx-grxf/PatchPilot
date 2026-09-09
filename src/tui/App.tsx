@@ -9,9 +9,9 @@ import { runDoctor } from "../core/doctor.js";
 import { savePatchPilotEnvValues } from "../core/env.js";
 import { createModelClient } from "../core/modelClient.js";
 import { defaultLocalOpenAIModel, resolveLocalOpenAIBaseUrl } from "../core/localOpenAI.js";
+import { resolveRuntimeAlias } from "../core/localRuntimes.js";
 import { defaultOllamaModel, OllamaClient } from "../core/ollama.js";
 import { ensurePatchPilotGitignore, patchPilotInitPrompt } from "../core/projectInit.js";
-import { formatThinkingSupport } from "../core/reasoning.js";
 import { buildSessionRecap, buildSessionResumeContext, listWorkspaceSessions, loadSessionSummary, SessionStore } from "../core/session.js";
 import { addTelemetryToSession, emptySessionTelemetry, estimateCloudEquivalentCost, estimateTokens } from "../core/tokenAccounting.js";
 import type { ThinkingSetting, AgentEvent, AgentTodoItem, AgentToolName, AgentWorkState, ApprovalRequest, ModelDescriptor, ModelProvider, ModelTelemetry, PermissionDecision, SessionTelemetry } from "../core/types.js";
@@ -21,7 +21,7 @@ import { ApprovalPanel } from "./components/ApprovalPanel.js";
 import { clipboardHasImage, clipboardImageHint, readClipboardImage } from "../core/clipboard.js";
 import { CommandSuggestions, type CommandSuggestionItem } from "./components/CommandSuggestions.js";
 import { Composer, FooterHints } from "./components/Composer.js";
-import { ExperimentalPanel, experimentalFlagAt, experimentalFlagCount, type ExperimentalFlag, type ExperimentalFlags } from "./components/ExperimentalPanel.js";
+import { ExperimentalPanel, experimentalFlagAt, experimentalFlagCount, experimentalFlagEnvName, type ExperimentalFlag, type ExperimentalFlags } from "./components/ExperimentalPanel.js";
 import { emptyPromptHistory, recallNext, recallPrevious, rememberPrompt, type PromptHistory } from "./promptHistory.js";
 import {
   addApprovalTelemetry,
@@ -35,14 +35,12 @@ import { attachmentLimitWarning, formatAttachedDocuments, formatAttachmentDigest
 import {
   loadAvailableModels,
   loadKnownOrAvailableModels,
-  modelDescriptorIndex,
-  rememberModelDescriptors,
   resolveRunnableSettings,
   switchModel
 } from "./modelRuntime.js";
 import {
   defaultModelForProvider,
-  ejectOllamaModels,
+  ejectModels,
   selectModelFromInput,
   unloadUsedOllamaModels
 } from "./modelPicking.js";
@@ -64,7 +62,7 @@ import {
   readSettingValue,
   validateSettingValue
 } from "./settingsRegistry.js";
-import { resolveSlashSubmission, type PaletteSuggestion } from "./slashCommands.js";
+import { needsArgument, resolveSlashSubmission, type PaletteSuggestion } from "./slashCommands.js";
 import { runContextSlashCommand } from "./contextCommands.js";
 import { ExperimentalShell } from "./experimental/ExperimentalShell.js";
 import { ThemePicker } from "./experimental/ThemePicker.js";
@@ -79,6 +77,7 @@ import { filterSlashCommands, formatCommandDetail, formatCommandHelp } from "./c
 import { formatCost, formatSessionTokens, formatTokens, normalizeModelAlias, readToggle } from "./format.js";
 import { checkOllamaHost, discoverOllamaHosts, normalizeOllamaUrl, readOllamaHostDetails, startLocalOllamaAppAndWait, type OllamaHost, type OllamaHostDetails } from "./hosts.js";
 import { computeComposerLayout } from "./layout.js";
+import { motionEnabled } from "./motion.js";
 import { initialAgentMode, modeDescription, modePermissionLabel, nextAgentMode, permissionsForMode, shouldBypassApproval } from "./modes.js";
 import { selectableModels } from "./modelSelection.js";
 import {
@@ -131,6 +130,7 @@ function readUiTheme(): UiTheme {
 
 
 export function App(props: PatchPilotAppProps): React.ReactElement {
+  const animationsEnabled = motionEnabled();
   const { exit } = useApp();
   const { stdout } = useStdout();
   const [input, setInput] = useState(props.initialTask ?? "");
@@ -279,7 +279,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           kind: line.kind ?? defaultLogKind(line),
           id: Date.now() + Math.random()
         }
-      ].slice(uiThemeRef.current === "flow" ? 0 : -maxTranscriptLines)
+      ].slice(-(uiThemeRef.current === "flow" ? maxTranscriptLines * 4 : maxTranscriptLines))
     );
   }, []);
 
@@ -409,7 +409,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   );
 
   useEffect(() => {
-    if (!isRunning || todos.every((todo) => todo.status !== "in_progress")) {
+    if (!animationsEnabled || !isRunning || todos.every((todo) => todo.status !== "in_progress")) {
       setTodoFrame(0);
       return;
     }
@@ -421,12 +421,12 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
     return () => {
       clearInterval(timer);
     };
-  }, [isRunning, todos]);
+  }, [animationsEnabled, isRunning, todos]);
 
   // Slow run-status verb tick: the verb only advances every 10s while the fast
   // spinner glyph keeps animating, so the status line never flickers.
   useEffect(() => {
-    if (!isRunning) {
+    if (!animationsEnabled || !isRunning) {
       setVerbTick(randomLegacyVerbIndex());
       return;
     }
@@ -445,7 +445,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
     return () => {
       clearInterval(timer);
     };
-  }, [isRunning]);
+  }, [animationsEnabled, isRunning]);
 
   const resolveApproval = useCallback(
     (decision: PermissionDecision) => {
@@ -746,7 +746,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       setOnboardingInput("");
       setOnboardingNotice(null);
       setOnboardingBusyMessage(null);
-      const nextModel = defaultModelForProvider(provider, options.currentModel ?? settings.model);
+      const nextModel = defaultModelForProvider(provider, options.currentModel ?? settings.model, settings.provider);
       setSettings((currentSettings) => ({
         ...currentSettings,
         provider,
@@ -1133,8 +1133,8 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       const ultrafast = ultra.modes.includes("fast");
       const ultrafocus = ultra.modes.includes("focus");
       const ultraloop = ultra.modes.includes("loop");
-      // ultracheap and ultrafast both run the lean pipeline (low reasoning,
-      // fixed short thinking, no advisors, capped steps).
+      // ultracheap and ultrafast both run the lean pipeline (thinking and
+      // child agents off, capped steps).
       const ultraLean = ultracheap || ultrafast;
       const effectiveTask = ultra.modes.length > 0 ? ultra.cleaned : task;
       if (ultra.modes.length > 0 && !effectiveTask) {
@@ -1171,13 +1171,13 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       if (ultra.modes.length > 0) {
         const engagedDetail: string[] = [];
         if (ultramaxx) {
-          engagedDetail.push("ultramaxx: xhigh reasoning, expanded step budget, advisors on.");
+          engagedDetail.push("ultramaxx: thinking on, expanded step budget, child agents on.");
         }
         if (ultracheap) {
-          engagedDetail.push("ultracheap: low reasoning, terse output, advisors off.");
+          engagedDetail.push("ultracheap: terse output, thinking and child agents off.");
         }
         if (ultrafast) {
-          engagedDetail.push("ultrafast: lowest-latency pipeline — low reasoning, fixed short thinking, advisors off.");
+          engagedDetail.push("ultrafast: lowest-latency pipeline — thinking and child agents off.");
         }
         if (ultrafocus) {
           engagedDetail.push(`ultrafocus: the agent stays inside ${ultra.focusPath}.`);
@@ -1354,7 +1354,8 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           }
 
           if (event.type === "tool") {
-            setToolTelemetry((currentTools) => addToolTelemetry(currentTools, event.name, event.ok));
+            const telemetryTool = typeof event.metadata?.subagent === "string" ? "subagent" : event.name;
+            setToolTelemetry((currentTools) => addToolTelemetry(currentTools, telemetryTool, event.ok));
           }
 
           if (event.type === "approval") {
@@ -1376,7 +1377,8 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
               phase: event.phase,
               elapsedMs: event.elapsedMs,
               tokens: event.tokens,
-              tokensPerSecond: event.tokensPerSecond
+              tokensPerSecond: event.tokensPerSecond,
+              writing: event.writing ?? null
             });
             // The answer renders as it is written. Once the turn completes the
             // finished entry lands in the static transcript and this clears,
@@ -1511,7 +1513,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
             return;
           }
 
-          const nextModel = defaultModelForProvider(nextProvider, settings.model);
+          const nextModel = defaultModelForProvider(nextProvider, settings.model, settings.provider);
           setTelemetry(null);
           setModelOptions([]);
           setSettings((currentSettings) => ({
@@ -1552,7 +1554,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           appendLine({
             tone: "success",
             label: "agents",
-            text: `planner/reviewer subagents ${subagentsEnabled ? "enabled" : "disabled"}`
+            text: `explore/general child agents ${subagentsEnabled ? "enabled" : "disabled"}`
           });
           return;
         }
@@ -1942,27 +1944,28 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           setPaletteIndex(0);
           return;
         case "eject": {
-          if (settings.provider !== "ollama") {
+          const target = args.join(" ").trim();
+          let ejectedModels: string[];
+          try {
+            ejectedModels = await ejectModels({
+              target,
+              settings,
+              activeHost,
+              usedModels: usedOllamaModelsRef.current
+            });
+          } catch (error) {
             appendLine({
-              tone: "warning",
+              tone: "danger",
               label: "eject",
-              text: "Eject is only available for Ollama models."
+              text: error instanceof Error ? error.message : String(error)
             });
             return;
           }
-
-          const target = args.join(" ").trim();
-          const ejectedModels = await ejectOllamaModels({
-            target,
-            settings,
-            activeHost,
-            usedModels: usedOllamaModelsRef.current
-          });
           if (ejectedModels.length === 0) {
             appendLine({
               tone: "warning",
               label: "eject",
-              text: "No Ollama model was ejected."
+              text: "No matching loaded model was found."
             });
             return;
           }
@@ -1972,7 +1975,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
             label: "eject",
             text: `ejected ${ejectedModels.join(", ")}`
           });
-          if (activeHost) {
+          if (settings.provider === "ollama" && activeHost) {
             const details = await readOllamaHostDetails(activeHost.host, true).catch(() => activeHost);
             setActiveHost(details);
           }
@@ -2085,7 +2088,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         }
         case "theme": {
           const requested = args[0]?.toLowerCase();
-          if (requested === "new" || requested === "legacy") {
+          if (requested === "flow" || requested === "new" || requested === "legacy") {
             setUiTheme(requested);
             savePatchPilotEnvValues({ PATCHPILOT_UI_THEME: requested });
             appendLine({
@@ -2512,10 +2515,10 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
             }));
           }
           savePatchPilotEnvValues({
-            PATCHPILOT_EXPERIMENTAL_FILE_ANALYSIS: nextFlags.fileAnalysis ? "1" : "0",
-            PATCHPILOT_EXPERIMENTAL_MEMORY: nextFlags.memory ? "1" : "0",
-            PATCHPILOT_EXPERIMENTAL_SUBAGENTS: nextFlags.subagents ? "1" : "0",
-            PATCHPILOT_EXPERIMENTAL_SHELL_METACHARACTERS: nextFlags.shellMetacharacters ? "1" : "0"
+            [experimentalFlagEnvName("fileAnalysis")]: nextFlags.fileAnalysis ? "1" : "0",
+            [experimentalFlagEnvName("memory")]: nextFlags.memory ? "1" : "0",
+            [experimentalFlagEnvName("subagents")]: nextFlags.subagents ? "1" : "0",
+            [experimentalFlagEnvName("shellMetacharacters")]: nextFlags.shellMetacharacters ? "1" : "0"
           });
           return nextFlags;
         });
@@ -3047,9 +3050,9 @@ function buildCommandSuggestionItems(options: {
         category: command.category,
         label: baseCommand,
         detail: command.description,
-        hint: command.usage.includes("<") || command.usage.includes("[") ? "fill" : "run",
+        hint: needsArgument(command.usage) ? "fill" : "run",
         command: baseCommand,
-        execute: !command.usage.includes("<") && !command.usage.includes("[")
+        execute: !needsArgument(command.usage)
       };
     });
 
@@ -3140,15 +3143,16 @@ function readEntrySelection(value: string, selectedIndex: number): "local" | "ho
     return "host";
   }
 
+  const runtime = resolveRuntimeAlias(value);
+  if (runtime?.provider === "ollama") {
+    return "local";
+  }
+
   if (
     normalizedValue === "3" ||
     normalizedValue === "local-openai" ||
     normalizedValue === "local server" ||
-    normalizedValue === "lmstudio" ||
-    normalizedValue === "lm studio" ||
-    normalizedValue === "bionic" ||
-    normalizedValue === "llamacpp" ||
-    normalizedValue === "vllm"
+    runtime?.provider === "local-openai"
   ) {
     return "local-openai";
   }
@@ -3201,10 +3205,6 @@ function experimentalFlagCommandName(flag: ExperimentalFlag): string {
     : flag === "shellMetacharacters"
       ? "shell-metacharacters"
       : flag;
-}
-
-function experimentalFlagEnvName(flag: ExperimentalFlag): string {
-  return `PATCHPILOT_EXPERIMENTAL_${experimentalFlagCommandName(flag).replace(/-/g, "_").toUpperCase()}`;
 }
 
 function readIndexedSelection(value: string, selectedIndex: number): number | null {

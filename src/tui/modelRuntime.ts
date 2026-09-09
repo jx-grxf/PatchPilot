@@ -4,6 +4,7 @@ import { resolveLocalOpenAIBaseUrl } from "../core/localOpenAI.js";
 import type { ModelDescriptor, ModelProvider, ModelTelemetry } from "../core/types.js";
 import { savePatchPilotEnvValues } from "../core/env.js";
 import { formatModelLabel, formatModelOptions, selectableModels } from "./modelSelection.js";
+import { rememberModelDescriptors } from "./modelDescriptors.js";
 import { canUseUnverifiedModel, selectModelFromInput } from "./modelPicking.js";
 import type { LogLineInput } from "./types.js";
 
@@ -16,7 +17,6 @@ import type { LogLineInput } from "./types.js";
 
 const modelCacheTtlMs = 5 * 60_000;
 const modelCache = new Map<string, { models: string[]; descriptors: ModelDescriptor[]; expiresAt: number }>();
-export const modelDescriptorIndex = new Map<string, ModelDescriptor>();
 
 /** Seeds the cache from a host probe that already listed the models. */
 export function cacheModelList(
@@ -25,6 +25,7 @@ export function cacheModelList(
   models: string[],
   descriptors: ModelDescriptor[]
 ): void {
+  rememberModelDescriptors(descriptors);
   modelCache.set(modelCacheKey(provider, ollamaUrl), {
     models,
     descriptors,
@@ -70,18 +71,6 @@ export function modelCacheKey(provider: ModelProvider, ollamaUrl: string): strin
   }
 
   return `${provider}:${resolveLocalOpenAIBaseUrl()}`;
-}
-
-export function rememberModelDescriptors(descriptors: ModelDescriptor[]): void {
-  for (const descriptor of descriptors) {
-    modelDescriptorIndex.set(descriptor.id, descriptor);
-    if (descriptor.modelName) {
-      modelDescriptorIndex.set(descriptor.modelName, descriptor);
-    }
-    if (descriptor.displayName) {
-      modelDescriptorIndex.set(descriptor.displayName, descriptor);
-    }
-  }
 }
 
 export async function loadKnownOrAvailableModels(

@@ -8,7 +8,7 @@ export type ThemePickerOption = {
   description: string;
 };
 
-/** Fullscreen picker for `/theme` — choose the New shell or the Legacy TUI. */
+/** Fullscreen picker for `/theme` — choose the active terminal interface. */
 export function ThemePicker(props: {
   options: ThemePickerOption[];
   selectedIndex: number;
@@ -35,7 +35,7 @@ export function ThemePicker(props: {
                   {option.label}
                 </Text>
                 {isCurrent ? <Text color="green"> · current</Text> : null}
-                {option.value === "new" ? <Text color="gray"> · default</Text> : null}
+                {option.value === "flow" ? <Text color="gray"> · default</Text> : null}
               </Box>
               <Box marginLeft={3}>
                 <Text color={selected ? "white" : "gray"} dimColor={!selected} wrap="wrap">

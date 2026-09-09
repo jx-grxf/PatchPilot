@@ -15,6 +15,12 @@ export type ModelStreamDelta = {
   content?: string;
   /** Reasoning text, where the runtime reports it separately from content. */
   thinking?: string;
+  /**
+   * Progress on a tool call being assembled. A model writing a whole file into
+   * an argument produces no visible content for minutes; without this the user
+   * sees a rising counter and nothing else.
+   */
+  toolCall?: { name: string; argumentChars: number };
 };
 
 /** A tool advertised to the runtime, in the shape both providers accept. */
@@ -129,6 +135,7 @@ export const AGENT_TOOL_NAMES = [
 export const MAX_TOOL_CALLS_PER_RESPONSE = 12;
 
 export type AgentToolName = (typeof AGENT_TOOL_NAMES)[number];
+export type AgentEventToolName = AgentToolName | "subagent";
 
 export type AgentToolCall = {
   name: AgentToolName;
@@ -218,6 +225,8 @@ export type AgentEvent =
        */
       content: string;
       tokensPerSecond: number | null;
+      /** What the model is assembling, when it is writing a tool call. */
+      writing?: { tool: string; chars: number };
       workState: AgentWorkState;
     }
   /** Reasoning text, where the runtime reports it apart from the answer. */
@@ -237,7 +246,7 @@ export type AgentEvent =
     }
   | {
       type: "tool";
-      name: AgentToolName;
+      name: AgentEventToolName;
       summary: string;
       content?: string;
       ok: boolean;
@@ -341,7 +350,7 @@ export type SessionEvent =
       type: "tool.completed";
       runId: string;
       toolCallId: string;
-      tool: AgentToolName;
+      tool: AgentEventToolName;
       ok: boolean;
       summary: string;
       workState: AgentWorkState;

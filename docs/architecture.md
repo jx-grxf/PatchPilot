@@ -1,115 +1,77 @@
 # Architecture
 
-PatchPilot is split into a small agent core and an Ink terminal interface.
+PatchPilot is a Node.js 22+ TypeScript ESM application. `src/cli.tsx` owns command-line parsing and launches the Ink UI. The runtime is split into a local-model layer, an agent loop, bounded workspace tools, persistent context/session stores, and multiple terminal renderers.
 
-## Components
+## Runtime flow
 
-| Component | Responsibility |
+1. CLI and onboarding resolve the workspace, provider, endpoint, model, permissions, and generation limits.
+2. `modelClient` creates either an `OllamaClient` or `LocalOpenAIClient`.
+3. Capability probing determines native tool-call, JSON-schema, streaming, and context behavior.
+4. `AgentRunner` builds the bounded prompt and advertises only the tools allowed in the current mode.
+5. The runtime streams visible text, reasoning where exposed, and partial tool-call progress.
+6. Tool calls are validated, repaired when safe, loop-checked, approved when required, and executed through `WorkspaceTools`.
+7. Events are rendered in the TUI and appended to the session/context stores.
+
+## Main modules
+
+| Module | Responsibility |
 |---|---|
-| `OllamaClient` | Sends chat requests to the selected Ollama HTTP API and reads host model state |
-| `compute` | Classifies the selected Ollama endpoint as local or remote compute |
-| `subagents` | Runs small planner/reviewer advisor calls before the primary agent loop |
-| `AgentRunner` | Maintains the model loop, work-state transitions, session events, and typed tool calls |
-| `WorkspaceTools` | Provides bounded file, search, patch, Git, test, and shell actions |
-| `SessionStore` | Persists append-only JSONL session events and updates the global session index |
-| `App` | Renders the TUI transcript, approval prompts, status, and prompt input |
-| `systemStats` | Samples CPU and memory usage for the live header telemetry |
+| `modelCatalog` / `localRuntimes` | Discover Ollama, LM Studio/Bionic, MLX, llama.cpp, and vLLM models. |
+| `ollama` | Ollama chat, model inventory, load state, and model unloading. |
+| `localOpenAI` | OpenAI-compatible local chat, streaming, capability probing, and LM Studio/Bionic unloading. |
+| `capability` | Choose native tools, constrained JSON, or safe fallback behavior for a model/runtime pair. |
+| `agent` | Primary loop, context measurement, tool scheduling, repetition guards, cancellation, and event emission. |
+| `toolSchema` / `toolRepair` | Define the nine-tool surface and validate or repair model-emitted calls. |
+| `workspace` | Enforce workspace boundaries, secret-path protections, approvals, shell policy, and concrete tool execution. |
+| `subagentRunner` | Run bounded `explore` and `general` child loops with isolated context and narrow tool allowlists. |
+| `contextStore` / `compaction` | Persist, pin, export, clear, and compact session context. |
+| `session` | Append JSONL events and maintain the global session index. |
+| `src/tui` | Own commands, state, onboarding, model/host selection, telemetry, and terminal rendering. |
 
-## Compute Model
+## Local model boundary
 
-PatchPilot separates the client machine from the compute machine:
+`ModelProvider` has exactly two values:
 
-- The client machine runs the TUI, reads and writes workspace files, runs Git, and executes tests.
-- The compute machine runs Ollama inference.
-- `/connect` changes only the Ollama compute endpoint. It does not move workspace tools to the remote host.
-- Host discovery checks both the local LAN and reachable Tailscale peers, then verifies each candidate against Ollama's `GET /api/version`.
-- A localhost endpoint is classified as local compute. A LAN endpoint such as `http://192.168.1.50:11434` is classified as remote compute.
+- `ollama` uses Ollama's native API.
+- `local-openai` uses an OpenAI-compatible local `/v1` endpoint.
 
-This keeps the Windows-desktop-GPU plus MacBook-editing workflow simple: expose Ollama on the Windows machine, connect from the Mac, and keep all file operations local to the Mac workspace.
+Known local runtimes are described in one registry. Model discovery probes their default ports and ranks usable chat models. MLX and llama.cpp share port 8080, so discovery uses server responses instead of assuming a runtime from its port.
 
-## Subagents
+Remote compute is intentionally limited to Ollama inference. `/connect` can select a verified LAN or Tailscale Ollama host, while reads, writes, Git, tests, and shell commands remain on the machine running PatchPilot.
 
-The first subagent layer is advisory and intentionally small:
+## Agent protocol
 
-| Subagent | Purpose | Tool Access |
-|---|---|---|
-| Planner | Suggests likely files, order of work, and verification steps | None |
-| Reviewer | Calls out risk, missing tests, and platform concerns | None |
+PatchPilot advertises nine public tools: `read`, `write`, `edit`, `glob`, `grep`, `bash`, `fetch_url`, `task`, and `todo`.
 
-Both subagents run as separate model calls before the primary agent starts. Their output is injected as advisory context only; the primary agent must still verify with workspace tools before changing code. This follows the useful part of the opencode `primary` vs `subagent` model without granting background agents write or shell permissions.
+Native function calling is preferred. When a local model/runtime cannot use it reliably, PatchPilot falls back to a JSON command envelope validated with Zod. Repair handles bounded, unambiguous formatting mistakes; repeated invalid or identical calls stop instead of consuming the remaining step budget.
 
-## Native App Direction
+Context usage is measured against the runtime's effective window. Large tool results are pruned before the model loses the system prompt, and saved context can be compacted while pinned items remain available.
 
-The target native structure is:
+## Child agents
 
-| Layer | Direction |
+The primary model can issue a `task` call when child agents are enabled or when the user's prompt explicitly requests delegation.
+
+| Type | Tools |
 |---|---|
-| Core CLI | Keep the TypeScript/Node agent as the sidecar because it already owns tools, Ollama, and safety boundaries |
-| Desktop shell | Use Tauri for macOS and Windows instead of maintaining both Electron and Tauri |
-| Connect | Reuse the same Ollama compute endpoint model in CLI and desktop |
-| Security | Bind any local control server to loopback only and keep remote model traffic explicit |
+| `explore` | `read`, `glob`, `grep` |
+| `general` | `read`, `glob`, `grep`, `write`, `edit` |
 
-## Agent Protocol
+Children receive a fresh context, cannot run shell commands, cannot spawn grandchildren, and are capped at eight steps. They run serially to preserve the local runtime's prefix cache. The compact result returns to the parent; the detailed trace is stored under `.patchpilot/subagents/`. Cancellation propagates from the primary run.
 
-The first version uses a JSON command envelope instead of provider-specific tool calling. That keeps behavior portable across local models, including models that do not reliably emit native tool calls.
+## Safety model
 
-Tool request:
+- `plan` exposes only read-only tools.
+- `build` can request per-action write and shell approval.
+- `bypass` skips routine approvals only after explicit trusted-workspace selection.
+- Paths are resolved against the workspace and common secret/credential locations are rejected.
+- Network retrieval rejects private, loopback, link-local, and cloud-metadata destinations after DNS resolution.
+- Shell arguments and metacharacters are classified before execution; high-risk forms retain explicit gates.
+- Session approvals are scoped to the concrete action rather than becoming global permission.
 
-```json
-{
-  "action": "tools",
-  "message": "I need to inspect the project files.",
-  "tool_calls": [
-    {
-      "name": "list_files",
-      "arguments": {
-        "path": "."
-      }
-    }
-  ]
-}
-```
+## Persistence
 
-PatchPilot exposes a `ToolSpec` registry for each tool. Specs describe risk, side effects, permission class, and transcript category. Tool calls execute sequentially so approval-gated reads, writes, and shell actions cannot overwrite each other's pending approval state.
+Workspace session data lives under `.patchpilot/` and is excluded from release artifacts. Session events are append-only JSONL. A global index under `~/.patchpilot/` supports cross-workspace session listing, while user settings are stored in `~/.patchpilot/.env`.
 
-Longer runs can also call `update_todo` with a compact task snapshot. The runner stores that state separately from the transcript and the TUI renders it in the lower transcript area, with `in_progress` items animated and `completed` items checked.
+## Release flow
 
-Final answer:
-
-```json
-{
-  "action": "final",
-  "message": "The repository is a TypeScript TUI agent..."
-}
-```
-
-## Sessions
-
-Each TUI launch creates a session id. Events are appended to `.patchpilot/sessions/<session-id>.jsonl` in the workspace:
-
-- `session.created`
-- `run.started`
-- `model.request`
-- `tool.requested`
-- `approval.requested`
-- `tool.completed`
-- `run.completed`
-- `run.failed`
-
-The workspace `.patchpilot/` folder is ignored by Git. A global index at `~/.patchpilot/session-index.json` keeps recent sessions discoverable for `patchpilot sessions`, `patchpilot resume`, `/sessions`, and `/resume`.
-
-## Release Publishing
-
-Tagged releases use `.github/workflows/release.yml`. The workflow verifies that `package.json` matches the tag, installs with `npm ci`, runs tests, builds, packs the CLI, publishes `@jx-grxf/patchpilot` to npm, and then creates or updates the GitHub Release with the `.tgz` artifact. Publishing uses the `NPM_TOKEN` repository secret when present and can fall back to npm trusted publishing if the package is configured for GitHub Actions OIDC on npm.
-
-## Safety
-
-The workspace root is resolved once at startup. Every file path is resolved against that root and rejected if it escapes the workspace. Writes and shell commands are blocked by default. In the TUI, risky tools request approval with allow-once, allow-session, or deny decisions. `--apply` and `--allow-shell` remain explicit compatibility switches for users who want global write or shell permission.
-
-## Telemetry
-
-PatchPilot reads Ollama's non-streaming chat metadata for prompt tokens, response tokens, total duration, and generation speed. Gemini reads API `usageMetadata`. Codex OAuth runs `codex exec --json` and parses the `turn.completed.usage` event, including `cached_input_tokens`, so the TUI can show real Codex CLI usage instead of only character-based estimates.
-
-Model discovery is cached in the current TUI session. Prompt execution reuses the known model list when the selected model is already present, avoiding repeated Gemini model-list calls and keeping Codex/Ollama discovery off the hot path.
-
-The TUI also keeps session-level accounting: request count, prompt tokens, cached prompt tokens, output tokens, total tokens, and estimated cost where public API token pricing is known. Local Ollama cost is reported as zero; Codex OAuth cost is shown as an API-price estimate because actual ChatGPT-plan quota handling is external to PatchPilot.
+A signed `v*` tag triggers `.github/workflows/release.yml`. The workflow verifies tag/package version alignment and release notes, installs from the lockfile, runs tests and the build, audits production dependencies and npm signatures, packs the CLI, publishes `@jx-grxf/patchpilot`, and creates the GitHub Release with the tarball.

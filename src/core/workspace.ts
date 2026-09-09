@@ -9,6 +9,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { deflateRawSync, inflateRawSync } from "node:zlib";
 import { fetchWithTimeout } from "./http.js";
+import { readTextLimited } from "./stream.js";
 import { MemoryStore } from "./memory.js";
 import type { AgentToolCall, AgentToolName, ApprovalRequest, PermissionDecision, ToolCategory, ToolPermission, ToolResult, ToolRisk, ToolSpec } from "./types.js";
 
@@ -931,6 +932,7 @@ export class WorkspaceTools {
     if (response.status >= 300 && response.status < 400) {
       const location = response.headers.get("location") ?? "";
       const redirectSuffix = location ? ` Location: ${location}` : "";
+      await response.body?.cancel().catch(() => undefined);
       return {
         ok: true,
         summary: `${target.href} -> HTTP ${response.status} redirect`,
@@ -942,11 +944,28 @@ export class WorkspaceTools {
     }
 
     const contentType = response.headers.get("content-type") ?? "";
-    const rawBody = await response.text().catch(() => "");
+    let rawBody = "";
+    let responseBodyTruncated = false;
+    let responseBytes = 0;
+    try {
+      const limitedBody = await readTextLimited(response, fetchUrlMaxBytes, this.signal, Math.min(this.timeoutMs, fetchUrlTimeoutMs));
+      rawBody = limitedBody.text;
+      responseBodyTruncated = limitedBody.truncated;
+      responseBytes = limitedBody.bytes;
+    } catch (error) {
+      return denied(error instanceof Error ? error.message : String(error), "fetch_url");
+    }
     const isHtml = /\bhtml\b/i.test(contentType) || (!contentType && /^\s*<(?:!doctype|html)/i.test(rawBody));
     const extracted = isHtml ? htmlToReadableText(rawBody) : rawBody.trim();
-    const truncated = extracted.length > maxChars;
-    const body = truncated ? `${extracted.slice(0, maxChars)}\n… [truncated ${extracted.length - maxChars} more chars]` : extracted;
+    const truncated = responseBodyTruncated || extracted.length > maxChars;
+    const body = [
+      extracted.length > maxChars ? extracted.slice(0, maxChars) : extracted,
+      responseBodyTruncated
+        ? `… [response body capped at ${fetchUrlMaxBytes} bytes]`
+        : extracted.length > maxChars
+          ? `… [truncated ${extracted.length - maxChars} more chars]`
+          : ""
+    ].filter(Boolean).join("\n");
 
     if (!response.ok) {
       return {
@@ -955,7 +974,7 @@ export class WorkspaceTools {
         content: `fetch_url received HTTP ${response.status} from ${target.href}.\n${body}`.trim(),
         tool: "fetch_url",
         category: toolSpecs.fetch_url.category,
-        metadata: { status: response.status, contentType }
+        metadata: { status: response.status, contentType, bytes: responseBytes, truncated }
       };
     }
 
@@ -965,7 +984,7 @@ export class WorkspaceTools {
       content: body || "(empty response body)",
       tool: "fetch_url",
       category: toolSpecs.fetch_url.category,
-      metadata: { status: response.status, contentType, chars: extracted.length, truncated }
+      metadata: { status: response.status, contentType, bytes: responseBytes, chars: extracted.length, truncated }
     };
   }
 
@@ -2155,9 +2174,10 @@ function denied(
 
 const fetchUrlMaxChars = 20_000;
 const fetchUrlTimeoutMs = 20_000;
+const fetchUrlMaxBytes = 256_000;
 
 /**
- * Models (especially Gemini) often hand back a URL wrapped in Markdown link
+ * Models often hand back a URL wrapped in Markdown link
  * syntax, angle brackets, quotes, or as a bare domain. Recover a plain absolute
  * http(s) URL from those common shapes before parsing.
  */

@@ -8,7 +8,7 @@ export function StartupBanner(props: {
     return (
       <Box flexDirection="column">
         <Text color="cyan" bold>PatchPilot</Text>
-        <Text color="gray">Local-first. Permissioned. Easy to review.</Text>
+        <Text color="gray">Local-only. Permissioned. Easy to review.</Text>
       </Box>
     );
   }
@@ -21,7 +21,7 @@ export function StartupBanner(props: {
       <Text color="cyan">       |  __/ (_| | || (__| | | |  __/| | | (_) | |_ </Text>
       <Text color="cyan">       |_|   \__,_|\__\___|_| |_|_|   |_|_|\___/ \__|</Text>
       <Text color="gray"> </Text>
-      <Text color="cyan">             .------.       Local-first coding agent</Text>
+      <Text color="cyan">             .------.       Local-only coding agent</Text>
       <Text color="cyan">            /  o  o  \      Permissioned tools</Text>
       <Text color="cyan">           |    __    |     Visible diffs and approvals</Text>
       <Text color="cyan">           |  _|  |_  |</Text>

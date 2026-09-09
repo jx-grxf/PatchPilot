@@ -6,6 +6,7 @@ import {
   supportsMlx
 } from "../src/core/localRuntimes.js";
 import { describeModel, isUsableForChat, rankForAgentUse, type CatalogModel } from "../src/core/modelCatalog.js";
+import { normalizeModelProvider } from "../src/core/modelClient.js";
 
 function model(overrides: Partial<CatalogModel> = {}): CatalogModel {
   return {
@@ -49,6 +50,13 @@ describe("local runtime registry", () => {
     expect(resolveRuntimeAlias("llama.cpp")?.id).toBe("llamacpp");
     expect(resolveRuntimeAlias("vLLM")?.id).toBe("vllm");
     expect(resolveRuntimeAlias("openai")).toBeNull();
+  });
+
+  it("routes every registry alias through the matching provider client", () => {
+    for (const alias of ["lms", "applemlx", "llamaserver", "ggml"]) {
+      expect(normalizeModelProvider(alias), alias).toBe("local-openai");
+    }
+    expect(normalizeModelProvider("ollama")).toBe("ollama");
   });
 
   it("gives every runtime an actionable way to start it", () => {

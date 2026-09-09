@@ -63,6 +63,10 @@ describe("LocalOpenAIClient configuration", () => {
     expect(options.maxTokens).toBe(4096);
     expect(options.temperature).toBe(0.7);
   });
+
+  it("uses the same documented temperature default as the settings registry", () => {
+    expect(readLocalOpenAIRuntimeOptions({}).temperature).toBe(0.2);
+  });
 });
 
 describe("LocalOpenAIClient streaming", () => {
@@ -113,6 +117,33 @@ describe("LocalOpenAIClient streaming", () => {
     expect(thinking).toEqual(["step one", "step two"]);
     // Reasoning must never leak into the answer the agent loop parses.
     expect(result.content).toBe("answer");
+  });
+
+  it("reports progress while a streamed tool call is being assembled", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      sse([
+        { choices: [{ delta: { tool_calls: [{ index: 0, function: { name: "write_file", arguments: '{"path":"src/a' } }] } }] },
+        { choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: '.ts","content":"ok"}' } }] } }] },
+        { choices: [{ delta: {}, finish_reason: "tool_calls" }] }
+      ])
+    );
+
+    const progress: Array<{ name: string; argumentChars: number }> = [];
+    const result = await new LocalOpenAIClient().chat({
+      model: "gemma-4-12b",
+      messages: [{ role: "user", content: "write it" }],
+      onDelta: (delta) => {
+        if (delta.toolCall) progress.push(delta.toolCall);
+      }
+    });
+
+    expect(progress).toEqual([
+      { name: "write_file", argumentChars: 14 },
+      { name: "write_file", argumentChars: 34 }
+    ]);
+    expect(result.toolCalls).toEqual([
+      { name: "write_file", arguments: '{"path":"src/a.ts","content":"ok"}' }
+    ]);
   });
 
   it("asks for usage only when streaming", async () => {
@@ -217,6 +248,38 @@ describe("LocalOpenAIClient model substitution", () => {
 });
 
 describe("LocalOpenAIClient model discovery", () => {
+  it("lists and unloads loaded LM Studio/Bionic model instances", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.endsWith("/api/v1/models")) {
+        return new Response(JSON.stringify({
+          models: [
+            { key: "cold", loaded_instances: [] },
+            { key: "gemma", loaded_instances: [{ id: "gemma:1" }] }
+          ]
+        }), { status: 200 });
+      }
+      if (url.endsWith("/api/v1/models/unload") && init?.method === "POST") {
+        return new Response(JSON.stringify({ instance_id: "gemma:1" }), { status: 200 });
+      }
+      return new Response("not found", { status: 404 });
+    });
+
+    const client = new LocalOpenAIClient("http://127.0.0.1:1234/v1");
+    expect(await client.listLoadedModelInstances()).toEqual([{ model: "gemma", instanceId: "gemma:1" }]);
+    await client.unloadModelInstance("gemma:1");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://127.0.0.1:1234/api/v1/models/unload",
+      expect.objectContaining({ body: JSON.stringify({ instance_id: "gemma:1" }) })
+    );
+  });
+
+  it("reports runtimes without a native eject API clearly", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response("not found", { status: 404 }));
+    await expect(new LocalOpenAIClient().listLoadedModelInstances()).rejects.toThrow(/does not support model eject/);
+  });
+
   it("marks unloaded models and carries the advertised context window", async () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(
       async () =>

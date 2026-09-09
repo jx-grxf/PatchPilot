@@ -1,7 +1,7 @@
-import { defaultLocalOpenAIModel } from "../core/localOpenAI.js";
+import { defaultLocalOpenAIModel, LocalOpenAIClient, resolveLocalOpenAIBaseUrl } from "../core/localOpenAI.js";
 import { defaultOllamaModel, OllamaClient } from "../core/ollama.js";
 import type { ModelProvider } from "../core/types.js";
-import { modelDescriptorIndex } from "./modelRuntime.js";
+import { modelDescriptorIndex } from "./modelDescriptors.js";
 import { formatModelLabel, formatModelOptions, selectableModels } from "./modelSelection.js";
 import { normalizeModelAlias } from "./format.js";
 import type { AgentRunnerOptions } from "../core/agent.js";
@@ -61,7 +61,11 @@ export function canUseUnverifiedModel(provider: ModelProvider, model: string): b
   return provider !== "ollama" && isPlausibleCloudModelId(model);
 }
 
-export function defaultModelForProvider(provider: ModelProvider, currentModel: string): string {
+export function defaultModelForProvider(provider: ModelProvider, currentModel: string, currentProvider: ModelProvider = provider): string {
+  if (provider !== currentProvider) {
+    return provider === "local-openai" ? defaultLocalOpenAIModel : defaultOllamaModel;
+  }
+
   if (provider === "local-openai") {
     return modelDescriptorIndex.has(currentModel) ? currentModel : defaultLocalOpenAIModel;
   }
@@ -118,5 +122,31 @@ export async function ejectOllamaModels(options: {
     );
   }
 
+  return ejected;
+}
+
+/** Eject models through the active runtime's native management API. */
+export async function ejectModels(options: {
+  target: string;
+  settings: AgentRunnerOptions;
+  activeHost: OllamaHostDetails | null;
+  usedModels: Set<string>;
+}): Promise<string[]> {
+  if (options.settings.provider === "ollama") {
+    return await ejectOllamaModels(options);
+  }
+
+  const client = new LocalOpenAIClient(resolveLocalOpenAIBaseUrl());
+  const instances = await client.listLoadedModelInstances();
+  const target = options.target.trim();
+  const selected = target === "all"
+    ? instances
+    : instances.filter((instance) => instance.model === (target || options.settings.model) || instance.instanceId === (target || options.settings.model));
+
+  const ejected: string[] = [];
+  for (const instance of selected) {
+    await client.unloadModelInstance(instance.instanceId);
+    ejected.push(instance.model);
+  }
   return ejected;
 }

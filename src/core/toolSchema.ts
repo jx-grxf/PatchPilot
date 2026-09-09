@@ -335,7 +335,7 @@ export function toWorkspaceCall(name: ToolName, args: Record<string, unknown>): 
       return { name: "update_todo", arguments: { items: args.items } };
     case "task":
       // Subagents are dispatched by the agent loop, not the workspace.
-      return { name: "update_todo", arguments: { items: [] } };
+      throw new Error("task calls must be dispatched by the agent loop");
   }
 }
 
