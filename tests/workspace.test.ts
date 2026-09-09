@@ -436,6 +436,24 @@ describe("WorkspaceTools", () => {
     expect(result.content).toContain("Hallo aus DOCX");
   });
 
+  it("extracts only Word text nodes and decodes their entities once", async () => {
+    const docxPath = path.join(tempRoot, "entities.docx");
+    await writeFile(docxPath, createMinimalDocx("&amp;lt; &lt; &amp;"));
+    const tools = new WorkspaceTools({
+      root: tempRoot,
+      allowWrite: false,
+      allowShell: false
+    });
+
+    const result = await tools.execute({
+      name: "inspect_document",
+      arguments: { path: "entities.docx" }
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.content).toContain("&lt; < &");
+  });
+
   it("inspects external images when experimental file analysis is enabled", async () => {
     const outsideRoot = await mkdtemp(path.join(tmpdir(), "patchpilot-image-"));
     const imagePath = path.join(outsideRoot, "sample.png");

@@ -1,4 +1,5 @@
 import { appendFile, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { getPatchPilotConfigDir } from "./env.js";
 import type { ModelProvider, SessionEvent } from "./types.js";
@@ -357,5 +358,5 @@ function clip(value: string, maxLength: number): string {
 
 function createSessionId(): string {
   const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..+$/, "Z");
-  return `${stamp}-${Math.random().toString(36).slice(2, 8)}`;
+  return `${stamp}-${randomUUID()}`;
 }
