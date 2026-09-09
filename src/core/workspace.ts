@@ -2786,16 +2786,28 @@ function findEndOfCentralDirectory(archive: Buffer): number {
 }
 
 function wordXmlToText(xml: string): string {
-  return xml
-    .replace(/<w:tab\/>/g, "\t")
-    .replace(/<\/w:p>/g, "\n")
-    .replace(/<[^>]+>/g, "")
+  const parts: string[] = [];
+  const tokenPattern = /<w:t(?:\s[^>]*)?>([\s\S]*?)<\/w:t>|<w:tab\s*\/>|<\/w:p>/gi;
+  for (let match = tokenPattern.exec(xml); match; match = tokenPattern.exec(xml)) {
+    if (match[1] !== undefined) {
+      parts.push(decodeWordXmlText(match[1]));
+    } else if (/^<w:tab/i.test(match[0])) {
+      parts.push("\t");
+    } else {
+      parts.push("\n");
+    }
+  }
+
+  return parts.join("").trim();
+}
+
+function decodeWordXmlText(value: string): string {
+  return value
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">")
-    .replace(/&amp;/g, "&")
     .replace(/&quot;/g, "\"")
     .replace(/&apos;/g, "'")
-    .trim();
+    .replace(/&amp;/g, "&");
 }
 
 /**

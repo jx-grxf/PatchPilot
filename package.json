@@ -1,6 +1,6 @@
 {
   "name": "@jx-grxf/patchpilot",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "private": false,
   "description": "Local-only coding agent TUI: a harness that makes local models reliable.",
   "type": "module",

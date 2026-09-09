@@ -193,7 +193,7 @@ Architecture details live in [docs/architecture.md](docs/architecture.md). Produ
 
 ## Releases
 
-Release notes are in [docs/releases](docs/releases). The current release is [v2.0.0](docs/releases/v2.0.0.md).
+Release notes are in [docs/releases](docs/releases). The current release is [v2.0.1](docs/releases/v2.0.1.md).
 
 A signed `v*` tag triggers CI verification, npm publication, package creation, and the GitHub Release workflow.
 
