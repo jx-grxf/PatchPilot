@@ -49,7 +49,8 @@ describe("FlowShell", () => {
 
     expect(frame).toContain("add a farewell function");
     expect(frame).toContain("read the file first");
-    expect(frame).toContain("edit_file");
+    expect(frame).toContain("● Update");
+    expect(frame).toContain("⎿  replaced 1 match in hello.py");
     expect(frame).toContain("def farewell(name)");
     expect(frame).toContain("command failed");
     expect(frame).toContain("Added");

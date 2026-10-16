@@ -254,6 +254,8 @@ export type AgentEvent =
       toolCallId?: string;
       category?: ToolCategory;
       preview?: string;
+      /** The arguments the call was made with, so the UI can name its target. */
+      arguments?: Record<string, unknown>;
       metadata?: Record<string, unknown>;
     }
   | {

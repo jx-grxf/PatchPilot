@@ -40,7 +40,7 @@ describe("describeRunActivity", () => {
       tokensPerSecond: null,
       writing: { tool: "write", chars: 0 }
     });
-    expect(waiting.label).toBe("Writing write");
+    expect(waiting.label).toBe("Writing a file");
     expect(waiting.detail).toContain("when the call is complete");
 
     const streaming = describeRunActivity("editing", {

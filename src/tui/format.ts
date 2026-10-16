@@ -136,3 +136,21 @@ export function shortenMiddle(value: string, maxLength: number): string {
   return `${value.slice(0, left)}...${value.slice(value.length - right)}`;
 }
 
+
+// CSI and OSC/DCS/APC/PM sequences, then any C0/C1 control left over. Built
+// from strings so the source holds no raw control characters.
+const terminalSequencePattern = new RegExp(
+  "\\u001b\\[[0-?]*[ -/]*[@-~]|\\u001b[\\]P^_X][\\s\\S]*?(?:\\u0007|\\u001b\\\\|$)|\\u009b[0-?]*[ -/]*[@-~]|\\u001b.?",
+  "g"
+);
+const strayControlPattern = new RegExp("[\\u0000-\\u0008\\u000b-\\u001f\\u007f-\\u009f]", "g");
+
+/**
+ * Model output, tool arguments and tool results reach the terminal verbatim.
+ * An escape sequence in any of them could move the cursor, rewrite earlier
+ * scrollback, set the window title or write the clipboard (OSC 52), so every
+ * transcript string passes through here. Newlines and tabs survive.
+ */
+export function stripTerminalControls(value: string): string {
+  return value.replace(terminalSequencePattern, "").replace(strayControlPattern, "");
+}
