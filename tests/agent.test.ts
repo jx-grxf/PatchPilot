@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { compactTranscript, executeToolCallsWithReadParallelism, findRepeatedToolCall, isTodoOnlyFinalResponse, normalizeTodoItems, recoverMalformedToolResponse, resolveToolMode, shouldEnableSubagents, shouldExpectTodos, shouldStopAfterEmptyToolBatches, readFinalMessage } from "../src/core/agent.js";
+import { compactTranscript, executeToolCallsWithReadParallelism, findRepeatedToolCall, trackWholeFileRewrites, isTodoOnlyFinalResponse, normalizeTodoItems, recoverMalformedToolResponse, resolveToolMode, shouldEnableSubagents, shouldExpectTodos, shouldStopAfterEmptyToolBatches, readFinalMessage } from "../src/core/agent.js";
 import type { AgentToolCall, ToolResult } from "../src/core/types.js";
 import type { WorkspaceTools } from "../src/core/workspace.js";
 
@@ -141,6 +141,26 @@ describe("agent loop guards", () => {
     expect(findRepeatedToolCall([{ name: "read_file", arguments: { path: "src/a.ts", mode: "full" } }], recent)).toBeNull();
     expect(findRepeatedToolCall([{ name: "read_file", arguments: { mode: "full", path: "src/a.ts" } }], recent)).toBeNull();
     expect(findRepeatedToolCall([{ name: "read_file", arguments: { path: "src/a.ts", mode: "full" } }], recent)?.name).toBe("read_file");
+  });
+
+  it("warns on a second whole-file rewrite and stops at the fourth", () => {
+    const counts = new Map<string, number>();
+    const write = (id: string, content: string) => {
+      const calls = new Map([[id, { name: "write_file", arguments: { path: "index.html", content } }]]);
+      return trackWholeFileRewrites(counts, [{ tool: "write_file", ok: true, toolCallId: id, category: "write" }], calls);
+    };
+
+    expect(write("a", "v1")).toEqual({ notice: null, exhaustedPath: null });
+    expect(write("b", "v2").notice).toContain("written index.html in full 2 times");
+    expect(write("c", "v3").exhaustedPath).toBeNull();
+    expect(write("d", "v4").exhaustedPath).toBe("index.html");
+  });
+
+  it("resets the rewrite count after a check runs", () => {
+    const counts = new Map<string, number>([["index.html", 3]]);
+    const calls = new Map([["t", { name: "run_shell", arguments: { command: "npm test" } }]]);
+    trackWholeFileRewrites(counts, [{ tool: "run_shell", ok: true, toolCallId: "t", category: "shell" }], calls);
+    expect(counts.size).toBe(0);
   });
 
   it("stops identical todo snapshots on the first no-op repeat", () => {

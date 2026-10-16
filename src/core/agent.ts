@@ -159,6 +159,7 @@ export class AgentRunner {
     let emptyToolBatches = 0;
     let repeatedToolBatches = 0;
     const recentToolSignatures: string[] = [];
+    const wholeFileWrites = new Map<string, number>();
 
     if (ultramaxx) {
       yield {
@@ -733,6 +734,16 @@ export class AgentRunner {
         });
       }
 
+      const rewrite = trackWholeFileRewrites(wholeFileWrites, toolResults, workspaceCallById);
+      if (rewrite.exhaustedPath) {
+        yield {
+          type: "final",
+          message: `Stopped because the model kept rewriting ${rewrite.exhaustedPath} from scratch instead of editing it.`,
+          workState: "error"
+        };
+        return;
+      }
+
       messages.push({
         role: "assistant",
         content: JSON.stringify({
@@ -743,7 +754,7 @@ export class AgentRunner {
       });
       messages.push({
         role: "user",
-        content: formatToolResultsForPrompt(toolResults)
+        content: rewrite.notice ? `${formatToolResultsForPrompt(toolResults)}\n\n${rewrite.notice}` : formatToolResultsForPrompt(toolResults)
       });
       if (contextLimitTokens) {
         const usage = measureContext(messages, {
@@ -1418,6 +1429,44 @@ export function resolveToolMode(options: Pick<AgentRunnerOptions, "mode" | "allo
   }
 
   return options.allowWrite || options.allowShell ? "build" : "plan";
+}
+
+/**
+ * A weak model that finished a file often writes the whole thing again with
+ * small drift, and each copy is worse. The exact-signature check never fires
+ * because the content differs, so successful whole-file writes are counted per
+ * path. A test or shell run in between resets the count: rewriting after a
+ * failing check is legitimate.
+ */
+export function trackWholeFileRewrites(
+  counts: Map<string, number>,
+  results: Array<{ tool: AgentEventToolName; ok: boolean; toolCallId: string; category?: ToolCategory }>,
+  callsById: Map<string, { name: string; arguments: Record<string, unknown> }>,
+  limits: { warnAt: number; stopAt: number } = { warnAt: 2, stopAt: 4 }
+): { notice: string | null; exhaustedPath: string | null } {
+  let notice: string | null = null;
+  for (const result of results) {
+    if (isVerificationToolResult(result)) {
+      counts.clear();
+      continue;
+    }
+    const call = callsById.get(result.toolCallId);
+    const filePath = call?.name === "write_file" && typeof call.arguments.path === "string" ? call.arguments.path : null;
+    if (!result.ok || !filePath) {
+      continue;
+    }
+    const count = (counts.get(filePath) ?? 0) + 1;
+    counts.set(filePath, count);
+    if (count >= limits.stopAt) {
+      return { notice: null, exhaustedPath: filePath };
+    }
+    if (count >= limits.warnAt) {
+      notice =
+        `You have now written ${filePath} in full ${count} times and it is saved on disk. ` +
+        `Do not write the whole file again. Use edit for a targeted fix, run a check, or mark the todo item done and move to the next one.`;
+    }
+  }
+  return { notice, exhaustedPath: null };
 }
 
 export function findRepeatedToolCall(toolCalls: Parameters<WorkspaceTools["execute"]>[0][], recentSignatures: string[]): Parameters<WorkspaceTools["execute"]>[0] | null {
