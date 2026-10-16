@@ -1213,11 +1213,12 @@ describe("WorkspaceTools", () => {
     expect(result.content).not.toContain("secret-browser-cookie");
   });
 
-  it("blocks destructive simple shell commands even when shell is enabled", async () => {
+  it("blocks destructive simple shell commands when shell is not trusted", async () => {
     const tools = new WorkspaceTools({
       root: tempRoot,
       allowWrite: true,
-      allowShell: true
+      allowShell: false,
+      approvalHandler: async () => "allow_once"
     });
 
     const rmResult = await tools.execute({
@@ -1237,6 +1238,52 @@ describe("WorkspaceTools", () => {
     });
     expect(gitResult.ok).toBe(false);
     expect(gitResult.summary).toContain("git clean");
+  });
+
+  it("asks before destructive shell commands in bypass instead of blocking them", async () => {
+    const previews: string[] = [];
+    const tools = new WorkspaceTools({
+      root: tempRoot,
+      allowWrite: true,
+      allowShell: true,
+      approvalHandler: async (request) => {
+        previews.push(request.preview);
+        return "deny";
+      }
+    });
+
+    for (const command of ["rm -rf src", "git push", "npm publish"]) {
+      const result = await tools.execute({ name: "run_shell", arguments: { command } });
+      expect(result.ok).toBe(false);
+      expect(result.approval?.request.bypassable).toBe(false);
+    }
+    expect(previews).toHaveLength(3);
+  });
+
+  it("lets bypass reach outside the workspace and run interpreters without asking", async () => {
+    let approvals = 0;
+    const tools = new WorkspaceTools({
+      root: tempRoot,
+      allowWrite: true,
+      allowShell: true,
+      approvalHandler: async () => {
+        approvals += 1;
+        return "deny";
+      }
+    });
+
+    const outside = await tools.execute({ name: "run_shell", arguments: { command: `ls ${tmpdir()}` } });
+    expect(outside.ok).toBe(true);
+    const interpreter = await tools.execute({ name: "run_shell", arguments: { command: "node -e \"console.log(1)\" > out.txt" } });
+    expect(interpreter.ok).toBe(true);
+    expect(approvals).toBe(0);
+  });
+
+  it("keeps secret paths blocked in bypass", async () => {
+    const tools = new WorkspaceTools({ root: tempRoot, allowWrite: true, allowShell: true });
+    const result = await tools.execute({ name: "run_shell", arguments: { command: "cat .env" } });
+    expect(result.ok).toBe(false);
+    expect(result.summary).toContain("sensitive path");
   });
 
   it("validates shell commands before requesting approval", async () => {
@@ -1335,12 +1382,12 @@ describe("WorkspaceTools", () => {
     expect(approvals).toBe(1);
   });
 
-  it("forces approval for high-risk shell syntax even when shell bypass is enabled", async () => {
+  it("forces approval for high-risk shell syntax when shell is not trusted", async () => {
     let approvals = 0;
     const tools = new WorkspaceTools({
       root: tempRoot,
       allowWrite: true,
-      allowShell: true,
+      allowShell: false,
       allowShellMetacharacters: true,
       approvalHandler: async () => {
         approvals += 1;
