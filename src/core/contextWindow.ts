@@ -31,10 +31,10 @@ export type ContextUsage = {
 };
 
 /** Tool output younger than this stays verbatim; older output may be pruned. */
-export const protectedToolResultTokens = 4000;
+const protectedToolResultTokens = 4000;
 
 /** Below this there is nothing worth pruning, so the pass is skipped. */
-export const minimumPrunableTokens = 1500;
+const minimumPrunableTokens = 1500;
 
 export function measureContext(messages: ChatMessage[], budget: ContextBudget): ContextUsage {
   const usedTokens = totalTokens(messages);

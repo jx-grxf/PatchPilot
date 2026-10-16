@@ -9,6 +9,13 @@ describe("agent modes", () => {
     expect(initialAgentMode({ allowWrite: false, allowShell: false })).toBe("plan");
   });
 
+  it("applies the saved default mode, but never starts in bypass without confirmation", () => {
+    expect(initialAgentMode({ allowWrite: false, allowShell: false }, "build")).toBe("build");
+    expect(initialAgentMode({ allowWrite: false, allowShell: false }, "bypass")).toBe("build");
+    expect(initialAgentMode({ allowWrite: false, allowShell: false }, "plan")).toBe("plan");
+    expect(initialAgentMode({ allowWrite: true, allowShell: true }, "plan")).toBe("bypass");
+  });
+
   it("cycles plan to build to bypass", () => {
     expect(nextAgentMode("plan")).toBe("build");
     expect(nextAgentMode("build")).toBe("bypass");

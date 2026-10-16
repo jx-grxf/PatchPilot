@@ -22,8 +22,8 @@ describe("clipboardListingHasImage", () => {
 
 describe("clipboardImageHint", () => {
   it("always points at Ctrl+V", () => {
-    expect(clipboardImageHint("linux")).toContain("Ctrl+V");
-    expect(clipboardImageHint("win32")).toContain("Ctrl+V");
+    expect(clipboardImageHint("linux")).toContain("ctrl+v");
+    expect(clipboardImageHint("win32")).toContain("ctrl+v");
   });
 
   it("warns macOS users that the terminal eats Cmd+V", () => {

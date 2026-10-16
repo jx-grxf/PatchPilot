@@ -1,5 +1,3 @@
-import type { AgentWorkState } from "../core/types.js";
-
 export type ComposerLayout = {
   height: number;
   editorRows: number;
@@ -57,33 +55,6 @@ export function wrapDraftRows(value: string, width: number): string[] {
 
   return rows.length > 0 ? rows : [""];
 }
-
-/**
- * Build the run-status line.
- *
- * `verbIndex` MUST be a slow counter (advanced roughly every 10s), never the
- * fast spinner frame — otherwise the verb flickers several times per second.
- * The fast spinner glyph is rendered separately by the caller.
- */
-export function formatWorkingStatus(workState: AgentWorkState, verbIndex: number, status: string): string {
-  const verb = workingVerbs[Math.abs(Math.trunc(verbIndex)) % workingVerbs.length] ?? "Working";
-  const state = workState.replace(/_/g, " ");
-  // Separate the verb from the state with a spaced middle dot so they read as
-  // two distinct words instead of running together.
-  const detail = status && status !== state ? ` · ${status}` : "";
-  return `${verb}  ·  ${state}${detail}`;
-}
-
-const workingVerbs = [
-  "Planning",
-  "Inspecting",
-  "Reading",
-  "Checking",
-  "Reviewing",
-  "Composing",
-  "Verifying",
-  "Refining"
-];
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));

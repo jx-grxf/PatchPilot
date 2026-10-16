@@ -13,7 +13,7 @@
  */
 export type UltraMode = "maxx" | "cheap" | "fast" | "focus" | "loop";
 
-export const ultraModeKeyword: Record<UltraMode, string> = {
+const ultraModeKeyword: Record<UltraMode, string> = {
   maxx: "ultramaxx",
   cheap: "ultracheap",
   fast: "ultrafast",
@@ -22,7 +22,7 @@ export const ultraModeKeyword: Record<UltraMode, string> = {
 };
 
 /** All ultra keywords, longest first so matching is unambiguous. */
-export const ultraKeywords: readonly string[] = Object.values(ultraModeKeyword);
+const ultraKeywords: readonly string[] = Object.values(ultraModeKeyword);
 
 /**
  * Pairs that must never run together. `maxx` and `cheap` sit on opposite ends

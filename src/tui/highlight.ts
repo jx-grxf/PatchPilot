@@ -36,7 +36,7 @@ async function loadHighlighter(): Promise<Highlighter | null> {
   }
 }
 
-/** Warms the highlighter so the first code block does not pay the import. */
+/** Starts the import at launch so the first code block is already coloured. */
 export function prewarmHighlighter(): void {
   void loadHighlighter();
 }
@@ -87,7 +87,11 @@ export function resolveLanguage(hint: string): string | undefined {
  */
 export function highlightBlock(code: string, language: string | undefined): string[] {
   const lines = code.split("\n");
-  if (!highlighter || !language) {
+  if (!highlighter) {
+    void loadHighlighter();
+    return lines;
+  }
+  if (!language) {
     return lines;
   }
 
@@ -96,11 +100,6 @@ export function highlightBlock(code: string, language: string | undefined): stri
   } catch {
     return lines;
   }
-}
-
-/** True once the highlighter is loaded and highlightBlock can do its job. */
-export function isHighlighterReady(): boolean {
-  return highlighter !== null;
 }
 
 export type DiffLineKind = "added" | "removed" | "header" | "context";

@@ -211,7 +211,7 @@ export function parseLooseJson(raw: string): unknown {
  * its output was truncated sends it to regenerate the same oversized payload,
  * which truncates again, forever.
  */
-export function parseLooseJsonDetailed(raw: string): { value: unknown; truncated: boolean } {
+function parseLooseJsonDetailed(raw: string): { value: unknown; truncated: boolean } {
   const trimmed = raw.trim();
   if (!trimmed) {
     return { value: null, truncated: false };

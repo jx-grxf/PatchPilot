@@ -156,7 +156,7 @@ export function formatUsageDetail(options: {
     .join("\n");
 }
 
-export function estimateSessionSavings(session: SessionTelemetry): {
+function estimateSessionSavings(session: SessionTelemetry): {
   costUsd: number | null;
   source: "api-pricing" | "fallback-pricing" | "unknown";
 } {
@@ -166,7 +166,7 @@ export function estimateSessionSavings(session: SessionTelemetry): {
   };
 }
 
-export function pricingSourceLabel(costSource: SessionTelemetry["costSource"], savedSource: "api-pricing" | "fallback-pricing" | "unknown"): string {
+function pricingSourceLabel(costSource: SessionTelemetry["costSource"], savedSource: "api-pricing" | "fallback-pricing" | "unknown"): string {
   if (costSource === "fallback-pricing" || savedSource === "fallback-pricing") {
     return "fallback pricing";
   }

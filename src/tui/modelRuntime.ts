@@ -3,9 +3,9 @@ import { createModelClient } from "../core/modelClient.js";
 import { resolveLocalOpenAIBaseUrl } from "../core/localOpenAI.js";
 import type { ModelDescriptor, ModelProvider, ModelTelemetry } from "../core/types.js";
 import { savePatchPilotEnvValues } from "../core/env.js";
-import { formatModelLabel, formatModelOptions, selectableModels } from "./modelSelection.js";
+import { formatModelLabel, formatModelOptions } from "./modelSelection.js";
 import { rememberModelDescriptors } from "./modelDescriptors.js";
-import { canUseUnverifiedModel, selectModelFromInput } from "./modelPicking.js";
+import { canUseUnverifiedModel } from "./modelPicking.js";
 import type { LogLineInput } from "./types.js";
 
 /**
@@ -65,7 +65,7 @@ export async function loadAvailableModels(
   return models;
 }
 
-export function modelCacheKey(provider: ModelProvider, ollamaUrl: string): string {
+function modelCacheKey(provider: ModelProvider, ollamaUrl: string): string {
   if (provider === "ollama") {
     return `${provider}:${ollamaUrl}`;
   }

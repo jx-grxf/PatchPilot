@@ -1,26 +1,19 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { statSync } from "node:fs";
 import { Box, Text, useApp, useInput, useStdout } from "ink";
 import { AgentRunner, type AgentRunnerOptions } from "../core/agent.js";
 import { cleanupPatchPilot, readCleanupTarget } from "../core/cleanup.js";
-import { describeComputeTarget } from "../core/compute.js";
 import { ContextStore } from "../core/contextStore.js";
 import { runDoctor } from "../core/doctor.js";
 import { savePatchPilotEnvValues } from "../core/env.js";
-import { createModelClient } from "../core/modelClient.js";
 import { defaultLocalOpenAIModel, resolveLocalOpenAIBaseUrl } from "../core/localOpenAI.js";
 import { resolveRuntimeAlias } from "../core/localRuntimes.js";
-import { defaultOllamaModel, OllamaClient } from "../core/ollama.js";
 import { ensurePatchPilotGitignore, patchPilotInitPrompt } from "../core/projectInit.js";
 import { buildSessionRecap, buildSessionResumeContext, listWorkspaceSessions, loadSessionSummary, SessionStore } from "../core/session.js";
-import { addTelemetryToSession, emptySessionTelemetry, estimateCloudEquivalentCost, estimateTokens } from "../core/tokenAccounting.js";
-import type { ThinkingSetting, AgentEvent, AgentTodoItem, AgentToolName, AgentWorkState, ApprovalRequest, ModelDescriptor, ModelProvider, ModelTelemetry, PermissionDecision, SessionTelemetry } from "../core/types.js";
+import { addTelemetryToSession, emptySessionTelemetry, estimateTokens } from "../core/tokenAccounting.js";
+import type { AgentTodoItem, AgentToolName, AgentWorkState, ApprovalRequest, ModelProvider, ModelTelemetry, PermissionDecision, SessionTelemetry } from "../core/types.js";
 import { checkForPatchPilotUpdate, installPatchPilotUpdate, type UpdateCheckResult } from "../core/updateCheck.js";
 import { getToolSpec, WorkspaceTools } from "../core/workspace.js";
-import { ApprovalPanel } from "./components/ApprovalPanel.js";
 import { clipboardHasImage, clipboardImageHint, readClipboardImage } from "../core/clipboard.js";
-import { CommandSuggestions, type CommandSuggestionItem } from "./components/CommandSuggestions.js";
-import { Composer, FooterHints } from "./components/Composer.js";
 import { ExperimentalPanel, experimentalFlagAt, experimentalFlagCount, experimentalFlagEnvName, type ExperimentalFlag, type ExperimentalFlags } from "./components/ExperimentalPanel.js";
 import { emptyPromptHistory, recallNext, recallPrevious, rememberPrompt, type PromptHistory } from "./promptHistory.js";
 import {
@@ -49,85 +42,44 @@ import { cacheModelList } from "./modelRuntime.js";
 import {
   eventToLine,
   eventToStatus,
-  formatContextUsage,
-  formatStreamProgress,
-  randomLegacyVerbIndex,
   type StreamProgress
 } from "./transcriptEvents.js";
 import { ConfigPanel, visibleSettings } from "./components/ConfigPanel.js";
 import {
   cycleSettingValue,
-  findSettingByNameOrKey,
   formatSettingValue,
   readSettingValue,
   validateSettingValue
 } from "./settingsRegistry.js";
 import { needsArgument, resolveSlashSubmission, type PaletteSuggestion } from "./slashCommands.js";
 import { runContextSlashCommand } from "./contextCommands.js";
-import { ExperimentalShell } from "./experimental/ExperimentalShell.js";
-import { ThemePicker } from "./experimental/ThemePicker.js";
-import { type Artifact, attachmentKindForPath, attachmentLabel, attachmentTypeForPath, formatSessionArtifactContext } from "./experimental/attachments.js";
-import { describeUltraModes, parseUltraModes } from "./experimental/ultraModes.js";
-import { formatCompletionSummary } from "./runStatus.js";
-import { Header } from "./components/Header.js";
+import { Shell } from "./shell/Shell.js";
+import { type Artifact, attachmentKindForPath, attachmentLabel, attachmentTypeForPath, formatSessionArtifactContext } from "./shell/attachments.js";
+import { describeUltraModes, parseUltraModes } from "./shell/ultraModes.js";
+import { formatCompletionSummary, type RunOutcome } from "./runStatus.js";
 import { OnboardingPanel, type OnboardingState } from "./components/OnboardingPanel.js";
-import { Sidebar } from "./components/Sidebar.js";
-import { Transcript } from "./components/Transcript.js";
 import { filterSlashCommands, formatCommandDetail, formatCommandHelp } from "./commands.js";
-import { formatCost, formatSessionTokens, formatTokens, normalizeModelAlias, readToggle } from "./format.js";
+import { normalizeModelAlias, readToggle } from "./format.js";
 import { checkOllamaHost, discoverOllamaHosts, normalizeOllamaUrl, readOllamaHostDetails, startLocalOllamaAppAndWait, type OllamaHost, type OllamaHostDetails } from "./hosts.js";
-import { computeComposerLayout } from "./layout.js";
 import { motionEnabled } from "./motion.js";
+import { prewarmHighlighter } from "./highlight.js";
 import { initialAgentMode, modeDescription, modePermissionLabel, nextAgentMode, permissionsForMode, shouldBypassApproval } from "./modes.js";
 import { selectableModels } from "./modelSelection.js";
 import {
   cyclePreference,
-  defaultOnboardingPreferences,
   modePermissions as preferencesModePermissions,
   preferenceRows,
   preferencesEnvValues,
-  readOnboardingPreferences,
-  type OnboardingPreferences
+  readOnboardingPreferences
 } from "./onboardingPreferences.js";
-import { readGpuStats, readSystemStats, type GpuStats, type SystemStats } from "./systemStats.js";
-import { maxTranscriptLines, type AgentMode, type LogLine, type LogLineInput, type ToolTelemetry } from "./types.js";
+import { type AgentMode, type LogLine, type LogLineInput, type ToolTelemetry } from "./types.js";
 
 export type PatchPilotAppProps = AgentRunnerOptions & {
   initialTask?: string;
   packageVersion?: string;
 };
 
-type UiTheme = "flow" | "new" | "legacy";
-
 type UpdatePromptState = Extract<UpdateCheckResult, { available: true }>;
-
-const themeOptions: Array<{ value: UiTheme; label: string; description: string }> = [
-  {
-    value: "flow",
-    label: "Flow",
-    description: "Native terminal scrollback: the whole conversation stays in your terminal, with markdown, highlighted code and real diffs."
-  },
-  {
-    value: "new",
-    label: "New",
-    description: "Experimental fullscreen shell: compact header, scrolling transcript, command palette, animated run status."
-  },
-  {
-    value: "legacy",
-    label: "Legacy",
-    description: "Original PatchPilot TUI with the sidebar and split-pane layout."
-  }
-];
-
-function readUiTheme(): UiTheme {
-  const configured = process.env.PATCHPILOT_UI_THEME?.trim().toLowerCase();
-  if (configured === "legacy" || configured === "new" || configured === "flow") {
-    return configured;
-  }
-
-  return "flow";
-}
-
 
 export function App(props: PatchPilotAppProps): React.ReactElement {
   const animationsEnabled = motionEnabled();
@@ -162,7 +114,6 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   const [lines, setLines] = useState<LogLine[]>([]);
   const [todos, setTodos] = useState<AgentTodoItem[]>([]);
   const [todoFrame, setTodoFrame] = useState(0);
-  const [verbTick, setVerbTick] = useState(0);
   const [isRunning, setIsRunning] = useState(false);
   const [status, setStatus] = useState("idle");
   const [streamProgress, setStreamProgress] = useState<StreamProgress | null>(null);
@@ -181,9 +132,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   const [sessionTelemetry, setSessionTelemetry] = useState<SessionTelemetry>(() => emptySessionTelemetry());
   const [toolTelemetry, setToolTelemetry] = useState<ToolTelemetry>(() => emptyToolTelemetry());
   const [resumeContext, setResumeContext] = useState("");
-  const [systemStats, setSystemStats] = useState<SystemStats>(() => readSystemStats().stats);
-  const [gpuStats, setGpuStats] = useState<GpuStats | null>(null);
-  const [agentMode, setAgentMode] = useState<AgentMode>(() => initialAgentMode({ allowWrite: props.allowWrite, allowShell: props.allowShell }));
+  const [agentMode, setAgentMode] = useState<AgentMode>(() => initialAgentMode({ allowWrite: props.allowWrite, allowShell: props.allowShell }, process.env.PATCHPILOT_DEFAULT_MODE ?? "build"));
   const [bypassConfirmation, setBypassConfirmation] = useState(false);
   const [hostOptions, setHostOptions] = useState<OllamaHost[]>([]);
   const [activeHost, setActiveHost] = useState<OllamaHostDetails | null>(null);
@@ -199,17 +148,10 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
     subagents: props.subagents,
     shellMetacharacters: readBooleanEnv(process.env.PATCHPILOT_EXPERIMENTAL_SHELL_METACHARACTERS, false)
   });
-  const [uiTheme, setUiTheme] = useState<UiTheme>(() => readUiTheme());
-  // Read inside appendLine, which must not be re-created when the theme changes.
-  const uiThemeRef = useRef<UiTheme>(uiTheme);
-  uiThemeRef.current = uiTheme;
   // Static renders each row once, so clearing starts a fresh region instead of
   // pretending the terminal can un-print what it already showed.
   const [transcriptEpoch, setTranscriptEpoch] = useState(0);
-  const [themePickerOpen, setThemePickerOpen] = useState(false);
-  const [themePickerIndex, setThemePickerIndex] = useState(0);
   const [ultramaxxRun, setUltramaxxRun] = useState(false);
-  const [artifacts, setArtifacts] = useState<Artifact[]>([]);
   const artifactsRef = useRef<Artifact[]>([]);
   const pendingAttachmentsRef = useRef<string[]>([]);
   // Tracks whether the "image in clipboard" hint was already shown for the
@@ -224,9 +166,6 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
     detail?: string;
   } | null>(null);
   const [paletteIndex, setPaletteIndex] = useState(0);
-  const [activeScrollPane, setActiveScrollPane] = useState<"transcript" | "session">("transcript");
-  const [transcriptScrollOffset, setTranscriptScrollOffset] = useState(0);
-  const [sessionScrollOffset, setSessionScrollOffset] = useState(0);
   const [settings, setSettings] = useState<AgentRunnerOptions>({
     provider: props.provider,
     model: props.model,
@@ -260,32 +199,21 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         })
       : [];
   const rootHeight = Math.max(24, terminalRows);
-  const headerReservedHeight = 5;
-  const transcriptWidth = Math.max(42, terminalColumns - 38);
-  const paletteReservedHeight = !onboarding && paletteItems.length > 0 ? Math.min(8, paletteItems.length) + 7 : 0;
-  const composerReservedHeight = onboarding || experimentalOpen ? 0 : computeComposerLayout({ input, width: transcriptWidth, promptWidth: 8 }).height;
-  const footerReservedHeight = onboarding || experimentalOpen ? 0 : 1;
-  const approvalReservedHeight = !onboarding && !experimentalOpen && blockingPromptActive ? 7 : 0;
-  const bodyHeight = Math.max(8, rootHeight - headerReservedHeight);
-  const transcriptHeight = Math.max(4, bodyHeight - composerReservedHeight - paletteReservedHeight - footerReservedHeight - approvalReservedHeight);
-  const panelHeight = onboarding || experimentalOpen ? bodyHeight : transcriptHeight;
-  const scrollStep = Math.max(4, Math.floor(transcriptHeight * 0.8));
   const appendLine = useCallback((line: LogLineInput) => {
-    setLines((currentLines) =>
-      [
-        ...currentLines,
-        {
-          ...line,
-          kind: line.kind ?? defaultLogKind(line),
-          id: Date.now() + Math.random()
-        }
-      ].slice(-(uiThemeRef.current === "flow" ? maxTranscriptLines * 4 : maxTranscriptLines))
-    );
+    // Never trimmed: <Static> prints by index, so dropping entries from the
+    // front would keep the length constant and silently stop new output.
+    setLines((currentLines) => [
+      ...currentLines,
+      {
+        ...line,
+        kind: line.kind ?? defaultLogKind(line),
+        id: Date.now() + Math.random()
+      }
+    ]);
   }, []);
 
   const pushArtifact = useCallback((artifact: Artifact): void => {
     artifactsRef.current = [...artifactsRef.current, artifact].slice(-40);
-    setArtifacts(artifactsRef.current);
     void contextStoreRef.current.append({
       kind: artifact.origin === "attached" ? "attachment" : "artifact",
       source: artifact.origin === "attached" ? "user" : "tool",
@@ -334,15 +262,15 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   // Ctrl+V: pull an image straight out of the OS clipboard, save it to a temp
   // file, and attach it — no need to save the screenshot to disk first.
   const handleClipboardImagePaste = useCallback(async (): Promise<void> => {
-    appendLine({ kind: "status", tone: "muted", label: "clipboard", text: "Zwischenablage wird gelesen…" });
+    appendLine({ kind: "status", tone: "muted", label: "clipboard", text: "Reading the clipboard…" });
     const imagePath = await readClipboardImage();
     if (!imagePath) {
       appendLine({
         kind: "status",
         tone: "warning",
         label: "clipboard",
-        text: "Kein Bild in der Zwischenablage gefunden.",
-        detail: "Kopiere ein Bild (z. B. einen Screenshot) und drücke erneut Ctrl+V."
+        text: "No image in the clipboard.",
+        detail: "Copy an image, such as a screenshot, and press ctrl+v again."
       });
       return;
     }
@@ -359,6 +287,10 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
 
   // Watch the OS clipboard while idle: when an image appears, tell the user
   // once that they can attach it with Ctrl+V (reset when the image is gone).
+  useEffect(() => {
+    prewarmHighlighter();
+  }, []);
+
   useEffect(() => {
     if (isRunning) {
       return;
@@ -422,30 +354,6 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       clearInterval(timer);
     };
   }, [animationsEnabled, isRunning, todos]);
-
-  // Slow run-status verb tick: the verb only advances every 10s while the fast
-  // spinner glyph keeps animating, so the status line never flickers.
-  useEffect(() => {
-    if (!animationsEnabled || !isRunning) {
-      setVerbTick(randomLegacyVerbIndex());
-      return;
-    }
-
-    setVerbTick(randomLegacyVerbIndex());
-    const timer = setInterval(() => {
-      setVerbTick((currentTick) => {
-        let nextTick = randomLegacyVerbIndex();
-        if (nextTick === currentTick) {
-          nextTick += 1;
-        }
-        return nextTick;
-      });
-    }, 10_000);
-
-    return () => {
-      clearInterval(timer);
-    };
-  }, [animationsEnabled, isRunning]);
 
   const resolveApproval = useCallback(
     (decision: PermissionDecision) => {
@@ -527,6 +435,10 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       const permissions = permissionsForMode(nextMode);
       setAgentMode(nextMode);
       setBypassConfirmation(false);
+      // The bypass confirmation parks the state on waiting_approval; leaving
+      // it there makes the next run claim to wait for an approval that is gone.
+      setWorkState("idle");
+      setStatus("idle");
       grantedPermissionsRef.current = permissions;
       setSettings((currentSettings) => ({
         ...currentSettings,
@@ -1158,8 +1070,9 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       softStopRequestedRef.current = false;
       lastEscapeStopAtRef.current = 0;
       setInput("");
-      setTranscriptScrollOffset(0);
       setTodos([]);
+      setWorkState("idle");
+      setStatus("starting");
       setUltramaxxRun(ultramaxx);
       setIsRunning(true);
       appendLine({
@@ -1195,10 +1108,12 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
 
       let finalMessage = "";
       let turnAttachmentPaths: string[] = [];
+      let outcome: RunOutcome = "done";
       try {
         const runnableSettings = await resolveRunnableSettings(settings, modelOptions, appendLine, setModelOptions, (message) => {
         });
         if (!runnableSettings) {
+          outcome = "failed";
           return;
         }
 
@@ -1298,7 +1213,6 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
               setPendingApproval(request);
               setWorkState("waiting_approval");
               setStatus(`approval needed for ${request.tool}`);
-              setTranscriptScrollOffset(0);
               appendLine({
                 kind: "approval",
                 tone: "warning",
@@ -1394,7 +1308,12 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           appendLine(eventToLine(event));
         }
       } catch (error) {
+        // Whatever was streaming belongs to the failed attempt. Leaving it on
+        // screen would present a half-finished preamble as the answer.
+        setStreamProgress(null);
+        setStreamingText("");
         if (abortControllerRef.current?.signal.aborted) {
+          outcome = "stopped";
           appendLine({
             kind: "status",
             tone: "warning",
@@ -1405,6 +1324,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           return;
         }
 
+        outcome = "failed";
         const message = error instanceof Error ? error.message : String(error);
         appendLine({
           kind: "error",
@@ -1441,10 +1361,10 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         }).catch(() => undefined);
         appendLine({
           kind: "status",
-          tone: "muted",
-          label: "done",
-          text: `✻ ${formatCompletionSummary(Date.now() - runStartedAt, runStartedAt)}`,
-          workState: "done"
+          tone: outcome === "done" ? "muted" : "warning",
+          label: outcome,
+          text: formatCompletionSummary(Date.now() - runStartedAt, outcome),
+          workState: outcome === "failed" ? "error" : "done"
         });
       }
     },
@@ -2086,24 +2006,6 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           });
           return;
         }
-        case "theme": {
-          const requested = args[0]?.toLowerCase();
-          if (requested === "flow" || requested === "new" || requested === "legacy") {
-            setUiTheme(requested);
-            savePatchPilotEnvValues({ PATCHPILOT_UI_THEME: requested });
-            appendLine({
-              tone: "success",
-              label: "theme",
-              text: `switched to the ${requested} UI`
-            });
-            return;
-          }
-
-          setThemePickerOpen(true);
-          setThemePickerIndex(themeOptions.findIndex((option) => option.value === uiTheme));
-          setInput("");
-          return;
-        }
         case "init": {
           await ensurePatchPilotGitignore(settings.workspace);
           appendLine({
@@ -2125,12 +2027,9 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           setResumeContext("");
           setSessionTelemetry(emptySessionTelemetry());
           setToolTelemetry(emptyToolTelemetry());
-          setTranscriptScrollOffset(0);
-          setSessionScrollOffset(0);
           conversationTurnsRef.current = [];
           artifactsRef.current = [];
           pendingAttachmentsRef.current = [];
-          setArtifacts([]);
           return;
         case "new":
           if (isRunning) {
@@ -2150,6 +2049,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
             sessionId: sessionStoreRef.current.sessionId
           });
           await sessionStoreRef.current.create();
+          setTranscriptEpoch((epoch) => epoch + 1);
           setLines([]);
           setTodos([]);
           setTelemetry(null);
@@ -2159,14 +2059,11 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           approvalResolverRef.current = null;
           setBypassConfirmation(false);
           setInput("");
-          setTranscriptScrollOffset(0);
-          setSessionScrollOffset(0);
           setStatus("idle");
           setWorkState("idle");
           conversationTurnsRef.current = [];
           artifactsRef.current = [];
           pendingAttachmentsRef.current = [];
-          setArtifacts([]);
           // Leave the transcript empty so the startup banner shows again,
           // exactly like a fresh launch.
           return;
@@ -2386,10 +2283,16 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       const key = `${settings.provider}:${settings.ollamaUrl}:${trimmedInput}:models`;
       if (!autoLoadKeysRef.current.has(key)) {
         autoLoadKeysRef.current.add(key);
-        void loadProviderModels(false);
+        loadProviderModels(false).catch((error: unknown) => {
+          appendLine({
+            tone: "warning",
+            label: "models",
+            text: error instanceof Error ? error.message : String(error)
+          });
+        });
       }
     }
-  }, [hostOptions.length, input, isLoadingHosts, isLoadingModels, isRunning, loadHostSuggestions, loadProviderModels, modelOptions.length, onboarding, settings.provider]);
+  }, [appendLine, hostOptions.length, input, isLoadingHosts, isLoadingModels, isRunning, loadHostSuggestions, loadProviderModels, modelOptions.length, onboarding, settings.provider]);
 
   useInput((inputValue, key) => {
     if (configOpen) {
@@ -2451,40 +2354,6 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         setConfigQuery((current) => current + inputValue);
         setConfigIndex(0);
         setConfigNotice(null);
-      }
-
-      return;
-    }
-
-    if (themePickerOpen) {
-      if (key.upArrow) {
-        setThemePickerIndex((currentIndex) => (currentIndex - 1 + themeOptions.length) % themeOptions.length);
-        return;
-      }
-
-      if (key.downArrow) {
-        setThemePickerIndex((currentIndex) => (currentIndex + 1) % themeOptions.length);
-        return;
-      }
-
-      if (key.escape || key.leftArrow) {
-        setThemePickerOpen(false);
-        setInput("");
-        return;
-      }
-
-      if (key.return) {
-        const chosen = themeOptions[themePickerIndex]?.value ?? "new";
-        setUiTheme(chosen);
-        savePatchPilotEnvValues({ PATCHPILOT_UI_THEME: chosen });
-        setThemePickerOpen(false);
-        setInput("");
-        appendLine({
-          tone: "success",
-          label: "theme",
-          text: `switched to the ${chosen} UI`
-        });
-        return;
       }
 
       return;
@@ -2707,43 +2576,6 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       }
     }
 
-    const canUsePanelKeys = input.length === 0 || isRunning;
-    if (canUsePanelKeys && key.upArrow && paletteItems.length === 0) {
-      const setOffset = activeScrollPane === "session" ? setSessionScrollOffset : setTranscriptScrollOffset;
-      setOffset((currentOffset) => currentOffset + 1);
-      return;
-    }
-
-    if (canUsePanelKeys && key.downArrow && paletteItems.length === 0) {
-      const setOffset = activeScrollPane === "session" ? setSessionScrollOffset : setTranscriptScrollOffset;
-      setOffset((currentOffset) => Math.max(0, currentOffset - 1));
-      return;
-    }
-
-    if (canUsePanelKeys && key.leftArrow) {
-      setActiveScrollPane("session");
-      return;
-    }
-
-    if (canUsePanelKeys && key.rightArrow) {
-      setActiveScrollPane("transcript");
-      return;
-    }
-
-    if (canUsePanelKeys && (key.pageUp || key.pageDown || key.home || key.end)) {
-      const setOffset = activeScrollPane === "session" ? setSessionScrollOffset : setTranscriptScrollOffset;
-      if (key.pageUp) {
-        setOffset((currentOffset) => currentOffset + scrollStep);
-      } else if (key.pageDown) {
-        setOffset((currentOffset) => Math.max(0, currentOffset - scrollStep));
-      } else if (key.home) {
-        setOffset(1_000_000);
-      } else {
-        setOffset(0);
-      }
-      return;
-    }
-
     if (!isRunning && key.tab) {
       toggleMode();
       return;
@@ -2793,171 +2625,16 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
     };
   }, [appendLine]);
 
-  useEffect(() => {
-    let previousSnapshot = readSystemStats().snapshot;
-    const timer = setInterval(() => {
-      const nextReading = readSystemStats(previousSnapshot);
-      previousSnapshot = nextReading.snapshot;
-      setSystemStats(nextReading.stats);
-    }, 1000);
-
-    return () => {
-      clearInterval(timer);
-    };
-  }, []);
-
-  useEffect(() => {
-    let isMounted = true;
-
-    async function updateGpuStats(): Promise<void> {
-      const nextGpuStats = await readGpuStats();
-      if (isMounted) {
-        setGpuStats(nextGpuStats);
-      }
-    }
-
-    void updateGpuStats();
-    const timer = setInterval(() => {
-      void updateGpuStats();
-    }, 2500);
-
-    return () => {
-      isMounted = false;
-      clearInterval(timer);
-    };
-  }, []);
-
-  if (themePickerOpen) {
+  if (onboarding) {
     return (
       <Box flexDirection="column" paddingX={1} height={rootHeight} overflowY="hidden">
-        <ThemePicker options={themeOptions} selectedIndex={themePickerIndex} currentValue={uiTheme} height={rootHeight - 2} />
-      </Box>
-    );
-  }
-
-  if ((uiTheme === "new" || uiTheme === "flow") && !experimentalOpen) {
-    if (onboarding) {
-      return (
-        <Box flexDirection="column" paddingX={1} height={rootHeight} overflowY="hidden">
-          <Box borderStyle="round" borderColor="cyan" paddingX={1}>
-            <Text color="cyan" bold>
-              ◆ PatchPilot
-            </Text>
-            <Text color="gray"> · guided setup · the new shell starts once setup is done</Text>
-          </Box>
-          <OnboardingPanel
-            state={onboarding}
-            height={rootHeight - 3}
-            selectedIndex={onboardingIndex}
-            input={onboardingInput}
-            busyMessage={onboardingBusyMessage}
-            notice={onboardingNotice}
-            formatModelLabel={formatModelLabel}
-            formatModelDescription={formatModelDescription}
-            onInputChange={setOnboardingInput}
-            onInputSubmit={(value) => void handleOnboardingSubmit(value)}
-          />
-        </Box>
-      );
-    }
-
-    return (
-      <ExperimentalShell
-        onHistoryPrevious={(currentInput) => {
-          const step = recallPrevious(promptHistoryRef.current, currentInput);
-          promptHistoryRef.current = step.history;
-          return step.input;
-        }}
-        onHistoryNext={() => {
-          const step = recallNext(promptHistoryRef.current);
-          promptHistoryRef.current = step.history;
-          return step.input;
-        }}
-        provider={settings.provider}
-        model={settings.model}
-        workspace={settings.workspace}
-        sessionId={sessionStoreRef.current.sessionId}
-        agentMode={agentMode}
-        allowWrite={settings.allowWrite}
-        allowShell={settings.allowShell}
-        subagents={settings.subagents}
-        workState={workState}
-        status={status}
-        isRunning={isRunning}
-        streamProgress={streamProgress}
-        streamingText={streamingText}
-        contextUsage={contextUsage}
-        flow={uiTheme === "flow"}
-        transcriptEpoch={transcriptEpoch}
-        ultramaxxRun={ultramaxxRun}
-        telemetry={telemetry}
-        sessionTelemetry={sessionTelemetry}
-        draftTokens={draftTokens}
-        lines={lines}
-        todos={todos}
-        todoFrame={todoFrame}
-        pendingApproval={pendingApproval}
-        bypassConfirmation={bypassConfirmation}
-        updatePrompt={updatePrompt}
-        updateBusy={updateBusy}
-        transcriptScrollOffset={transcriptScrollOffset}
-        input={input}
-        configPanel={
-          configOpen ? (
-            <ConfigPanel
-              provider={settings.provider}
-              query={configQuery}
-              selectedIndex={configIndex}
-              width={terminalColumns}
-              height={Math.min(24, Math.max(10, terminalRows - 12))}
-              notice={configNotice}
-            />
-          ) : null
-        }
-        paletteItems={paletteItems}
-        paletteIndex={paletteIndex}
-        rows={terminalRows}
-        columns={terminalColumns}
-        activeHost={activeHost}
-        artifacts={artifacts}
-        onChange={setInput}
-        onSubmit={(value) => void handleSubmit(value)}
-        onAttach={attachFile}
-      />
-    );
-  }
-
-  return (
-    <Box flexDirection="column" paddingX={1} height={rootHeight} overflowY="hidden">
-      <Header
-        model={settings.model}
-        provider={settings.provider}
-        workspace={settings.workspace}
-        status={status}
-        workState={workState}
-        allowWrite={settings.allowWrite}
-        allowShell={settings.allowShell}
-        agentMode={agentMode}
-        subagents={settings.subagents}
-        ollamaUrl={settings.ollamaUrl}
-        telemetry={telemetry}
-        sessionTelemetry={sessionTelemetry}
-        draftTokens={draftTokens}
-        systemStats={systemStats}
-        gpuStats={gpuStats}
-        activeHost={activeHost}
-      />
-
-      {experimentalOpen ? (
-        <ExperimentalPanel
-          flags={experimentalFlags}
-          selectedIndex={experimentalIndex}
-          height={bodyHeight}
-        />
-      ) : onboarding ? (
+        <Text>
+          <Text bold>PatchPilot</Text>
+          <Text color="gray"> · setup</Text>
+        </Text>
         <OnboardingPanel
           state={onboarding}
-          height={bodyHeight}
+          height={rootHeight - 1}
           selectedIndex={onboardingIndex}
           input={onboardingInput}
           busyMessage={onboardingBusyMessage}
@@ -2967,66 +2644,71 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           onInputChange={setOnboardingInput}
           onInputSubmit={(value) => void handleOnboardingSubmit(value)}
         />
-      ) : (
-        <Box flexDirection="row" height={bodyHeight} overflowY="hidden">
-          <Sidebar
-            workspace={settings.workspace}
-            model={settings.model}
+      </Box>
+    );
+  }
+
+  return (
+    <Shell
+      onHistoryPrevious={(currentInput) => {
+        const step = recallPrevious(promptHistoryRef.current, currentInput);
+        promptHistoryRef.current = step.history;
+        return step.input;
+      }}
+      onHistoryNext={() => {
+        const step = recallNext(promptHistoryRef.current);
+        promptHistoryRef.current = step.history;
+        return step.input;
+      }}
+      provider={settings.provider}
+      model={settings.model}
+      workspace={settings.workspace}
+      version={props.packageVersion}
+      agentMode={agentMode}
+      allowWrite={settings.allowWrite}
+      allowShell={settings.allowShell}
+      workState={workState}
+      status={status}
+      isRunning={isRunning}
+      streamProgress={streamProgress}
+      streamingText={streamingText}
+      contextUsage={contextUsage}
+      transcriptEpoch={transcriptEpoch}
+      ultramaxxRun={ultramaxxRun}
+      sessionTelemetry={sessionTelemetry}
+      lines={lines}
+      todos={todos}
+      todoFrame={todoFrame}
+      pendingApproval={pendingApproval}
+      bypassConfirmation={bypassConfirmation}
+      updatePrompt={updatePrompt}
+      updateBusy={updateBusy}
+      input={input}
+      panel={
+        experimentalOpen ? (
+          <ExperimentalPanel flags={experimentalFlags} selectedIndex={experimentalIndex} />
+        ) : configOpen ? (
+          <ConfigPanel
             provider={settings.provider}
-            ollamaUrl={settings.ollamaUrl}
-            agentMode={agentMode}
-            allowWrite={settings.allowWrite}
-            allowShell={settings.allowShell}
-            subagents={settings.subagents}
-            workState={workState}
-            sessionId={sessionStoreRef.current.sessionId}
-            systemStats={systemStats}
-            gpuStats={gpuStats}
-            telemetry={telemetry}
-            sessionTelemetry={sessionTelemetry}
-            draftTokens={draftTokens}
-            height={bodyHeight}
-            scrollOffset={sessionScrollOffset}
-            isActive={activeScrollPane === "session"}
-            activeHost={activeHost}
+            query={configQuery}
+            selectedIndex={configIndex}
+            width={terminalColumns}
+            height={Math.min(24, Math.max(10, terminalRows - 12))}
+            notice={configNotice}
           />
-          <Box flexDirection="column" flexGrow={1} height={bodyHeight} overflowY="hidden">
-            <Transcript
-              lines={lines}
-              isRunning={isRunning}
-              isActive={activeScrollPane === "transcript"}
-              height={transcriptHeight}
-              width={transcriptWidth}
-              scrollOffset={transcriptScrollOffset}
-              todos={todos}
-              todoFrame={todoFrame}
-              verbIndex={verbTick}
-              status={status}
-              workState={workState}
-              isApprovalWaiting={blockingPromptActive}
-            />
-            <UpdatePromptPanel prompt={updatePromptActive ? updatePrompt : null} busy={updatePromptActive && updateBusy} />
-            <ApprovalPanel request={approvalPromptActive ? pendingApproval : null} bypassConfirmation={approvalPromptActive && bypassConfirmation} />
-            <Composer
-              input={input}
-              isRunning={isRunning}
-              status={status}
-              workState={workState}
-              draftTokens={draftTokens}
-              width={transcriptWidth}
-              isApprovalWaiting={blockingPromptActive}
-              onChange={setInput}
-              onSubmit={(value) => void handleSubmit(value)}
-            />
-            {paletteItems.length > 0 ? <CommandSuggestions items={paletteItems} selectedIndex={paletteIndex} /> : null}
-            <FooterHints activePane={activeScrollPane} />
-          </Box>
-        </Box>
-      )}
-    </Box>
+        ) : null
+      }
+      paletteItems={paletteItems}
+      paletteIndex={paletteIndex}
+      rows={terminalRows}
+      columns={terminalColumns}
+      activeHost={activeHost}
+      onChange={setInput}
+      onSubmit={(value) => void handleSubmit(value)}
+      onAttach={attachFile}
+    />
   );
 }
-
 
 function buildCommandSuggestionItems(options: {
   input: string;
@@ -3217,47 +2899,6 @@ function readIndexedSelection(value: string, selectedIndex: number): number | nu
   return Number.isInteger(parsedIndex) ? parsedIndex - 1 : null;
 }
 
-
-function UpdatePromptPanel(props: {
-  prompt: UpdatePromptState | null;
-  busy: boolean;
-}): React.ReactElement | null {
-  if (!props.prompt && !props.busy) {
-    return null;
-  }
-
-  const command = props.prompt?.command ?? "npm install -g @jx-grxf/patchpilot@latest";
-  return (
-    <Box borderStyle="double" borderColor="yellow" flexDirection="column" paddingX={1}>
-      <Text color="yellow" bold>
-        UPDATE AVAILABLE
-      </Text>
-      {props.busy ? (
-        <>
-          <Text color="cyan">Updating PatchPilot...</Text>
-          <Text color="gray">{command}</Text>
-        </>
-      ) : (
-        <>
-          <Text color="white">Install PatchPilot {props.prompt?.latestVersion} now?</Text>
-          <Text color="gray">
-            Current {props.prompt?.currentVersion} · source {props.prompt?.source} · {command}
-          </Text>
-          <Text>
-            <Text color="green" bold>
-              [y]
-            </Text>
-            <Text color="gray"> update   </Text>
-            <Text color="red" bold>
-              [n / esc]
-            </Text>
-            <Text color="gray"> skip</Text>
-          </Text>
-        </>
-      )}
-    </Box>
-  );
-}
 
 /** Context-window occupancy for the meter. */
 export type ContextUsageView = {

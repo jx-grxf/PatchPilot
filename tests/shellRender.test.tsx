@@ -1,7 +1,6 @@
 import { render } from "ink-testing-library";
-import { describe, expect, it } from "vitest";
-import { ExperimentalShell, type ExperimentalShellProps } from "../src/tui/experimental/ExperimentalShell.js";
-import { ThemePicker } from "../src/tui/experimental/ThemePicker.js";
+import { describe, expect, it, vi } from "vitest";
+import { Shell, type ShellProps } from "../src/tui/shell/Shell.js";
 import { emptySessionTelemetry } from "../src/core/tokenAccounting.js";
 import type { LogLine } from "../src/tui/types.js";
 
@@ -9,27 +8,24 @@ import type { LogLine } from "../src/tui/types.js";
  * Renders the whole shell, not just one component, so a broken layout or a
  * missing prop shows up here rather than the first time someone launches it.
  */
-function props(overrides: Partial<ExperimentalShellProps> = {}): ExperimentalShellProps {
+function props(overrides: Partial<ShellProps> = {}): ShellProps {
   return {
     provider: "local-openai",
     model: "google/gemma-4-12b-qat",
     workspace: "/Users/dev/project",
-    sessionId: "session-1",
+    version: "2.0.0",
     agentMode: "build",
     allowWrite: false,
     allowShell: false,
-    subagents: false,
     workState: "idle",
     status: "idle",
     isRunning: false,
     streamProgress: null,
+    streamingText: "",
     contextUsage: null,
-    flow: true,
     transcriptEpoch: 0,
     ultramaxxRun: false,
-    telemetry: null,
     sessionTelemetry: emptySessionTelemetry(),
-    draftTokens: 0,
     lines: [],
     todos: [],
     todoFrame: 0,
@@ -37,14 +33,12 @@ function props(overrides: Partial<ExperimentalShellProps> = {}): ExperimentalShe
     bypassConfirmation: false,
     updatePrompt: null,
     updateBusy: false,
-    transcriptScrollOffset: 0,
     input: "",
     paletteItems: [],
     paletteIndex: 0,
     rows: 40,
     columns: 100,
     activeHost: null,
-    artifacts: [],
     onChange: () => undefined,
     onSubmit: () => undefined,
     onAttach: () => "",
@@ -54,8 +48,8 @@ function props(overrides: Partial<ExperimentalShellProps> = {}): ExperimentalShe
   };
 }
 
-function frame(overrides: Partial<ExperimentalShellProps> = {}): string {
-  const { lastFrame } = render(<ExperimentalShell {...props(overrides)} />);
+function frame(overrides: Partial<ShellProps> = {}): string {
+  const { lastFrame } = render(<Shell {...props(overrides)} />);
   return (lastFrame() ?? "")
     .split("\n")
     .map((row) => row.trimEnd())
@@ -70,9 +64,25 @@ describe("shell renders at rest", () => {
     expect(output).toContain("build");
   });
 
-  it("renders in both flow and windowed layouts", () => {
-    expect(frame({ flow: true }).length).toBeGreaterThan(50);
-    expect(frame({ flow: false }).length).toBeGreaterThan(50);
+  it("prints the launch header without a mascot or wordmark", () => {
+    const output = frame();
+    expect(output).toContain("PatchPilot v2.0.0");
+    expect(output).not.toContain("██");
+  });
+
+  it("pins the composer to the bottom while the transcript is short", async () => {
+    const { lastFrame } = render(<Shell {...props({ rows: 30 })} />);
+    // Exact heights are measured just after the frame commits.
+    await vi.waitFor(() => expect((lastFrame() ?? "").split("\n").length).toBe(29));
+    const rows = (lastFrame() ?? "").split("\n");
+    expect(rows[0]).toContain("PatchPilot v2.0.0");
+    expect(rows.at(-1)).toContain("tab to cycle");
+  });
+
+  it("stops padding once the transcript fills the window", () => {
+    const lines: LogLine[] = Array.from({ length: 60 }, (_, index) => ({ id: index + 1, kind: "status", tone: "muted", label: "status", text: `entry ${index}` }));
+    const output = frame({ rows: 30, lines });
+    expect(output).toContain("entry 59");
   });
 
   it("survives a narrow terminal", () => {
@@ -81,28 +91,12 @@ describe("shell renders at rest", () => {
 });
 
 describe("shell renders live state", () => {
-  it("marks the flow interface as the default", () => {
-    const { lastFrame } = render(
-      <ThemePicker
-        options={[
-          { value: "flow", label: "Flow", description: "Terminal scrollback" },
-          { value: "new", label: "New", description: "Fullscreen" }
-        ]}
-        selectedIndex={0}
-        currentValue="flow"
-        height={12}
-      />
-    );
-    expect(lastFrame()).toContain("Flow · current · default");
-    expect(lastFrame()).not.toContain("New · default");
-  });
-
   it("shows prompt evaluation distinctly from generation", () => {
     const reading = frame({
       isRunning: true,
       streamProgress: { phase: "prompt", elapsedMs: 3400, tokens: 0, tokensPerSecond: null }
     });
-    expect(reading).toContain("reading prompt");
+    expect(reading).toContain("Reading prompt");
 
     const writing = frame({
       isRunning: true,
@@ -120,7 +114,8 @@ describe("shell renders live state", () => {
         writing: { tool: "write_file", chars: 12_400 }
       }
     });
-    expect(toolCall).toContain("write_file · 12k chars");
+    expect(toolCall).toContain("Writing write_file");
+    expect(toolCall).toContain("12k chars");
   });
 
   it("shows the context meter with a bar and a percentage", () => {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { hasUltramaxx, splitUltramaxxSegments, stripUltramaxx } from "../src/tui/experimental/ultramaxx.js";
-import { todoDockHeightFor } from "../src/tui/experimental/layout.js";
+import { hasUltramaxx, splitUltramaxxSegments, stripUltramaxx } from "../src/tui/shell/ultramaxx.js";
+
 
 describe("ultramaxx keyword detection", () => {
   it("detects only explicit activators at the start of the prompt", () => {
@@ -29,13 +29,5 @@ describe("ultramaxx keyword detection", () => {
     ]);
     expect(splitUltramaxxSegments("go ultramaxx now")).toEqual([{ text: "go ultramaxx now", ultramaxx: false }]);
     expect(splitUltramaxxSegments("plain text")).toEqual([{ text: "plain text", ultramaxx: false }]);
-  });
-});
-
-describe("todoDockHeightFor", () => {
-  it("is hidden with no todos and capped for many todos", () => {
-    expect(todoDockHeightFor(0)).toBe(0);
-    expect(todoDockHeightFor(3)).toBe(3 + 1 + 2);
-    expect(todoDockHeightFor(20)).toBe(6 + 1 + 2);
   });
 });

@@ -4,7 +4,7 @@ import TextInput from "ink-text-input";
 import type { ModelProvider } from "../../core/types.js";
 import type { OllamaHost } from "../hosts.js";
 import { selectableModels } from "../modelSelection.js";
-import { symbols } from "../experimental/theme.js";
+import { symbols } from "../shell/theme.js";
 import {
   describePreferenceValue,
   preferenceRows,
@@ -229,7 +229,7 @@ function WelcomeStep(): React.ReactElement {
         <Text color="white">{symbols.todoActive} Review {symbols.bullet} show diffs, run checks, leave Git history ready for you</Text>
       </Box>
       <Box marginTop={1} flexDirection="column">
-        <Text color="yellow">{symbols.pin} First task to try: "summarize this repo and list the safest next fixes"</Text>
+        <Text color="yellow">First task to try: "summarize this repo and list the safest next fixes"</Text>
         <Text color="gray">{symbols.arrow} enter continues {symbols.bullet} esc skips {symbols.bullet} reopen later with /onboarding</Text>
       </Box>
     </Box>

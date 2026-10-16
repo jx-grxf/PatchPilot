@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { describeUltraModes, hasUltraMode, parseUltraModes, splitUltraSegments } from "../src/tui/experimental/ultraModes.js";
+import { describeUltraModes, hasUltraMode, parseUltraModes, splitUltraSegments } from "../src/tui/shell/ultraModes.js";
 
 describe("parseUltraModes", () => {
   it("detects a single keyword anywhere in the prompt, not just at the start", () => {

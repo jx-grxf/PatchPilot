@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { composerView, deleteComposerText, insertComposerText } from "../src/tui/experimental/composer.js";
+import { composerView, deleteComposerText, insertComposerText } from "../src/tui/shell/composer.js";
 
 describe("composerView", () => {
   it("places the cursor for a short single-line draft", () => {

@@ -1,11 +1,10 @@
 #!/usr/bin/env node
 import path from "node:path";
 import { readFileSync } from "node:fs";
-import React from "react";
 import { render } from "ink";
 import { Command } from "commander";
 import { cleanupPatchPilot, readCleanupTarget } from "./core/cleanup.js";
-import { loadPatchPilotEnv, savePatchPilotEnvValues } from "./core/env.js";
+import { loadPatchPilotEnv } from "./core/env.js";
 import { defaultLocalOpenAIModel, resolveLocalOpenAIBaseUrl } from "./core/localOpenAI.js";
 import { describeModel, discoverModels, isUsableForChat, rankForAgentUse } from "./core/modelCatalog.js";
 import { normalizeModelProvider, readModelProvider } from "./core/modelClient.js";
@@ -23,12 +22,6 @@ const defaultLocalUrl = resolveLocalOpenAIBaseUrl();
 const defaultModel =
   process.env.PATCHPILOT_MODEL ??
   (defaultProvider === "local-openai" ? defaultLocalOpenAIModel : defaultOllamaModel);
-
-// Onboarding persists the chosen first-run agent mode; bypass implies the
-// always-allow write/shell defaults so the next launch starts where the user
-// left off. plan and build keep the per-action approval flow.
-const defaultMode = process.env.PATCHPILOT_DEFAULT_MODE?.trim().toLowerCase();
-const defaultBypass = defaultMode === "bypass";
 
 const program = new Command();
 program.enablePositionalOptions();
@@ -204,7 +197,10 @@ program
         allowShell={Boolean(options.allowShell)}
         maxSteps={Number.isFinite(maxSteps) ? maxSteps : 8}
         subagents={Boolean(options.subagents)}
-      />
+      />,
+      // Only changed rows are rewritten, so a ticking spinner no longer
+      // repaints the composer and status bar under it.
+      { incrementalRendering: true, maxFps: 30 }
     );
   });
 

@@ -83,7 +83,7 @@ export function normalizeContextItem(input: ContextItemInput & { id: string }): 
   };
 }
 
-export function isContextItemKind(value: unknown): value is ContextItemKind {
+function isContextItemKind(value: unknown): value is ContextItemKind {
   return (
     value === "turn" ||
     value === "attachment" ||

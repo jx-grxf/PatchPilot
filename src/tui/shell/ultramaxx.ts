@@ -3,7 +3,7 @@
  * backend think and work extra hard for that run (thinking enabled, a larger
  * step budget, child agents, and mandatory planning).
  */
-export const ultramaxxKeyword = "ultramaxx";
+const ultramaxxKeyword = "ultramaxx";
 
 const ultramaxxActivationPattern = /^\s*(?:[/!#]ultramaxx|ultramaxx)(?=$|[\s:.-])/i;
 const ultramaxxStripPattern = /^\s*(?:[/!#]ultramaxx|ultramaxx)(?=$|[\s:.-])(?:\s*[:.-]\s*|\s+)?/i;
