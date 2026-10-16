@@ -36,4 +36,3 @@ export type ToolTelemetry = {
   byTool: Partial<Record<AgentToolName | "subagent", number>>;
 };
 
-export const maxTranscriptLines = 300;

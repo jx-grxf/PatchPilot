@@ -1,7 +1,6 @@
 import { statSync } from "node:fs";
-import path from "node:path";
 import type { ModelProvider } from "../core/types.js";
-import { attachmentKindForPath, attachmentLabel, attachmentTypeForPath } from "./experimental/attachments.js";
+import { attachmentKindForPath, attachmentLabel, attachmentTypeForPath } from "./shell/attachments.js";
 
 /**
  * Limits and labels for files attached to a prompt.
@@ -10,16 +9,16 @@ import { attachmentKindForPath, attachmentLabel, attachmentTypeForPath } from ".
  * upload rule, so these thresholds are about what a run can actually hold.
  */
 
-export const bytesPerMiB = 1024 * 1024;
+const bytesPerMiB = 1024 * 1024;
 /**
  * Local models are bounded by context window and VRAM rather than by an API's
  * upload rules, so these thresholds are about what a local run can actually
  * hold, not what a service will accept.
  */
-export const promptFileLimit = 8;
-export const largeFileBytes = 32 * bytesPerMiB;
-export const largePdfBytes = 8 * bytesPerMiB;
-export const totalPromptWarnBytes = 16 * bytesPerMiB;
+const promptFileLimit = 8;
+const largeFileBytes = 32 * bytesPerMiB;
+const largePdfBytes = 8 * bytesPerMiB;
+const totalPromptWarnBytes = 16 * bytesPerMiB;
 
 export function attachmentLimitWarning(paths: string[], provider: ModelProvider): string | null {
   if (paths.length === 0) {
@@ -54,7 +53,7 @@ export function attachmentLimitWarning(paths: string[], provider: ModelProvider)
   return null;
 }
 
-export function readFileSize(filePath: string): number | null {
+function readFileSize(filePath: string): number | null {
   try {
     const stats = statSync(filePath);
     return stats.isFile() ? stats.size : null;
@@ -63,7 +62,7 @@ export function readFileSize(filePath: string): number | null {
   }
 }
 
-export function formatMiB(bytes: number): string {
+function formatMiB(bytes: number): string {
   return `${Math.round((bytes / bytesPerMiB) * 10) / 10} MiB`;
 }
 
@@ -81,7 +80,7 @@ export function formatAttachedDocuments(paths: string[]): string {
 }
 
 /** Last path segment, splitting on both POSIX and Windows separators. */
-export function attachmentBasename(filePath: string): string {
+function attachmentBasename(filePath: string): string {
   return filePath.split(/[\\/]/).filter(Boolean).at(-1) ?? filePath;
 }
 

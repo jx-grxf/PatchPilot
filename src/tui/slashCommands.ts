@@ -1,4 +1,4 @@
-import type { CommandSuggestionItem } from "./components/CommandSuggestions.js";
+import type { CommandSuggestionItem } from "./shell/CommandPalette.js";
 
 /** A palette row: what it shows, what it runs, and whether Enter runs it. */
 export type PaletteSuggestion = CommandSuggestionItem & {

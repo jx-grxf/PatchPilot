@@ -17,8 +17,8 @@ const run = promisify(execFile);
 
 /** The Ctrl+V hint, phrased for the host platform. */
 export function clipboardImageHint(hostPlatform: NodeJS.Platform = platform()): string {
-  const combo = hostPlatform === "darwin" ? "Ctrl+V (nicht ⌘V — das fängt das Terminal ab)" : "Ctrl+V";
-  return `Ein Bild liegt in der Zwischenablage — mit ${combo} als Anhang einfügen.`;
+  const combo = hostPlatform === "darwin" ? "ctrl+v (not ⌘V, the terminal takes that)" : "ctrl+v";
+  return `Image in clipboard. Press ${combo} to attach it.`;
 }
 
 /**

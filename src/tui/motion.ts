@@ -20,9 +20,6 @@ const brailleSpinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", 
 /** A slower, quieter pulse for states that are waiting rather than working. */
 const pulseFrames = ["·", "∙", "●", "∙"] as const;
 
-/** Frames per second the shell renders at; every duration below assumes it. */
-export const frameIntervalMs = 80;
-
 export function spinnerFrame(frame: number): string {
   return brailleSpinner[frame % brailleSpinner.length] ?? "⠋";
 }

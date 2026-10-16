@@ -35,20 +35,17 @@ const experimentalRows: Array<{
 export function ExperimentalPanel(props: {
   flags: ExperimentalFlags;
   selectedIndex: number;
-  height: number;
 }): React.ReactElement {
   return (
-    <Box borderStyle="round" borderColor="cyan" flexDirection="column" paddingX={2} height={props.height} overflowY="hidden">
-      <Text color="cyan" bold>
-        PatchPilot Experimental
-      </Text>
-      <Text color="white">Use up/down to move, Space to toggle, Enter or Escape to close.</Text>
-      <Box flexDirection="column" marginTop={2}>
+    <Box borderStyle="round" borderColor="gray" flexDirection="column" paddingX={1} marginTop={1}>
+      <Text bold>Experimental features</Text>
+      <Text color="gray">↑↓ move · space toggle · ⏎ or esc close</Text>
+      <Box flexDirection="column" marginTop={1}>
         {experimentalRows.map((row, index) => {
           const selected = index === props.selectedIndex;
           const enabled = props.flags[row.key];
           return (
-            <Box key={row.key} marginTop={index === 0 ? 0 : 1}>
+            <Box key={row.key}>
               <Box width={3}>
                 <Text color={selected ? "cyan" : "gray"}>{selected ? ">" : " "}</Text>
               </Box>

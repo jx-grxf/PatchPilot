@@ -1,5 +1,5 @@
 /**
- * Attachment / artifact model for the experimental shell. Attachments are
+ * Attachment / artifact model for the shell. Attachments are
  * files the user drops into the prompt (a pasted path to an image / PDF /
  * DOCX …); artifacts also include files PatchPilot creates during a run.
  */
@@ -113,7 +113,7 @@ function stripFileUrlPrefix(value: string): string {
   return withoutScheme;
 }
 
-export function normalizeAttachmentPath(value: string): string {
+function normalizeAttachmentPath(value: string): string {
   const unquoted = stripQuotes(value.trim());
   if (/^file:\/\//i.test(unquoted)) {
     try {
@@ -250,18 +250,6 @@ function splitShellLikePaths(value: string): string[] {
   }
 
   return tokens;
-}
-
-const kindSymbols: Record<AttachmentKind, string> = {
-  image: "▣",
-  pdf: "▤",
-  docx: "▥",
-  text: "▦",
-  file: "▧",
-};
-
-export function attachmentSymbol(kind: AttachmentKind): string {
-  return kindSymbols[kind];
 }
 
 export function formatSessionArtifactContext(artifacts: Artifact[], limit = 12): string {

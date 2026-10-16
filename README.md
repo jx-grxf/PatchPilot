@@ -138,9 +138,8 @@ Type `/` to browse the complete command palette. Common commands are:
 | `/doctor` | Check Node, Git, endpoint, and selected-model readiness. |
 | `/update` | Check npm/GitHub and offer to install an exact newer release. |
 | `/experimental` | Configure file analysis, memory, child agents, and shell metacharacters. |
-| `/theme` | Choose the flow, fullscreen, or legacy interface. |
 
-Press `Esc` to stop a running task. The flow shell keeps transcript output in normal terminal scrollback; the fullscreen and legacy layouts keep bounded internal scroll regions.
+Press `Esc` to stop a running task. The transcript goes to your terminal's normal scrollback, so scrolling, selection and copy work as usual.
 
 ## Safety model
 

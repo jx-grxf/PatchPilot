@@ -1,6 +1,6 @@
 import { render } from "ink-testing-library";
 import { describe, expect, it } from "vitest";
-import { FlowShell } from "../src/tui/experimental/FlowShell.js";
+import { FlowShell } from "../src/tui/shell/FlowShell.js";
 import { Markdown } from "../src/tui/components/Markdown.js";
 import type { LogLine, TranscriptBlockKind } from "../src/tui/types.js";
 

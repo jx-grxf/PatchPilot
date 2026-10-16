@@ -11,7 +11,7 @@ import { deflateRawSync, inflateRawSync } from "node:zlib";
 import { fetchWithTimeout } from "./http.js";
 import { readTextLimited } from "./stream.js";
 import { MemoryStore } from "./memory.js";
-import type { AgentToolCall, AgentToolName, ApprovalRequest, PermissionDecision, ToolCategory, ToolPermission, ToolResult, ToolRisk, ToolSpec } from "./types.js";
+import type { AgentToolCall, AgentToolName, ApprovalRequest, PermissionDecision, ToolPermission, ToolResult, ToolSpec } from "./types.js";
 
 const execFileAsync = promisify(execFile);
 type DocumentAnalyzer = (request: { path: string; prompt: string; signal?: AbortSignal }) => Promise<string>;

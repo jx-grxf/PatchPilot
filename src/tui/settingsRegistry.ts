@@ -178,14 +178,6 @@ export const settingsRegistry: SettingDefinition[] = [
   },
 
   {
-    key: "PATCHPILOT_UI_THEME",
-    name: "Shell",
-    description: "flow renders into the terminal's own scrollback, so selection and copy work.",
-    group: "interface",
-    kind: { type: "choice", values: ["flow", "new", "legacy"] },
-    defaultValue: "flow"
-  },
-  {
     key: "PATCHPILOT_REDUCE_MOTION",
     name: "Reduce motion",
     description: "Hold spinners and bars still. Motion already stops when output is piped rather than shown.",
@@ -301,7 +293,7 @@ export function formatSettingValue(setting: SettingDefinition, value: string): s
   return value || "not set";
 }
 
-export function isTruthy(value: string): boolean {
+function isTruthy(value: string): boolean {
   return ["1", "true", "yes", "on", "enabled"].includes(value.trim().toLowerCase());
 }
 

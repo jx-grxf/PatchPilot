@@ -8,8 +8,8 @@ import {
   looksLikeAttachmentPath,
   sanitizePastedText,
   stripQuotes,
-} from "../src/tui/experimental/attachments.js";
-import { estimateCloudEquivalentCost, formatSavedCost } from "../src/tui/experimental/savings.js";
+} from "../src/tui/shell/attachments.js";
+import { estimateCloudEquivalentCost, formatSavedCost } from "../src/tui/shell/savings.js";
 
 describe("attachment classification", () => {
   it("classifies known document extensions", () => {

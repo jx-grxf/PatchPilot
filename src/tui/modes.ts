@@ -6,12 +6,22 @@ export type ModePermissions = {
   allowShell: boolean;
 };
 
-export function initialAgentMode(permissions: ModePermissions): AgentMode {
+/**
+ * CLI grants win; otherwise the saved default mode applies. A saved bypass
+ * starts in build, because bypass is only ever entered through the visible
+ * confirmation in the TUI.
+ */
+export function initialAgentMode(permissions: ModePermissions, defaultMode?: string): AgentMode {
   if (permissions.allowWrite && permissions.allowShell) {
     return "bypass";
   }
 
-  return permissions.allowWrite || permissions.allowShell ? "build" : "plan";
+  if (permissions.allowWrite || permissions.allowShell) {
+    return "build";
+  }
+
+  const saved = defaultMode?.trim().toLowerCase();
+  return saved === "build" || saved === "bypass" ? "build" : "plan";
 }
 
 export function nextAgentMode(currentMode: AgentMode): AgentMode {

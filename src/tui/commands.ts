@@ -8,7 +8,7 @@ export type SlashCommand = {
   detail?: string;
 };
 
-export const slashCommands: SlashCommand[] = [
+const slashCommands: SlashCommand[] = [
   {
     name: "help",
     usage: "/help",
@@ -295,13 +295,6 @@ export const slashCommands: SlashCommand[] = [
     detail: "Run /experimental to open the checkbox menu. Use space to toggle file-analysis, memory, subagents, and shell-metacharacters."
   },
   {
-    name: "theme",
-    usage: "/theme [flow|new|legacy]",
-    description: "Switch between the Flow, fullscreen, and legacy terminal interfaces.",
-    category: "utility",
-    detail: "Run /theme to open the picker, or pass flow, new, or legacy directly. Flow uses native terminal scrollback and is the default; the choice is remembered."
-  },
-  {
     name: "init",
     usage: "/init",
     description: "Create PATCHPILOT.md workspace instructions.",
@@ -362,10 +355,6 @@ export function filterSlashCommands(input: string): SlashCommand[] {
     .filter((item): item is { command: SlashCommand; score: number } => item.score !== null)
     .sort((left, right) => left.score - right.score || left.command.name.localeCompare(right.command.name))
     .map((item) => item.command);
-}
-
-export function formatCommandList(): string {
-  return slashCommands.map((command) => command.usage).join("  ");
 }
 
 export function formatCommandDetail(): string {

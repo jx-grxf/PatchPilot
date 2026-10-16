@@ -1,5 +1,4 @@
-import type { AgentEvent, AgentToolName, AgentWorkState } from "../core/types.js";
-import { getToolSpec } from "../core/workspace.js";
+import type { AgentEvent } from "../core/types.js";
 import { formatTokens } from "./format.js";
 import type { LogLineInput } from "./types.js";
 
@@ -19,7 +18,7 @@ export function formatContextUsage(usedTokens: number, limitTokens: number, rati
   return `${formatTokenCount(usedTokens)}/${formatTokenCount(limitTokens)} · ${Math.round(ratio * 100)}%`;
 }
 
-export function formatTokenCount(tokens: number): string {
+function formatTokenCount(tokens: number): string {
   if (tokens >= 1_000_000) {
     return `${(tokens / 1_000_000).toFixed(1)}M`;
   }
@@ -42,7 +41,7 @@ export type StreamProgress = {
  * words: during the first there is nothing to show but elapsed time, during
  * the second the throughput is the interesting number.
  */
-export function formatStreamProgress(
+function formatStreamProgress(
   phase: "prompt" | "generating",
   elapsedMs: number,
   tokens: number,
@@ -56,7 +55,7 @@ export function formatStreamProgress(
   return [`writing · ${tokens} tok`, rate, formatDuration(elapsedMs)].filter(Boolean).join(" · ");
 }
 
-export function formatDuration(elapsedMs: number): string {
+function formatDuration(elapsedMs: number): string {
   const seconds = elapsedMs / 1000;
   if (seconds < 10) {
     return `${seconds.toFixed(1)}s`;
@@ -67,10 +66,6 @@ export function formatDuration(elapsedMs: number): string {
   }
 
   return `${Math.floor(seconds / 60)}m${String(Math.round(seconds % 60)).padStart(2, "0")}s`;
-}
-
-export function randomLegacyVerbIndex(): number {
-  return Math.floor(Math.random() * 1_000_000);
 }
 
 export function eventToLine(event: AgentEvent): LogLineInput {

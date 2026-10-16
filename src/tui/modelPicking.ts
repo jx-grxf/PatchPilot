@@ -2,11 +2,10 @@ import { defaultLocalOpenAIModel, LocalOpenAIClient, resolveLocalOpenAIBaseUrl }
 import { defaultOllamaModel, OllamaClient } from "../core/ollama.js";
 import type { ModelProvider } from "../core/types.js";
 import { modelDescriptorIndex } from "./modelDescriptors.js";
-import { formatModelLabel, formatModelOptions, selectableModels } from "./modelSelection.js";
+import { formatModelLabel, selectableModels } from "./modelSelection.js";
 import { normalizeModelAlias } from "./format.js";
 import type { AgentRunnerOptions } from "../core/agent.js";
 import type { OllamaHostDetails } from "./hosts.js";
-import type { LogLineInput } from "./types.js";
 
 /**
  * Choosing and validating a model id.
@@ -48,7 +47,7 @@ export function selectModelFromInput(value: string, models: string[], selectedIn
   return options.allowManual && isPlausibleCloudModelId(normalizedValue) ? normalizedValue : null;
 }
 
-export function isPlausibleCloudModelId(value: string): boolean {
+function isPlausibleCloudModelId(value: string): boolean {
   return /^[A-Za-z0-9][A-Za-z0-9._:/+-]*$/.test(value) && value.length >= 3;
 }
 
@@ -89,7 +88,7 @@ export async function unloadUsedOllamaModels(usedModels: Set<string>): Promise<v
   );
 }
 
-export async function ejectOllamaModels(options: {
+async function ejectOllamaModels(options: {
   target: string;
   settings: AgentRunnerOptions;
   activeHost: OllamaHostDetails | null;
