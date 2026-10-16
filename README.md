@@ -25,7 +25,7 @@ All file and shell tools still run on the machine where PatchPilot is launched. 
 
 ## Requirements
 
-- Node.js 22 or newer.
+- Node.js 22.12 or newer.
 - Git.
 - At least one running model runtime:
   - [Ollama](https://ollama.com/), or
