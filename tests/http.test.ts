@@ -1,5 +1,7 @@
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fetchWithTimeout } from "../src/core/http.js";
+import { fetchWithTimeout, postToModel } from "../src/core/http.js";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -62,5 +64,42 @@ describe("fetchWithTimeout", () => {
 
     await expect(request).rejects.toThrow("after 1 attempt");
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("postToModel", () => {
+  it("streams a body that arrives after a pause, as a web Response", async () => {
+    const server = createServer((request, response) => {
+      let body = "";
+      request.on("data", (chunk) => (body += chunk));
+      request.on("end", () => {
+        response.writeHead(200, { "Content-Type": "text/event-stream" });
+        response.write("data: first\n\n");
+        setTimeout(() => response.end(`data: ${body}\n\n`), 50);
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const { port } = server.address() as AddressInfo;
+
+    try {
+      const response = await postToModel(`http://127.0.0.1:${port}/v1/chat/completions`, {
+        headers: { "Content-Type": "application/json" },
+        body: '{"ok":true}'
+      });
+      expect(response.status).toBe(200);
+      expect(response.headers.get("content-type")).toBe("text/event-stream");
+      expect(await response.text()).toBe('data: first\n\ndata: {"ok":true}\n\n');
+    } finally {
+      server.close();
+    }
+  });
+
+  it("rejects when nothing listens", async () => {
+    const server = createServer();
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const { port } = server.address() as AddressInfo;
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+
+    await expect(postToModel(`http://127.0.0.1:${port}/v1/chat/completions`, { headers: {}, body: "{}" })).rejects.toThrow();
   });
 });

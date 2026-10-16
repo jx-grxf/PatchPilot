@@ -7,10 +7,36 @@
  * parsed payloads.
  */
 
-const defaultStreamIdleTimeoutMs = 120_000;
+export const defaultStreamIdleTimeoutMs = 120_000;
+
+/**
+ * Most local servers parse a tool call out of the raw token stream and only
+ * emit its arguments once the call is complete, so a model writing a large
+ * file sends nothing for minutes. The wait is legitimate, and the user can
+ * still stop it with esc.
+ */
+export const toolCallIdleTimeoutMs = 20 * 60_000;
+
+export class StreamIdleError extends Error {
+  constructor(readonly idleTimeoutMs: number) {
+    super(`The model server sent nothing for ${formatIdleDuration(idleTimeoutMs)} and was stopped.`);
+    this.name = "StreamIdleError";
+  }
+}
+
+function formatIdleDuration(ms: number): string {
+  if (ms < 1000) {
+    return `${ms} ms`;
+  }
+  const seconds = Math.round(ms / 1000);
+  return seconds < 120 ? `${seconds} s` : `${Math.round(seconds / 60)} min`;
+}
+
+/** A fixed timeout, or one re-read before every chunk so a caller can widen it mid-stream. */
+export type IdleTimeout = number | (() => number);
 
 /** Yields complete lines from a response body, tolerating chunk boundaries. */
-export async function* readLines(response: Response, signal?: AbortSignal, idleTimeoutMs = defaultStreamIdleTimeoutMs): AsyncGenerator<string> {
+export async function* readLines(response: Response, signal?: AbortSignal, idleTimeout: IdleTimeout = defaultStreamIdleTimeoutMs): AsyncGenerator<string> {
   const body = response.body;
   if (!body) {
     throw new Error("Streaming response had no body.");
@@ -26,6 +52,7 @@ export async function* readLines(response: Response, signal?: AbortSignal, idleT
         return;
       }
 
+      const idleTimeoutMs = typeof idleTimeout === "function" ? idleTimeout() : idleTimeout;
       const { done, value } = await readNextChunk(reader, signal, idleTimeoutMs);
       if (done) {
         break;
@@ -123,7 +150,7 @@ async function readNextChunk(
     };
     const timeout = setTimeout(() => {
       void reader.cancel().catch(() => undefined);
-      finish(() => reject(new Error(`Streaming response was idle for ${idleTimeoutMs} ms.`)));
+      finish(() => reject(new StreamIdleError(idleTimeoutMs)));
     }, idleTimeoutMs);
 
     if (signal?.aborted) {
@@ -144,8 +171,8 @@ async function readNextChunk(
  * terminal `[DONE]` sentinel. Malformed frames are skipped rather than thrown:
  * a single bad chunk should not lose an otherwise good response.
  */
-export async function* readServerSentJson(response: Response, signal?: AbortSignal): AsyncGenerator<unknown> {
-  for await (const line of readLines(response, signal)) {
+export async function* readServerSentJson(response: Response, signal?: AbortSignal, idleTimeout?: IdleTimeout): AsyncGenerator<unknown> {
+  for await (const line of readLines(response, signal, idleTimeout)) {
     if (!line.startsWith("data:")) {
       continue;
     }
@@ -163,8 +190,8 @@ export async function* readServerSentJson(response: Response, signal?: AbortSign
 }
 
 /** Yields parsed newline-delimited JSON objects. */
-export async function* readNewlineDelimitedJson(response: Response, signal?: AbortSignal): AsyncGenerator<unknown> {
-  for await (const line of readLines(response, signal)) {
+export async function* readNewlineDelimitedJson(response: Response, signal?: AbortSignal, idleTimeout?: IdleTimeout): AsyncGenerator<unknown> {
+  for await (const line of readLines(response, signal, idleTimeout)) {
     const parsed = tryParseJson(line);
     if (parsed !== undefined) {
       yield parsed;

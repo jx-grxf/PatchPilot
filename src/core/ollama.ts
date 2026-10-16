@@ -1,7 +1,7 @@
 import type { ModelChatOptions, ModelChatResult, ModelStreamDelta, ModelTelemetry, RawToolCall } from "./types.js";
-import { fetchWithTimeout } from "./http.js";
+import { fetchWithTimeout, postToModel } from "./http.js";
 import { stripTemplateTokens } from "./localOpenAI.js";
-import { readNewlineDelimitedJson, StreamTimer } from "./stream.js";
+import { defaultStreamIdleTimeoutMs, readNewlineDelimitedJson, StreamTimer, toolCallIdleTimeoutMs } from "./stream.js";
 import { getOllamaThinkValue } from "./reasoning.js";
 import { attachTokenCost } from "./tokenAccounting.js";
 
@@ -78,8 +78,7 @@ export class OllamaClient {
   async chat(options: ModelChatOptions): Promise<ModelChatResult> {
     const streaming = Boolean(options.onDelta);
     const timer = new StreamTimer();
-    const response = await this.fetchOllama("/api/chat", {
-      method: "POST",
+    const response = await this.postChat({
       headers: {
         "Content-Type": "application/json"
       },
@@ -157,7 +156,11 @@ export class OllamaClient {
     let finalPayload: OllamaChatResponse = {};
     const streamedToolCalls: NonNullable<NonNullable<OllamaChatResponse["message"]>["tool_calls"]> = [];
 
-    for await (const chunk of readNewlineDelimitedJson(response, options.signal)) {
+    // Ollama sends no frame at all while a native tool call is being generated,
+    // not even a header, so any request that advertises tools may go quiet.
+    const idleTimeout = options.tools?.length ? toolCallIdleTimeoutMs : defaultStreamIdleTimeoutMs;
+
+    for await (const chunk of readNewlineDelimitedJson(response, options.signal, idleTimeout)) {
       const payload = chunk as OllamaChatResponse;
       if (payload.error) {
         return { payload, content };
@@ -248,6 +251,17 @@ export class OllamaClient {
 
     if (!response.ok) {
       throw new Error(`Ollama unload failed for model "${trimmedModel}" at ${this.baseUrl}: HTTP ${response.status}.`);
+    }
+  }
+
+  private async postChat(init: { headers: Record<string, string>; body: string; signal?: AbortSignal }): Promise<Response> {
+    try {
+      return await postToModel(`${this.baseUrl}/api/chat`, init);
+    } catch (error) {
+      if (init.signal?.aborted) {
+        throw error;
+      }
+      throw new Error(formatOllamaConnectionError(this.baseUrl, error));
     }
   }
 

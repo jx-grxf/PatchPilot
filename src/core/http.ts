@@ -1,3 +1,7 @@
+import http from "node:http";
+import https from "node:https";
+import { Readable } from "node:stream";
+
 export async function fetchWithTimeout(
   input: string | URL,
   init: RequestInit = {},
@@ -127,4 +131,64 @@ function readRetryAfterMs(value: string | null): number | null {
   }
 
   return null;
+}
+
+/**
+ * POST for model calls. Node's fetch (undici) drops a response once 300 s pass
+ * without a byte, before or after the headers, and a local server writing a
+ * large tool call sends nothing for longer than that. `node:http` has no such
+ * timeout, so the idle timer in `stream.ts` stays the only judge of a stalled
+ * server, and esc stays the way to stop a slow one.
+ */
+export async function postToModel(
+  url: string,
+  init: { headers: Record<string, string>; body: string; signal?: AbortSignal; connectTimeoutMs?: number }
+): Promise<Response> {
+  const target = new URL(url);
+  const transport = target.protocol === "https:" ? https : http;
+
+  return await new Promise<Response>((resolve, reject) => {
+    const request = transport.request(
+      target,
+      {
+        method: "POST",
+        headers: { ...init.headers, "Content-Length": String(Buffer.byteLength(init.body)) },
+        signal: init.signal
+      },
+      (response) => {
+        clearTimeout(connectTimer);
+        const headers = new Headers();
+        for (const [name, value] of Object.entries(response.headers)) {
+          for (const entry of Array.isArray(value) ? value : value === undefined ? [] : [value]) {
+            headers.append(name, entry);
+          }
+        }
+        resolve(
+          new Response(Readable.toWeb(response) as ReadableStream<Uint8Array>, {
+            status: response.statusCode ?? 500,
+            statusText: response.statusMessage,
+            headers
+          })
+        );
+      }
+    );
+
+    // Only the connection is timed: once the server has accepted the request,
+    // prompt evaluation may legitimately take minutes before the first byte.
+    const connectTimer = setTimeout(() => {
+      request.destroy(new Error(`could not be reached within ${init.connectTimeoutMs ?? 5000} ms`));
+    }, init.connectTimeoutMs ?? 5000);
+    request.on("socket", (socket) => {
+      if (!socket.connecting) {
+        clearTimeout(connectTimer);
+        return;
+      }
+      socket.once("connect", () => clearTimeout(connectTimer));
+    });
+    request.on("error", (error) => {
+      clearTimeout(connectTimer);
+      reject(error);
+    });
+    request.end(init.body);
+  });
 }

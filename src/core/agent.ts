@@ -5,7 +5,7 @@ import { createModelClient } from "./modelClient.js";
 import type { SessionStore } from "./session.js";
 import { MAX_TOOL_CALLS_PER_RESPONSE, type AgentEvent, type AgentEventToolName, type AgentTodoItem, type AgentToolName, type AgentWorkState, type ApprovalRequest, type ChatMessage, type ModelChatResult, type ModelClient, type ModelProvider, type PermissionDecision, type ThinkingSetting, type ProviderTool, type RawToolCall, type AgentToolCall, type ToolCategory, type ToolResult } from "./types.js";
 import { StreamTimer } from "./stream.js";
-import { probeModelCapabilities } from "./capability.js";
+import { hasProbedModel, probeModelCapabilities } from "./capability.js";
 import { stripTemplateTokens } from "./localOpenAI.js";
 import { formatEnvelope, runSubagent, subagentToolNames, type SubagentEnvelope, type SubagentRequest } from "./subagentRunner.js";
 import { measureContext, pruneToolResults } from "./contextWindow.js";
@@ -110,6 +110,15 @@ export class AgentRunner {
     // tools to a model that ignores them is worse than not advertising: it
     // answers in prose, the loop sees no calls, and the run stalls looking
     // like a refusal.
+    if (!hasProbedModel(this.options.provider, this.options.model)) {
+      // The probe is a real model call; on a busy or cold server it can take
+      // minutes, and without a word the run looks frozen before it starts.
+      yield {
+        type: "status",
+        message: `checking whether ${this.options.model} supports tool calls`,
+        workState: "inspecting"
+      };
+    }
     const capabilities = await probeModelCapabilities({
       client: this.client,
       provider: this.options.provider,
@@ -140,7 +149,6 @@ export class AgentRunner {
     let stepIndex = 0;
     let repairs = 0;
     let malformedResponses = 0;
-    let lastReadFilePath = "";
     let todos: AgentTodoItem[] = [];
     const expectsTodos = shouldExpectTodos(task, ultramaxx);
     let didNudgeForTodos = false;
@@ -684,14 +692,6 @@ export class AgentRunner {
           verifiedSinceLastWrite = true;
         }
 
-        const sourceCall = workspaceCallById.get(toolResult.toolCallId);
-        if (toolResult.ok && sourceCall?.name === "read_file") {
-          const readPath = readToolString(sourceCall.arguments.path);
-          if (readPath) {
-            lastReadFilePath = readPath;
-          }
-        }
-
         if (toolResult.approval) {
           yield {
             type: "approval",
@@ -973,7 +973,6 @@ export class AgentRunner {
     requestWorkState: AgentWorkState;
   }): AsyncGenerator<AgentEvent, ModelChatResult> {
     const timer = new StreamTimer();
-    let thinkingChars = 0;
     let visibleText = "";
     let writing: { tool: string; chars: number } | null = null;
     let tokens = 0;
@@ -1004,7 +1003,6 @@ export class AgentRunner {
           }
           if (delta.thinking) {
             timer.markFirstToken();
-            thinkingChars += delta.thinking.length;
           }
           if (delta.toolCall) {
             timer.markFirstToken();
@@ -1033,10 +1031,7 @@ export class AgentRunner {
         break;
       }
 
-      // Reasoning arrives token by token. Flushing on every tick would emit
-      // one transcript line per word, so it is buffered into readable blocks.
       const generating = timer.timeToFirstTokenMs !== null;
-      void thinkingChars;
       yield {
         type: "stream",
         phase: generating ? "generating" : "prompt",
@@ -1079,15 +1074,6 @@ function firstNonEmpty<T>(...candidates: T[][]): T[] {
 
 /** How often streaming progress is reported, in milliseconds. */
 const streamProgressIntervalMs = 120;
-
-/** Reasoning is buffered to at least this many characters before it is shown. */
-const thinkingFlushChars = 280;
-
-/** Prefers to break reasoning at a sentence end rather than mid-word. */
-function lastSentenceBoundary(value: string): number {
-  const match = value.slice(0, thinkingFlushChars * 2).match(/^[\s\S]*[.!?\n]\s/);
-  return match ? match[0].length : value.length;
-}
 
 export function recoverMalformedToolResponse(rawContent: string): { action: "tools"; message: string; tool_calls: Array<{ name: "write_file"; arguments: { path: string; content: string } }> } | null {
   const targetPath = readWriteFileToolPath(rawContent);
@@ -1134,10 +1120,6 @@ function readWriteFileToolPath(rawContent: string): string | null {
     rawContent,
     /"tool_calls"\s*:\s*\[[\s\S]*?"name"\s*:\s*"write_file"[\s\S]*?"arguments"\s*:\s*\{[\s\S]*?"path"\s*:\s*"([^"]+)"/
   );
-}
-
-function readToolString(value: unknown): string {
-  return typeof value === "string" ? value : "";
 }
 
 function shouldUseSubagents(task: string): boolean {
@@ -1368,7 +1350,7 @@ function buildSystemPrompt(
  * A tool-calling turn often carries no prose at all. Rendering the placeholder
  * puts an empty heading above every tool call, which is pure noise.
  */
-export function isMeaningfulAssistantMessage(message: string): boolean {
+function isMeaningfulAssistantMessage(message: string): boolean {
   const normalized = message.trim();
   return normalized.length > 0 && normalized !== "working" && !/^\{.*\}$/s.test(normalized);
 }
@@ -1396,7 +1378,7 @@ export function readFinalMessage(rawResponse: string): string {
  * the message check covers a client that surfaces the abort without having
  * been given the signal.
  */
-export function isAbortError(error: unknown, signal?: AbortSignal): boolean {
+function isAbortError(error: unknown, signal?: AbortSignal): boolean {
   if (signal?.aborted) {
     return true;
   }
