@@ -7,7 +7,7 @@ PatchPilot is a local-only, permissioned terminal coding agent. It is for reposi
 - Supported model routes are Ollama and OpenAI-compatible local runtimes only.
 - Remote Ollama moves inference, never workspace tools.
 - `plan` is read-only, `build` asks before side effects, and `bypass` is an explicit trusted-workspace choice.
-- Workspace boundaries, secret-path protections, and high-risk shell checks must survive every UI or tool refactor.
+- Workspace boundaries, secret-path protections, and high-risk shell checks must survive every UI or tool refactor. Bypass lifts the shell's workspace boundary on purpose; secret paths and destructive-command prompts remain.
 - Native tool calling is preferred, but weaker local models must have a validated fallback and bounded repair path.
 - Cancellation is a normal outcome and must stop active model/child work before further writes continue.
 - Long sessions must expose context pressure and retain pinned context through compaction.
