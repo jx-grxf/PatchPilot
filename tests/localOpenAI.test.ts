@@ -7,6 +7,15 @@ import {
   stripTemplateTokens
 } from "../src/core/localOpenAI.js";
 
+// Model calls go through node:http in production; routing them through
+// fetch here lets the tests keep stubbing a single global.
+vi.mock("../src/core/http.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/core/http.js")>()),
+  postToModel: (url: string, init: { headers: Record<string, string>; body: string; signal?: AbortSignal }) =>
+    globalThis.fetch(url, { method: "POST", headers: init.headers, body: init.body, signal: init.signal })
+}));
+
+
 afterEach(() => {
   vi.restoreAllMocks();
 });
@@ -144,6 +153,52 @@ describe("LocalOpenAIClient streaming", () => {
     expect(result.toolCalls).toEqual([
       { name: "write_file", arguments: '{"path":"src/a.ts","content":"ok"}' }
     ]);
+  });
+
+  it("waits through the silence of a server that buffers tool-call arguments", async () => {
+    vi.useFakeTimers();
+    const encoder = new TextEncoder();
+    const frame = (value: unknown): Uint8Array => encoder.encode(`data: ${JSON.stringify(value)}\n\n`);
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      new Response(
+        new ReadableStream<Uint8Array>({
+          async start(controller) {
+            controller.enqueue(frame({ choices: [{ delta: { tool_calls: [{ index: 0, function: { name: "write", arguments: "" } }] } }] }));
+            await new Promise((resolve) => setTimeout(resolve, 5 * 60_000));
+            controller.enqueue(frame({ choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: '{"path":"a.html","content":"x"}' } }] } }] }));
+            controller.enqueue(frame({ choices: [{ delta: {}, finish_reason: "tool_calls" }] }));
+            controller.close();
+          }
+        })
+      )
+    );
+
+    const pending = new LocalOpenAIClient().chat({ model: "bonsai-27b-mlx", messages: [{ role: "user", content: "x" }], onDelta: () => undefined });
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    const result = await pending;
+    vi.useRealTimers();
+
+    expect(result.toolCalls).toEqual([{ name: "write", arguments: '{"path":"a.html","content":"x"}' }]);
+  });
+
+  it("names the unfinished tool call when the server really stalls", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            const header = { choices: [{ delta: { tool_calls: [{ index: 0, function: { name: "write", arguments: '{"pa' } }] } }] };
+            controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(header)}\n\n`));
+          }
+        })
+      )
+    );
+
+    const pending = new LocalOpenAIClient().chat({ model: "bonsai-27b-mlx", messages: [{ role: "user", content: "x" }], onDelta: () => undefined });
+    const rejection = expect(pending).rejects.toThrow(/sent nothing for 20 min.*"write" call \(4 argument characters/);
+    await vi.advanceTimersByTimeAsync(20 * 60_000);
+    await rejection;
+    vi.useRealTimers();
   });
 
   it("asks for usage only when streaming", async () => {

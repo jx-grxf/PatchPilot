@@ -26,7 +26,7 @@ const probeCache = new Map<string, Promise<ModelCapabilities>>();
 /** A deliberately trivial task: any model that can call a tool will call this one. */
 const probeTool = toProviderTools([toolDefinitions.read]);
 
-export function capabilityCacheKey(provider: ModelProvider, model: string): string {
+function capabilityCacheKey(provider: ModelProvider, model: string): string {
   return `${provider}:${model}`;
 }
 
@@ -34,6 +34,11 @@ export function capabilityCacheKey(provider: ModelProvider, model: string): stri
  * Probes once per model per session and caches the promise, so concurrent
  * callers share a single request rather than racing.
  */
+/** Whether the next probe for this model will hit the server or the cache. */
+export function hasProbedModel(provider: ModelProvider, model: string): boolean {
+  return probeCache.has(capabilityCacheKey(provider, model));
+}
+
 export function probeModelCapabilities(options: {
   client: ModelClient;
   provider: ModelProvider;

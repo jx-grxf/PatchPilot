@@ -1,6 +1,6 @@
 import type { ModelChatOptions, ModelChatResult, ModelDescriptor, ModelStreamDelta, ModelTelemetry, RawToolCall } from "./types.js";
-import { fetchWithTimeout } from "./http.js";
-import { readServerSentJson, StreamTimer } from "./stream.js";
+import { fetchWithTimeout, postToModel } from "./http.js";
+import { defaultStreamIdleTimeoutMs, readServerSentJson, StreamIdleError, StreamTimer, toolCallIdleTimeoutMs } from "./stream.js";
 import { attachTokenCost } from "./tokenAccounting.js";
 
 /**
@@ -13,8 +13,8 @@ import { attachTokenCost } from "./tokenAccounting.js";
  */
 
 export const defaultLocalOpenAIModel = "qwen2.5-coder-7b-instruct";
-export const defaultLocalOpenAIUrl = "http://127.0.0.1:1234/v1";
-export const defaultLocalOpenAIPort = 1234;
+const defaultLocalOpenAIUrl = "http://127.0.0.1:1234/v1";
+const defaultLocalOpenAIPort = 1234;
 
 type ChatCompletionResponse = {
   /** What the server actually ran, which is not always what was requested. */
@@ -108,8 +108,7 @@ export class LocalOpenAIClient {
   private async requestChat(options: ModelChatOptions, allowJsonFormat: boolean): Promise<ModelChatResult> {
     const streaming = Boolean(options.onDelta);
     const timer = new StreamTimer();
-    const response = await this.fetchLocal("/chat/completions", {
-      method: "POST",
+    const response = await this.postChat({
       headers: this.buildHeaders(),
       body: JSON.stringify({
         model: options.model,
@@ -178,50 +177,62 @@ export class LocalOpenAIClient {
     // Streamed tool calls arrive as fragments; the name lands in the first
     // frame and the argument JSON accumulates across later ones.
     const partialCalls = new Map<number, { name: string; arguments: string }>();
+    const idleTimeout = (): number => (partialCalls.size > 0 ? toolCallIdleTimeoutMs : defaultStreamIdleTimeoutMs);
 
-    for await (const frame of readServerSentJson(response, options.signal)) {
-      const payload = frame as ChatCompletionResponse;
-      if (payload.error) {
-        return { payload, content, finishReason, toolCalls: assembleToolCalls(partialCalls) };
-      }
-      if (payload.usage) {
-        usagePayload = payload;
-      }
-      servedModel ??= payload.model;
+    try {
+      for await (const frame of readServerSentJson(response, options.signal, idleTimeout)) {
+        const payload = frame as ChatCompletionResponse;
+        if (payload.error) {
+          return { payload, content, finishReason, toolCalls: assembleToolCalls(partialCalls) };
+        }
+        if (payload.usage) {
+          usagePayload = payload;
+        }
+        servedModel ??= payload.model;
 
-      const choice = payload.choices?.[0];
-      if (choice?.finish_reason) {
-        finishReason = choice.finish_reason;
-      }
+        const choice = payload.choices?.[0];
+        if (choice?.finish_reason) {
+          finishReason = choice.finish_reason;
+        }
 
-      const delta: ModelStreamDelta = {};
+        const delta: ModelStreamDelta = {};
 
-      for (const [position, fragment] of (choice?.delta?.tool_calls ?? []).entries()) {
-        const index = fragment.index ?? position;
-        const existing = partialCalls.get(index) ?? { name: "", arguments: "" };
-        const merged = {
-          name: fragment.function?.name ?? existing.name,
-          arguments: existing.arguments + (fragment.function?.arguments ?? "")
-        };
-        partialCalls.set(index, merged);
-        if (merged.name) {
-          delta.toolCall = { name: merged.name, argumentChars: merged.arguments.length };
+        for (const [position, fragment] of (choice?.delta?.tool_calls ?? []).entries()) {
+          const index = fragment.index ?? position;
+          const existing = partialCalls.get(index) ?? { name: "", arguments: "" };
+          const merged = {
+            name: fragment.function?.name ?? existing.name,
+            arguments: existing.arguments + (fragment.function?.arguments ?? "")
+          };
+          partialCalls.set(index, merged);
+          if (merged.name) {
+            delta.toolCall = { name: merged.name, argumentChars: merged.arguments.length };
+          }
+        }
+
+        const thinking = choice?.delta?.reasoning_content ?? choice?.delta?.reasoning;
+        if (choice?.delta?.content) {
+          content += choice.delta.content;
+          delta.content = choice.delta.content;
+        }
+        if (thinking) {
+          delta.thinking = thinking;
+        }
+
+        if (delta.content || delta.thinking || delta.toolCall) {
+          timer.markFirstToken();
+          emitDelta(options.onDelta, delta);
         }
       }
-
-      const thinking = choice?.delta?.reasoning_content ?? choice?.delta?.reasoning;
-      if (choice?.delta?.content) {
-        content += choice.delta.content;
-        delta.content = choice.delta.content;
+    } catch (error) {
+      const pending = [...partialCalls.values()].find((call) => call.name);
+      if (error instanceof StreamIdleError && pending) {
+        throw new Error(
+          `${error.message} The model was writing a "${pending.name}" call (${pending.arguments.length} argument characters received). ` +
+            "Ask for the work in smaller steps, e.g. one file or one section at a time."
+        );
       }
-      if (thinking) {
-        delta.thinking = thinking;
-      }
-
-      if (delta.content || delta.thinking || delta.toolCall) {
-        timer.markFirstToken();
-        emitDelta(options.onDelta, delta);
-      }
+      throw error;
     }
 
     return {
@@ -386,6 +397,17 @@ export class LocalOpenAIClient {
     }
   }
 
+  private async postChat(init: { headers: Record<string, string>; body: string; signal?: AbortSignal }): Promise<Response> {
+    try {
+      return await postToModel(`${this.baseUrl}/chat/completions`, init);
+    } catch (error) {
+      if (init.signal?.aborted) {
+        throw error;
+      }
+      throw new Error(formatLocalConnectionError(this.baseUrl, error));
+    }
+  }
+
   private async fetchNative(path: string, init?: RequestInit): Promise<Response> {
     const origin = new URL(this.baseUrl).origin;
     try {
@@ -524,7 +546,7 @@ export function normalizeLocalOpenAIBaseUrl(value: string | undefined): string {
   return parsedUrl.toString().replace(/\/$/, "");
 }
 
-export function readLocalOpenAIApiKey(env: NodeJS.ProcessEnv = process.env): string {
+function readLocalOpenAIApiKey(env: NodeJS.ProcessEnv = process.env): string {
   return env.PATCHPILOT_LOCAL_API_KEY?.trim() ?? "";
 }
 

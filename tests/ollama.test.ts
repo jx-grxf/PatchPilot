@@ -7,6 +7,15 @@ import {
   resolveOllamaBaseUrl
 } from "../src/core/ollama.js";
 
+// Model calls go through node:http in production; routing them through
+// fetch here lets the tests keep stubbing a single global.
+vi.mock("../src/core/http.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/core/http.js")>()),
+  postToModel: (url: string, init: { headers: Record<string, string>; body: string; signal?: AbortSignal }) =>
+    globalThis.fetch(url, { method: "POST", headers: init.headers, body: init.body, signal: init.signal })
+}));
+
+
 afterEach(() => {
   vi.restoreAllMocks();
 });
