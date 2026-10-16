@@ -1,8 +1,9 @@
 import React from "react";
-import { Box, renderToString, Static, Text } from "ink";
+import { Box, Static, Text } from "ink";
 import { Banner, type BannerInfo } from "./Banner.js";
 import { DiffBlock, Markdown } from "../components/Markdown.js";
 import { symbols } from "./theme.js";
+import { formatToolHeading } from "../toolDisplay.js";
 import type { LogLine } from "../types.js";
 
 /**
@@ -64,58 +65,6 @@ export function FlowShell(props: FlowShellProps): React.ReactElement {
   );
 }
 
-const measuredRows = new WeakMap<object, { columns: number; rows: number }>();
-
-/**
- * Rows the static region occupies, so the live region can pad itself out and
- * keep the composer on the bottom rows until the transcript fills the screen.
- *
- * Exact heights come from `measureTranscriptRows`, which has to run outside
- * a render. Until an entry is measured its height is overestimated: a live
- * region that is too short only grows downward on the next frame, while one
- * that is too tall pushes content into scrollback for good.
- */
-export function estimateTranscriptRows(lines: LogLine[], columns: number, banner: BannerInfo | null): number {
-  let rows = banner ? measuredRows.get(banner)?.rows ?? 6 : 0;
-  for (const line of lines) {
-    const cached = measuredRows.get(line);
-    rows += cached && cached.columns === columns ? cached.rows : overestimateRows(line, columns);
-    if (rows > 500) {
-      break;
-    }
-  }
-  return rows;
-}
-
-/**
- * Renders unmeasured entries off-screen and caches their height. Must not run
- * during a render or commit: Ink's layout engine is not re-entrant. Returns
- * whether anything new was measured.
- */
-export function measureTranscriptRows(lines: LogLine[], columns: number, banner: BannerInfo | null): boolean {
-  let changed = banner ? measure(banner, columns, () => <Banner {...banner} />) : false;
-  for (const line of lines.slice(-200)) {
-    changed = measure(line, columns, () => <TranscriptEntry line={line} columns={columns} />) || changed;
-  }
-  return changed;
-}
-
-function measure(key: object, columns: number, element: () => React.ReactElement): boolean {
-  const cached = measuredRows.get(key);
-  if (cached && cached.columns === columns) {
-    return false;
-  }
-
-  measuredRows.set(key, { columns, rows: renderToString(element(), { columns }).split("\n").length });
-  return true;
-}
-
-function overestimateRows(line: LogLine, columns: number): number {
-  const width = Math.max(10, columns - 8);
-  const wrapped = (text: string): number => text.split("\n").reduce((rows, row) => rows + Math.max(1, Math.ceil(row.length / width)), 0);
-  return 3 + wrapped(line.text) + (line.detail ? wrapped(line.detail) : 0) + (line.preview ? 1 : 0);
-}
-
 /**
  * One completed transcript entry. Rendered exactly once, so it carries its own
  * spacing rather than relying on a parent to lay entries out relative to one
@@ -123,30 +72,29 @@ function overestimateRows(line: LogLine, columns: number): number {
  */
 function TranscriptEntry(props: { line: LogLine; columns: number }): React.ReactElement {
   const { line } = props;
+  const bodyWidth = props.columns - 4;
 
   switch (line.kind) {
     case "user":
       return (
-        <Box flexDirection="column" marginTop={1}>
-          <Text>
-            <Text color="cyan" bold>
-              {symbols.user}{" "}
-            </Text>
-            <Text color="white">{line.text}</Text>
-          </Text>
+        <Box marginTop={1}>
+          <Box width={2} flexShrink={0}>
+            <Text color="gray">{symbols.user}</Text>
+          </Box>
+          <Text color="white">{line.text}</Text>
         </Box>
       );
 
     case "assistant":
     case "final":
       return (
-        <Box flexDirection="column" marginTop={1}>
-          <Text color={line.kind === "final" ? "green" : "cyan"} bold>
-            {line.kind === "final" ? symbols.final : symbols.assistant} {line.label}
-          </Text>
-          <Box paddingLeft={2} flexDirection="column">
-            <Markdown text={line.text} width={props.columns - 4} />
-            {line.detail ? <Markdown text={line.detail} width={props.columns - 4} dim /> : null}
+        <Box marginTop={1}>
+          <Box width={2} flexShrink={0}>
+            <Text color={line.workState === "error" ? "yellow" : "white"}>{symbols.assistant}</Text>
+          </Box>
+          <Box flexDirection="column" flexGrow={1}>
+            <Markdown text={line.text} width={bodyWidth} />
+            {line.detail ? <Markdown text={line.detail} width={bodyWidth} dim /> : null}
           </Box>
         </Box>
       );
@@ -155,45 +103,53 @@ function TranscriptEntry(props: { line: LogLine; columns: number }): React.React
       // Reasoning is context for the answer, not the answer. It stays visible
       // but visually subordinate to it.
       return (
-        <Box flexDirection="column" marginTop={1} paddingLeft={2}>
+        <Box marginTop={1}>
+          <Box width={2} flexShrink={0}>
+            <Text color="gray">{symbols.thinking}</Text>
+          </Box>
           <Text color="gray" italic>
-            {symbols.thinking} {collapse(line.text, props.columns * 3)}
+            {collapse(line.text, props.columns * 3)}
           </Text>
         </Box>
       );
 
-    case "tool":
+    case "tool": {
+      const failed = line.tone === "danger" || line.tone === "warning";
+      const failure = failed && line.detail ? firstLines(line.detail, 3, bodyWidth - 4) : null;
       return (
-        <Box flexDirection="column">
-          <Text>
-            <Text color={line.tone === "danger" ? "red" : line.tone === "warning" ? "yellow" : "green"}>
-              {symbols.tool}{" "}
-            </Text>
-            <Text color="white">{line.tool ?? line.label}</Text>
-            <Text color="gray"> {collapse(line.text, props.columns - 12)}</Text>
+        <Box flexDirection="column" marginTop={1}>
+          <Text wrap="truncate">
+            <Text color={failed ? "red" : "green"}>{symbols.tool} </Text>
+            <Text bold>{formatToolHeading(line.tool, line.label, line.target)}</Text>
           </Text>
-          {line.preview ? (
-            <Box paddingLeft={2}>
-              <Text color="gray">⎿  {collapse(line.preview, props.columns - 7)}</Text>
+          <Box paddingLeft={2}>
+            <Text color={failed ? "red" : "gray"} wrap="truncate">
+              {symbols.result}  {collapse(line.text, bodyWidth - 4)}
+            </Text>
+          </Box>
+          {failure ? (
+            <Box paddingLeft={5}>
+              <Text color="gray">{failure}</Text>
             </Box>
           ) : null}
         </Box>
       );
+    }
 
     case "diff":
       return (
-        <Box flexDirection="column" paddingLeft={2}>
-          <DiffBlock lines={line.text.split("\n")} width={props.columns - 4} />
+        <Box flexDirection="column" paddingLeft={2} marginTop={1}>
+          <DiffBlock lines={line.text.split("\n")} width={bodyWidth} />
         </Box>
       );
 
     case "error":
       return (
-        <Box flexDirection="column" marginTop={1}>
-          <Text color="red" bold>
-            {symbols.error} {line.label}
-          </Text>
-          <Box paddingLeft={2} flexDirection="column">
+        <Box marginTop={1}>
+          <Box width={2} flexShrink={0}>
+            <Text color="red">{symbols.error}</Text>
+          </Box>
+          <Box flexDirection="column" flexGrow={1}>
             <Text color="red">{line.text}</Text>
             {line.detail ? <Text color="gray">{line.detail}</Text> : null}
           </Box>
@@ -202,19 +158,35 @@ function TranscriptEntry(props: { line: LogLine; columns: number }): React.React
 
     case "approval":
       return (
-        <Text>
-          <Text color="yellow">{symbols.approval} </Text>
-          <Text color="gray">{line.text}</Text>
-        </Text>
+        <Box paddingLeft={2}>
+          <Text color="gray">
+            <Text color="yellow">{symbols.result}  </Text>
+            {line.text}
+          </Text>
+        </Box>
       );
 
     case "status":
+      // The closing line of a run reads like Claude Code's "Cooked for 3m".
+      if (line.label === "done" || line.label === "failed" || line.label === "stopped") {
+        return (
+          <Box marginTop={1}>
+            <Text color={line.label === "done" ? "gray" : "yellow"}>✻ {line.text}</Text>
+          </Box>
+        );
+      }
       return (
-        <Text color="gray">
+        <Text color={line.tone === "warning" ? "yellow" : "gray"}>
           {symbols.bullet} {collapse(line.text, props.columns - 4)}
         </Text>
       );
   }
+}
+
+function firstLines(value: string, count: number, width: number): string {
+  const lines = value.trim().split(/\r?\n/);
+  const shown = lines.slice(0, count).map((row) => (row.length <= width ? row : `${row.slice(0, Math.max(10, width) - 1)}…`));
+  return lines.length > count ? `${shown.join("\n")}\n… ${lines.length - count} more lines` : shown.join("\n");
 }
 
 /** Collapses whitespace and clips, so one long line cannot wreck the layout. */

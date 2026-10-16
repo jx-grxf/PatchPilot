@@ -15,10 +15,9 @@ import { promisify } from "node:util";
 
 const run = promisify(execFile);
 
-/** The Ctrl+V hint, phrased for the host platform. */
+/** The footer hint while an image sits in the clipboard, phrased for the host platform. */
 export function clipboardImageHint(hostPlatform: NodeJS.Platform = platform()): string {
-  const combo = hostPlatform === "darwin" ? "ctrl+v (not ⌘V, the terminal takes that)" : "ctrl+v";
-  return `Image in clipboard. Press ${combo} to attach it.`;
+  return hostPlatform === "darwin" ? "ctrl+v attaches the copied image (not ⌘V)" : "ctrl+v attaches the copied image";
 }
 
 /**

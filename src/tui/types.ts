@@ -19,6 +19,8 @@ export type LogLine = {
   toolCallId?: string;
   category?: ToolCategory;
   preview?: string;
+  /** For tool entries: the file, command or pattern the call acted on. */
+  target?: string;
 };
 
 export type LogLineInput = Omit<LogLine, "id" | "kind"> & {

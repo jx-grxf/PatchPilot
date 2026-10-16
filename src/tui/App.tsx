@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { Box, Text, useApp, useInput, useStdout } from "ink";
+import { useApp, useInput, useStdout } from "ink";
 import { AgentRunner, type AgentRunnerOptions } from "../core/agent.js";
 import { cleanupPatchPilot, readCleanupTarget } from "../core/cleanup.js";
 import { ContextStore } from "../core/contextStore.js";
@@ -13,7 +13,7 @@ import { addTelemetryToSession, emptySessionTelemetry, estimateTokens } from "..
 import type { AgentTodoItem, AgentToolName, AgentWorkState, ApprovalRequest, ModelProvider, ModelTelemetry, PermissionDecision, SessionTelemetry } from "../core/types.js";
 import { checkForPatchPilotUpdate, installPatchPilotUpdate, type UpdateCheckResult } from "../core/updateCheck.js";
 import { getToolSpec, WorkspaceTools } from "../core/workspace.js";
-import { clipboardHasImage, clipboardImageHint, readClipboardImage } from "../core/clipboard.js";
+import { clipboardHasImage, readClipboardImage } from "../core/clipboard.js";
 import { ExperimentalPanel, experimentalFlagAt, experimentalFlagCount, experimentalFlagEnvName, type ExperimentalFlag, type ExperimentalFlags } from "./components/ExperimentalPanel.js";
 import { emptyPromptHistory, recallNext, recallPrevious, rememberPrompt, type PromptHistory } from "./promptHistory.js";
 import {
@@ -40,11 +40,13 @@ import {
 import { formatModelDescription, formatModelLabel, formatModelOptions } from "./modelSelection.js";
 import { cacheModelList } from "./modelRuntime.js";
 import {
+  belongsInTranscript,
   eventToLine,
   eventToStatus,
   type StreamProgress
 } from "./transcriptEvents.js";
 import { ConfigPanel, visibleSettings } from "./components/ConfigPanel.js";
+import { ModelPicker, type ModelPickerState } from "./components/ModelPicker.js";
 import {
   cycleSettingValue,
   formatSettingValue,
@@ -119,6 +121,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   const [streamProgress, setStreamProgress] = useState<StreamProgress | null>(null);
   const [streamingText, setStreamingText] = useState("");
   const [configOpen, setConfigOpen] = useState(false);
+  const [modelPicker, setModelPicker] = useState<ModelPickerState | null>(null);
   const [configQuery, setConfigQuery] = useState("");
   const [configIndex, setConfigIndex] = useState(0);
   const [configNotice, setConfigNotice] = useState<string | null>(null);
@@ -156,7 +159,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   const pendingAttachmentsRef = useRef<string[]>([]);
   // Tracks whether the "image in clipboard" hint was already shown for the
   // current clipboard contents, so the poll does not repeat it every tick.
-  const clipboardHintShownRef = useRef(false);
+  const [clipboardImage, setClipboardImage] = useState(false);
   const [onboardingIndex, setOnboardingIndex] = useState(0);
   const [onboardingInput, setOnboardingInput] = useState("");
   const [onboardingBusyMessage, setOnboardingBusyMessage] = useState<string | null>(null);
@@ -198,7 +201,6 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           isLoadingModels
         })
       : [];
-  const rootHeight = Math.max(24, terminalRows);
   const appendLine = useCallback((line: LogLineInput) => {
     // Never trimmed: <Static> prints by index, so dropping entries from the
     // front would keep the length constant and silently stop new output.
@@ -262,7 +264,6 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   // Ctrl+V: pull an image straight out of the OS clipboard, save it to a temp
   // file, and attach it — no need to save the screenshot to disk first.
   const handleClipboardImagePaste = useCallback(async (): Promise<void> => {
-    appendLine({ kind: "status", tone: "muted", label: "clipboard", text: "Reading the clipboard…" });
     const imagePath = await readClipboardImage();
     if (!imagePath) {
       appendLine({
@@ -282,15 +283,15 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       }
       return `${current}${current.endsWith(" ") ? "" : " "}${label} `;
     });
-    clipboardHintShownRef.current = true;
+    setClipboardImage(false);
   }, [appendLine, attachFile]);
 
-  // Watch the OS clipboard while idle: when an image appears, tell the user
-  // once that they can attach it with Ctrl+V (reset when the image is gone).
   useEffect(() => {
     prewarmHighlighter();
   }, []);
 
+  // Watch the OS clipboard while idle, so the footer can offer ctrl+v while
+  // an image is there. A transcript line per image was scrollback noise.
   useEffect(() => {
     if (isRunning) {
       return;
@@ -303,12 +304,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         return;
       }
 
-      if (present && !clipboardHintShownRef.current) {
-        clipboardHintShownRef.current = true;
-        appendLine({ kind: "status", tone: "accent", label: "clipboard", text: clipboardImageHint() });
-      } else if (!present) {
-        clipboardHintShownRef.current = false;
-      }
+      setClipboardImage(present);
     };
 
     void poll();
@@ -1305,7 +1301,9 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           setStreamProgress(null);
           setStreamingText("");
           setStatus(eventToStatus(event));
-          appendLine(eventToLine(event));
+          if (belongsInTranscript(event)) {
+            appendLine(eventToLine(event));
+          }
         }
       } catch (error) {
         // Whatever was streaming belongs to the failed attempt. Leaving it on
@@ -1527,12 +1525,11 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
               return;
             }
 
-            appendLine({
-              tone: "accent",
-              label: "model",
-              text: settings.model,
-              detail: models.length > 0 ? formatModelOptions(models, settings.model) : "Use /models to load available models."
-            });
+            if (models.length === 0) {
+              appendLine({ tone: "warning", label: "model", text: settings.model, detail: "No models found on this runtime. Use /models to refresh." });
+              return;
+            }
+            setModelPicker({ models, query: "", index: Math.max(0, models.indexOf(settings.model)) });
             return;
           }
 
@@ -2295,6 +2292,35 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   }, [appendLine, hostOptions.length, input, isLoadingHosts, isLoadingModels, isRunning, loadHostSuggestions, loadProviderModels, modelOptions.length, onboarding, settings.provider]);
 
   useInput((inputValue, key) => {
+    if (modelPicker) {
+      const matches = selectableModels(modelPicker.query, modelPicker.models, formatModelLabel);
+      if (key.escape) {
+        setModelPicker(null);
+        return;
+      }
+      if (key.upArrow || key.downArrow) {
+        const step = key.upArrow ? -1 : 1;
+        setModelPicker({ ...modelPicker, index: matches.length === 0 ? 0 : (modelPicker.index + step + matches.length) % matches.length });
+        return;
+      }
+      if (key.return) {
+        const chosen = matches[modelPicker.index];
+        setModelPicker(null);
+        if (chosen && chosen !== settings.model) {
+          void switchModel(settings.provider, chosen, settings.ollamaUrl, settings.model, appendLine, setModelOptions, setSettings, setTelemetry, modelPicker.models);
+        }
+        return;
+      }
+      if (key.backspace || key.delete) {
+        setModelPicker({ ...modelPicker, query: modelPicker.query.slice(0, -1), index: 0 });
+        return;
+      }
+      if (inputValue && !key.ctrl && !key.meta && !key.tab) {
+        setModelPicker({ ...modelPicker, query: modelPicker.query + inputValue, index: 0 });
+      }
+      return;
+    }
+
     if (configOpen) {
       const settingsList = visibleSettings(settings.provider, configQuery);
       const selected = settingsList[configIndex];
@@ -2625,29 +2651,6 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
     };
   }, [appendLine]);
 
-  if (onboarding) {
-    return (
-      <Box flexDirection="column" paddingX={1} height={rootHeight} overflowY="hidden">
-        <Text>
-          <Text bold>PatchPilot</Text>
-          <Text color="gray"> · setup</Text>
-        </Text>
-        <OnboardingPanel
-          state={onboarding}
-          height={rootHeight - 1}
-          selectedIndex={onboardingIndex}
-          input={onboardingInput}
-          busyMessage={onboardingBusyMessage}
-          notice={onboardingNotice}
-          formatModelLabel={formatModelLabel}
-          formatModelDescription={formatModelDescription}
-          onInputChange={setOnboardingInput}
-          onInputSubmit={(value) => void handleOnboardingSubmit(value)}
-        />
-      </Box>
-    );
-  }
-
   return (
     <Shell
       onHistoryPrevious={(currentInput) => {
@@ -2679,13 +2682,38 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       lines={lines}
       todos={todos}
       todoFrame={todoFrame}
+      clipboardImage={clipboardImage}
       pendingApproval={pendingApproval}
       bypassConfirmation={bypassConfirmation}
       updatePrompt={updatePrompt}
       updateBusy={updateBusy}
       input={input}
+      inputLocked={
+        onboarding ? "Finish setup above, or press esc to skip it" : modelPicker ? "Pick a model above, esc closes" : undefined
+      }
       panel={
-        experimentalOpen ? (
+        modelPicker ? (
+          <ModelPicker
+            current={settings.model}
+            matches={selectableModels(modelPicker.query, modelPicker.models, formatModelLabel)}
+            query={modelPicker.query}
+            index={modelPicker.index}
+            formatLabel={formatModelLabel}
+            formatDescription={formatModelDescription}
+          />
+        ) : onboarding ? (
+          <OnboardingPanel
+            state={onboarding}
+            selectedIndex={onboardingIndex}
+            input={onboardingInput}
+            busyMessage={onboardingBusyMessage}
+            notice={onboardingNotice}
+            formatModelLabel={formatModelLabel}
+            formatModelDescription={formatModelDescription}
+            onInputChange={setOnboardingInput}
+            onInputSubmit={(value) => void handleOnboardingSubmit(value)}
+          />
+        ) : experimentalOpen ? (
           <ExperimentalPanel flags={experimentalFlags} selectedIndex={experimentalIndex} />
         ) : configOpen ? (
           <ConfigPanel
