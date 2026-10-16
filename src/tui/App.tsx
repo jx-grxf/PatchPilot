@@ -61,7 +61,7 @@ import { describeUltraModes, parseUltraModes } from "./shell/ultraModes.js";
 import { formatCompletionSummary, type RunOutcome } from "./runStatus.js";
 import { OnboardingPanel, type OnboardingState } from "./components/OnboardingPanel.js";
 import { filterSlashCommands, formatCommandDetail, formatCommandHelp } from "./commands.js";
-import { normalizeModelAlias, readToggle } from "./format.js";
+import { normalizeModelAlias, readToggle, stripTerminalControls } from "./format.js";
 import { checkOllamaHost, discoverOllamaHosts, normalizeOllamaUrl, readOllamaHostDetails, startLocalOllamaAppAndWait, type OllamaHost, type OllamaHostDetails } from "./hosts.js";
 import { motionEnabled } from "./motion.js";
 import { prewarmHighlighter } from "./highlight.js";
@@ -208,6 +208,11 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       ...currentLines,
       {
         ...line,
+        label: stripTerminalControls(line.label),
+        text: stripTerminalControls(line.text),
+        detail: line.detail === undefined ? undefined : stripTerminalControls(line.detail),
+        preview: line.preview === undefined ? undefined : stripTerminalControls(line.preview),
+        target: line.target === undefined ? undefined : stripTerminalControls(line.target),
         kind: line.kind ?? defaultLogKind(line),
         id: Date.now() + Math.random()
       }
@@ -1293,7 +1298,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
             // The answer renders as it is written. Once the turn completes the
             // finished entry lands in the static transcript and this clears,
             // so the same text is never on screen twice.
-            setStreamingText(event.content);
+            setStreamingText(stripTerminalControls(event.content));
             setStatus(eventToStatus(event));
             continue;
           }
