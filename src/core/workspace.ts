@@ -1505,16 +1505,22 @@ export class WorkspaceTools {
       return denied("run_shell requires a command.");
     }
 
+    // Bypass is the user's explicit trust in this workspace: the shell may reach
+    // outside it and run interpreters, and only destructive commands still ask.
+    const trusted = this.allowShell;
     const shellSafety = validateShellCommand(command, this.root, {
-      allowMetacharacters: this.allowShellMetacharacters
+      allowMetacharacters: this.allowShellMetacharacters || trusted,
+      trusted
     });
     if (shellSafety.error) {
       return denied(`run_shell denied. ${shellSafety.error}`);
     }
 
-    const shellPathError = await this.validateShellPathArguments(command);
-    if (shellPathError) {
-      return denied(`run_shell denied. ${shellPathError}`);
+    if (!trusted) {
+      const shellPathError = await this.validateShellPathArguments(command);
+      if (shellPathError) {
+        return denied(`run_shell denied. ${shellPathError}`);
+      }
     }
 
     if (!this.allowShell || shellSafety.requiresApprovalReason) {
@@ -2895,7 +2901,11 @@ function normalizePatchHeaderPath(value: string): string {
   return trimmedValue;
 }
 
-function validateShellCommand(command: string, workspaceRoot: string, options: { allowMetacharacters: boolean }): { error: string | null; requiresApprovalReason?: string } {
+function validateShellCommand(
+  command: string,
+  workspaceRoot: string,
+  options: { allowMetacharacters: boolean; trusted?: boolean }
+): { error: string | null; requiresApprovalReason?: string } {
   const trimmedCommand = command.trim();
   const syntax = analyzeShellSyntax(trimmedCommand);
   if (!options.allowMetacharacters) {
@@ -2912,7 +2922,12 @@ function validateShellCommand(command: string, workspaceRoot: string, options: {
     return { error: "command is empty." };
   }
 
+  let trustedApprovalReason: string | undefined;
   for (const segment of splitShellCommandSegments(tokens)) {
+    if (options.trusted) {
+      trustedApprovalReason ??= destructiveShellSegmentReason(segment) ?? undefined;
+      continue;
+    }
     const segmentError = validateShellSegment(segment);
     if (segmentError) {
       return { error: segmentError };
@@ -2923,6 +2938,10 @@ function validateShellCommand(command: string, workspaceRoot: string, options: {
     const normalizedToken = stripQuotes(token);
     if (isSensitivePath(normalizedToken)) {
       return { error: "sensitive path arguments are blocked." };
+    }
+
+    if (options.trusted) {
+      continue;
     }
 
     if (/(^|[\\/])\.\.([\\/]|$)/.test(normalizedToken)) {
@@ -2940,8 +2959,28 @@ function validateShellCommand(command: string, workspaceRoot: string, options: {
 
   return {
     error: null,
-    requiresApprovalReason: syntax.highRiskReasons[0]
+    // Expansion can name a secret file the token check above never saw, so it
+    // still asks in bypass.
+    requiresApprovalReason: options.trusted
+      ? (trustedApprovalReason ?? syntax.highRiskReasons.find((reason) => reason.endsWith("expansion")))
+      : syntax.highRiskReasons[0]
   };
+}
+
+/** In bypass these still stop for a prompt: they destroy work or publish it. */
+function destructiveShellSegmentReason(tokens: string[]): string | null {
+  const executable = stripQuotes(tokens[0] ?? "").toLowerCase();
+  const subcommand = findCommandSubcommand(executable, tokens.slice(1));
+  if (["rm", "rmdir"].includes(executable) && tokens.some((token) => /^-.*[fRr]/.test(stripQuotes(token)))) {
+    return `recursive or forced ${executable}`;
+  }
+  if (executable === "git" && subcommand && ["clean", "reset", "push"].includes(subcommand)) {
+    return `git ${subcommand}`;
+  }
+  if (executable === "npm" && subcommand && ["publish", "unpublish", "dist-tag"].includes(subcommand)) {
+    return `npm ${subcommand}`;
+  }
+  return null;
 }
 
 type PackageScriptCommand = {
