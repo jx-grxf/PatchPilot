@@ -251,7 +251,7 @@ describe("OllamaClient", () => {
     ).rejects.toThrow('Ollama returned an empty response for model "qwen2.5-coder:7b"');
   });
 
-  it("surfaces truncated responses before protocol parsing", async () => {
+  it("flags a truncated response instead of failing the run", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(
         JSON.stringify({
@@ -269,17 +269,16 @@ describe("OllamaClient", () => {
       )
     );
 
-    await expect(
-      new OllamaClient().chat({
-        model: "qwen2.5-coder:7b",
-        messages: [
-          {
-            role: "user",
-            content: "hello"
-          }
-        ]
-      })
-    ).rejects.toThrow("truncated by num_predict");
+    const result = await new OllamaClient().chat({
+      model: "qwen2.5-coder:7b",
+      messages: [
+        {
+          role: "user",
+          content: "hello"
+        }
+      ]
+    });
+    expect(result).toMatchObject({ truncated: true });
   });
 
   it("lists running models from the Ollama ps endpoint", async () => {

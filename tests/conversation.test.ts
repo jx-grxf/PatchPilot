@@ -25,7 +25,7 @@ function telemetry(): ModelChatResult["telemetry"] {
   };
 }
 
-type Reply = { content?: string; toolCalls?: RawToolCall[] };
+type Reply = { content?: string; toolCalls?: RawToolCall[]; truncated?: boolean };
 
 /** Plays back scripted replies and records exactly what each request carried. */
 function scriptedClient(replies: Reply[]): { client: ModelClient; requests: ChatMessage[][] } {
@@ -34,7 +34,7 @@ function scriptedClient(replies: Reply[]): { client: ModelClient; requests: Chat
     async chat(options: ModelChatOptions): Promise<ModelChatResult> {
       requests.push(structuredClone(options.messages));
       const reply = replies.shift() ?? { content: "done" };
-      return { content: reply.content ?? "", toolCalls: reply.toolCalls, telemetry: telemetry() };
+      return { content: reply.content ?? "", toolCalls: reply.toolCalls, truncated: reply.truncated, telemetry: telemetry() };
     },
     async listModels() {
       return [];
@@ -143,6 +143,17 @@ describe("persistent conversation", () => {
     expect(results).toHaveLength(2);
     expect(results[0]?.content).toContain("Unknown tool");
     expect(await readFile(path.join(workspace, "b.txt"), "utf8")).toBe("ok");
+  });
+});
+
+describe("output limit", () => {
+  it("asks for smaller steps instead of ending the run when a reply is cut off", async () => {
+    const { requests, makeRunner } = await setup([{ content: "<html>half a page", truncated: true }, { content: "Done in parts." }]);
+
+    const events = await drain(makeRunner().run("write a big page"));
+
+    expect(events.at(-1)).toMatchObject({ type: "final", message: "Done in parts.", workState: "done" });
+    expect(requests[1]?.at(-1)?.content).toContain("cut off");
   });
 });
 

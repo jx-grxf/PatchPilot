@@ -149,13 +149,11 @@ export class LocalOpenAIClient {
       throw new Error(serverError.trim());
     }
 
-    if (isTruncatedFinishReason(finishReason)) {
-      throw new Error(
-        `Local model response for "${options.model}" was truncated by max_tokens (${this.runtimeOptions.maxTokens}).`
-      );
-    }
+    // A cut-off reply goes back to the loop, which can ask for smaller steps;
+    // throwing here ended the whole run.
+    const truncated = isTruncatedFinishReason(finishReason);
     // A tool call with no prose is a complete, valid response.
-    if (!content.trim() && toolCalls.length === 0) {
+    if (!truncated && !content.trim() && toolCalls.length === 0) {
       throw new Error(`Local model server returned an empty response for "${options.model}".`);
     }
 
@@ -164,6 +162,7 @@ export class LocalOpenAIClient {
       content: stripTemplateTokens(content).trim(),
       ...(toolCalls.length > 0 ? { toolCalls } : {}),
       ...(substitution ? { warning: substitution } : {}),
+      ...(truncated ? { truncated } : {}),
       telemetry: toTelemetry(payload, options.model, timer.elapsedMs, streaming ? timer.timeToFirstTokenMs : null)
     };
   }

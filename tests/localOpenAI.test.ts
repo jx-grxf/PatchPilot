@@ -220,18 +220,17 @@ describe("LocalOpenAIClient streaming", () => {
     expect(buffered.stream_options).toBeUndefined();
   });
 
-  it("reports truncation by max_tokens rather than returning a partial answer", async () => {
+  it("flags a reply cut off by max_tokens so the loop can ask for smaller steps", async () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
       sse([{ choices: [{ delta: { content: "half" } }] }, { choices: [{ delta: {}, finish_reason: "length" }] }])
     );
 
-    await expect(
-      new LocalOpenAIClient().chat({
-        model: "m",
-        messages: [{ role: "user", content: "hi" }],
-        onDelta: () => undefined
-      })
-    ).rejects.toThrow(/truncated by max_tokens/);
+    const result = await new LocalOpenAIClient().chat({
+      model: "m",
+      messages: [{ role: "user", content: "hi" }],
+      onDelta: () => undefined
+    });
+    expect(result).toMatchObject({ content: "half", truncated: true });
   });
 
   it("skips malformed frames instead of losing the response", async () => {

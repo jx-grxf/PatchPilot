@@ -80,6 +80,8 @@ export type ModelChatResult = {
   telemetry: ModelTelemetry;
   /** Provider-side notice worth surfacing (e.g. model fallback, cookie retry). */
   warning?: string;
+  /** Generation stopped at the output-token limit, so the reply is incomplete. */
+  truncated?: boolean;
 };
 
 export type ModelDescriptor = {

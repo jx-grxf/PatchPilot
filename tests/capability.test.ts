@@ -51,6 +51,14 @@ describe("model capability probe", () => {
     expect(result.detail).toContain("read");
   });
 
+  it("counts a call the server left stringified in content as capable", async () => {
+    const client = stubClient({ content: '{"name": "read", "arguments": {"path": "README.md"}}' });
+    const result = await probeModelCapabilities({ client, provider: "local-openai", model: "qwen3:8b" });
+
+    expect(result.nativeToolCalls).toBe(true);
+    expect(result.detail).toContain("recovered");
+  });
+
   it("advertises exactly one tool, so any capable model must use it", async () => {
     const client = stubClient({ toolCalls: [{ name: "read", arguments: {} }] });
     await probeModelCapabilities({ client, provider: "ollama", model: "qwen3:8b" });

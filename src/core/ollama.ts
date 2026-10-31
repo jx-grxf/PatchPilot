@@ -120,11 +120,11 @@ export class OllamaClient {
       throw new Error(payload.error);
     }
 
-    if (isTruncatedDoneReason(payload.done_reason)) {
-      throw new Error(`Ollama response for model "${options.model}" was truncated by num_predict (${this.runtimeOptions.numPredict}).`);
-    }
+    // A cut-off reply goes back to the loop, which can ask for smaller steps;
+    // throwing here ended the whole run.
+    const truncated = isTruncatedDoneReason(payload.done_reason);
     // A tool call with no prose is a complete, valid response.
-    if (!content.trim() && readToolCalls(payload).length === 0) {
+    if (!truncated && !content.trim() && readToolCalls(payload).length === 0) {
       throw new Error(`Ollama returned an empty response for model "${options.model}".`);
     }
 
@@ -137,6 +137,7 @@ export class OllamaClient {
       content: stripTemplateTokens(content).trim(),
       ...(toolCalls.length > 0 ? { toolCalls } : {}),
       ...(substitution ? { warning: substitution } : {}),
+      ...(truncated ? { truncated } : {}),
       telemetry: toTelemetry(payload, options.model, streaming ? timer.timeToFirstTokenMs : null)
     };
   }

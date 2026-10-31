@@ -1,4 +1,5 @@
 import { toProviderTools, toolDefinitions } from "./toolSchema.js";
+import { extractFencedToolCalls, extractStringifiedToolCalls } from "./toolRepair.js";
 import type { ModelClient, ModelProvider } from "./types.js";
 
 /**
@@ -93,7 +94,11 @@ async function runProbe(options: {
     return { nativeToolCalls: false, detail: result.warning };
   }
 
-  const call = result.toolCalls?.[0];
+  // A call the serving layer failed to parse still proves the model can make
+  // one; the loop recovers those, and falling back to the JSON envelope for
+  // the whole session over a parser bug costs far more.
+  const recovered = extractStringifiedToolCalls(result.content)[0] ?? extractFencedToolCalls(result.content)[0];
+  const call = result.toolCalls?.[0] ?? recovered;
   if (!call) {
     return {
       nativeToolCalls: false,
@@ -105,7 +110,10 @@ async function runProbe(options: {
     return { nativeToolCalls: false, detail: "model emitted a tool call with no name" };
   }
 
-  return { nativeToolCalls: true, detail: `native tool calls confirmed (${call.name})` };
+  return {
+    nativeToolCalls: true,
+    detail: result.toolCalls?.[0] ? `native tool calls confirmed (${call.name})` : `native tool calls recovered from content (${call.name})`
+  };
 }
 
 /** Test seam and `/model` switch hook: forget what was learned about a model. */

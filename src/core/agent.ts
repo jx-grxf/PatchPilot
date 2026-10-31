@@ -239,6 +239,22 @@ export class AgentRunner {
         yield { type: "status", message: modelResponse.warning, workState: requestWorkState };
       }
 
+      if (modelResponse.truncated && !modelResponse.toolCalls?.length) {
+        truncations += 1;
+        if (truncations >= 3) {
+          yield* this.finish(runId, "The model kept running out of output tokens. Raise PATCHPILOT_NUM_PREDICT, or ask for a smaller change.", "error");
+          return;
+        }
+        yield { type: "status", message: "reply hit the output limit; asking for smaller steps", workState: "planning" };
+        messages.push({ role: "assistant", content: clipPromptValue(stripTemplateTokens(rawResponse), 4000) });
+        messages.push({
+          role: "user",
+          content:
+            "Your reply was cut off at the output limit. Continue in smaller steps: write a large file as a first part, then add the rest with edit calls."
+        });
+        continue;
+      }
+
       let batch: PlannedCall[];
       let assistantText: string;
       if (providerTools) {
@@ -371,7 +387,7 @@ export class AgentRunner {
         yield* this.finish(runId, `Stopped because the model kept rewriting ${rewrite.exhaustedPath} from scratch instead of editing it.`, "error");
         return;
       }
-      if (truncations >= 2) {
+      if (truncations >= 3) {
         yield* this.finish(
           runId,
           "The model kept running out of output tokens mid-call. Raise PATCHPILOT_NUM_PREDICT, or ask for a smaller change.",
