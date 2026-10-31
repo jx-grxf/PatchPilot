@@ -123,6 +123,7 @@ function TranscriptEntry(props: { line: LogLine; columns: number }): React.React
     case "tool": {
       const failed = line.tone === "danger" || line.tone === "warning";
       const failure = failed && line.detail ? firstLines(line.detail, 3, bodyWidth - 4) : null;
+      const output = !failed && line.detail && (line.category === "shell" || line.category === "test") ? firstLines(line.detail, 4, bodyWidth - 5) : null;
       return (
         <Box flexDirection="column" marginTop={1}>
           <Text wrap="truncate">
@@ -131,7 +132,7 @@ function TranscriptEntry(props: { line: LogLine; columns: number }): React.React
           </Text>
           <Box paddingLeft={2}>
             <Text color={failed ? "red" : "gray"} wrap="truncate">
-              {symbols.result}  {collapse(line.text, bodyWidth - 4)}
+              {symbols.result}  {output ?? collapse(line.text, bodyWidth - 4)}
             </Text>
           </Box>
           {failure ? (
@@ -230,7 +231,7 @@ export function estimateTranscriptRows(lines: LogLine[], columns: number, withBa
         rows += 1 + wrapped(line.text) + (line.detail ? wrapped(line.detail) : 0) + 1;
         break;
       case "tool":
-        rows += 3 + (line.diff ? line.diff.split("\n").length : 0) + (line.detail && line.tone !== "success" ? 4 : 0);
+        rows += 3 + (line.diff ? line.diff.split("\n").length : 0) + (line.detail ? 5 : 0);
         break;
       case "diff":
         rows += 1 + (line.detail ?? line.text).split("\n").length;

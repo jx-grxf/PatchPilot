@@ -51,7 +51,7 @@ export function describeRunActivity(workState: AgentWorkState, progress: StreamP
   }
 
   if (progress.phase === "prompt") {
-    return { label: "Reading prompt", detail: "" };
+    return { label: "Reading prompt", detail: progress.tokens > 0 ? `${formatCount(progress.tokens)} tok` : "" };
   }
 
   if (progress.writing) {

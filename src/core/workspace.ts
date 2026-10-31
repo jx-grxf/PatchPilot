@@ -1025,7 +1025,11 @@ export class WorkspaceTools {
       summary: previous
         ? `rewrote ${normalizeRelative(this.root, absolutePath)} (${lineCount} lines)`
         : `created ${normalizeRelative(this.root, absolutePath)} (${lineCount} lines)`,
-      content: `Wrote ${normalized.content.length} characters.${normalized.normalized ? " Normalized escaped newlines before writing." : ""}`,
+      content: [
+        `Wrote ${normalized.content.length} characters.`,
+        normalized.normalized ? "Normalized escaped newlines before writing." : "",
+        previous ? describeRewrite(previous, normalized.content) : ""
+      ].filter(Boolean).join(" "),
       tool: "write_file",
       category: toolSpecs.write_file.category,
       preview: `Write ${normalizeRelative(this.root, absolutePath)}`,
@@ -2146,6 +2150,31 @@ function readStringArray(value: unknown): string[] {
 function isPlaceholderPath(value: string): boolean {
   const normalizedValue = value.trim().toLowerCase().replaceAll("\\", "/");
   return ["relative/path", "path/to/file", "file/path", "<path>", "<file>", "filename"].includes(normalizedValue);
+}
+
+/** Tells the model what a full rewrite actually changed, so it learns to edit. */
+function describeRewrite(before: string, after: string): string {
+  const oldLines = before.split(/\r?\n/);
+  const newLines = after.split(/\r?\n/);
+  const remaining = new Map<string, number>();
+  for (const line of oldLines) {
+    remaining.set(line, (remaining.get(line) ?? 0) + 1);
+  }
+  let unchanged = 0;
+  for (const line of newLines) {
+    const count = remaining.get(line) ?? 0;
+    if (count > 0) {
+      unchanged += 1;
+      remaining.set(line, count - 1);
+    }
+  }
+  const changed = newLines.length - unchanged;
+  if (before === after) {
+    return "The new content is identical to what was already on disk; nothing changed. Do not write it again.";
+  }
+  return changed * 5 < newLines.length
+    ? `This replaced an existing file but changed only ${changed} of ${newLines.length} lines; use edit for a change that size.`
+    : "This replaced an existing file.";
 }
 
 export function isSensitivePath(value: string): boolean {

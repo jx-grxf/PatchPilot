@@ -196,3 +196,23 @@ describe("wire format", () => {
     ]);
   });
 });
+
+describe("rewrite guard", () => {
+  it("refuses a third full rewrite of the same file and keeps the run going", async () => {
+    const write = (content: string) => ({ toolCalls: [{ name: "write", arguments: { path: "s.c", content } }] });
+    const { requests, makeRunner } = await setup([write("v1"), write("v2"), write("v3"), { content: "Stopped rewriting." }]);
+
+    const events = await drain(makeRunner().run("make s.c"));
+
+    expect(events.at(-1)).toMatchObject({ type: "final", workState: "done" });
+    const lastTool = (requests[3] ?? []).filter((message) => message.role === "tool").at(-1);
+    expect(lastTool?.content).toContain("Refused");
+  });
+
+  it("counts tokens across the whole turn, not per model call", async () => {
+    const { makeRunner } = await setup([{ toolCalls: [{ name: "glob", arguments: { pattern: "*" } }] }, { content: "done" }]);
+    const runner = makeRunner();
+    await drain(runner.run("look"));
+    expect((runner as unknown as { turnTokens: number }).turnTokens).toBe(2);
+  });
+});
