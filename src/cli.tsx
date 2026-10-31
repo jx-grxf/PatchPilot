@@ -187,6 +187,11 @@ program
     const maxSteps = Number.parseInt(String(options.steps), 10);
     const provider = readModelProvider({ PATCHPILOT_PROVIDER: String(options.provider) });
     const model = provider === "local-openai" ? await ensureLocalServer(String(options.model)) : String(options.model);
+    // Start on a clean screen with the header at the top, as Claude Code does.
+    // Only the visible screen is cleared; earlier output stays in scrollback.
+    if (process.stdout.isTTY) {
+      process.stdout.write("\x1b[2J\x1b[H");
+    }
 
     render(
       <App
