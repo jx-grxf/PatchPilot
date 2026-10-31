@@ -8,6 +8,10 @@ describe("samplingFor", () => {
     expect(samplingFor("devstral:24b", {}).temperature).toBe(0.15);
   });
 
+  it("uses Qwen3-Coder's own card rather than the general Qwen values", () => {
+    expect(samplingFor("mlx-community/Qwen3-Coder-30B-A3B-Instruct-3bit", {})).toMatchObject({ presencePenalty: 0, repetitionPenalty: 1.05 });
+  });
+
   it("lets explicit settings win", () => {
     expect(samplingFor("qwen3:8b", { PATCHPILOT_TEMPERATURE: "0.2", PATCHPILOT_TOP_K: "0" })).toEqual({ temperature: 0.2, topP: 0.8, topK: 0, presencePenalty: 1.5 });
   });

@@ -8,9 +8,11 @@ import { supportsMlx } from "./localRuntimes.js";
 
 /**
  * Fast MoE coder that fits a 24 GB Mac with room for a long context: 3B
- * active parameters per token, about 13 GB on disk.
+ * active parameters per token, about 13 GB on disk. A complete model on
+ * purpose: the expert-pruned (REAP) Qwen3.6 of the same size garbled
+ * literals and fell into repetition loops in real sessions.
  */
-export const defaultMlxModel = "mlx-community/Qwen3.6-35B-A3B-OptiQ-4bit-REAP-19B";
+export const defaultMlxModel = "mlx-community/Qwen3-Coder-30B-A3B-Instruct-3bit";
 
 export type AutostartPlan =
   | { kind: "use-existing"; baseUrl: string; model: string }

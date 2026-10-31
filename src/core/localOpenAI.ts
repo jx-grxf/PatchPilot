@@ -590,7 +590,8 @@ function toSamplingFields(sampling: Sampling): Record<string, number> {
     temperature: sampling.temperature,
     top_p: sampling.topP,
     ...(sampling.topK > 0 ? { top_k: sampling.topK } : {}),
-    ...(sampling.presencePenalty > 0 ? { presence_penalty: sampling.presencePenalty } : {})
+    ...(sampling.presencePenalty > 0 ? { presence_penalty: sampling.presencePenalty } : {}),
+    ...(sampling.repetitionPenalty && sampling.repetitionPenalty !== 1 ? { repetition_penalty: sampling.repetitionPenalty } : {})
   };
 }
 

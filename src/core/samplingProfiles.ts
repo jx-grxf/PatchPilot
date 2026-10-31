@@ -1,4 +1,4 @@
-export type Sampling = { temperature: number; topP: number; topK: number; presencePenalty: number };
+export type Sampling = { temperature: number; topP: number; topK: number; presencePenalty: number; repetitionPenalty?: number };
 
 /**
  * The sampling each family's authors publish for coding work. A single
@@ -6,6 +6,8 @@ export type Sampling = { temperature: number; topP: number; topK: number; presen
  * gpt-oss noticeably worse; matching the published values fixes both.
  */
 const profiles: Array<{ match: RegExp; sampling: Sampling }> = [
+  // Qwen3-Coder's card asks for a mild repetition penalty instead.
+  { match: /qwen3-coder/i, sampling: { temperature: 0.7, topP: 0.8, topK: 20, presencePenalty: 0, repetitionPenalty: 1.05 } },
   // Qwen publishes presence_penalty 1.5 for its quantized releases: without
   // it they fall into loops that repeat one line until the output limit.
   { match: /qwen|qwq/i, sampling: { temperature: 0.7, topP: 0.8, topK: 20, presencePenalty: 1.5 } },
@@ -24,7 +26,8 @@ export function samplingFor(model: string, env: NodeJS.ProcessEnv = process.env)
     temperature: readNumber(env.PATCHPILOT_TEMPERATURE) ?? base.temperature,
     topP: readNumber(env.PATCHPILOT_TOP_P) ?? base.topP,
     topK: readNumber(env.PATCHPILOT_TOP_K) ?? base.topK,
-    presencePenalty: readNumber(env.PATCHPILOT_PRESENCE_PENALTY) ?? base.presencePenalty
+    presencePenalty: readNumber(env.PATCHPILOT_PRESENCE_PENALTY) ?? base.presencePenalty,
+    ...(base.repetitionPenalty ? { repetitionPenalty: base.repetitionPenalty } : {})
   };
 }
 
