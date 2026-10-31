@@ -154,7 +154,10 @@ describe("OllamaClient", () => {
       options: {
         num_ctx: 32_768,
         num_predict: 16_384,
-        temperature: 0.2
+        // qwen2.5-coder: the Qwen family profile.
+        temperature: 0.7,
+        top_p: 0.8,
+        top_k: 20
       }
     });
     expect(result.content).toBe("{\"action\":\"final\",\"message\":\"ok\"}");
@@ -196,7 +199,8 @@ describe("OllamaClient", () => {
       keepAlive: "5m",
       numCtx: 4096,
       numPredict: 512,
-      temperature: 0.2
+      env: {},
+      repeatPenalty: 1
     });
 
     await client.chat({
@@ -406,9 +410,7 @@ describe("Ollama URL config", () => {
       keepAlive: "30m",
       numCtx: 4096,
       numPredict: 768,
-      temperature: 0,
-      topP: 0.9,
-      topK: 20,
+      env: expect.objectContaining({ PATCHPILOT_TEMPERATURE: "0" }),
       repeatPenalty: 1
     });
   });

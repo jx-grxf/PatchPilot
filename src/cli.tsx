@@ -9,6 +9,7 @@ import { defaultLocalOpenAIModel, resolveLocalOpenAIBaseUrl } from "./core/local
 import { describeModel, discoverModels, isUsableForChat, rankForAgentUse } from "./core/modelCatalog.js";
 import { normalizeModelProvider, readModelProvider } from "./core/modelClient.js";
 import { runDoctor } from "./core/doctor.js";
+import { planAutostart, startMlxServer } from "./core/autostart.js";
 import { ensurePatchPilotInstructions } from "./core/projectInit.js";
 import { defaultOllamaModel, resolveOllamaBaseUrl } from "./core/ollama.js";
 import { listIndexedSessions, listWorkspaceSessions, loadSessionSummary } from "./core/session.js";
@@ -181,15 +182,17 @@ program
       "First-run setup opens automatically. Reopen it anytime with /onboarding."
     ].join("\n")
   )
-  .action((taskParts: string[], options: Record<string, unknown>) => {
+  .action(async (taskParts: string[], options: Record<string, unknown>) => {
     const workspace = path.resolve(String(options.workspace));
     const maxSteps = Number.parseInt(String(options.steps), 10);
+    const provider = readModelProvider({ PATCHPILOT_PROVIDER: String(options.provider) });
+    const model = provider === "local-openai" ? await ensureLocalServer(String(options.model)) : String(options.model);
 
     render(
       <App
         initialTask={taskParts.join(" ").trim() || undefined}
-        provider={readModelProvider({ PATCHPILOT_PROVIDER: String(options.provider) })}
-        model={String(options.model)}
+        provider={provider}
+        model={model}
         ollamaUrl={String(options.ollamaUrl)}
         workspace={workspace}
         packageVersion={readPackageVersion()}
@@ -205,6 +208,38 @@ program
   });
 
 await program.parseAsync(process.argv);
+
+/**
+ * Brings up a model server when none serves the configured model, so
+ * `patchpilot` alone is enough to start working. Returns the model to use.
+ */
+async function ensureLocalServer(model: string): Promise<string> {
+  const plan = await planAutostart({ baseUrl: resolveLocalOpenAIBaseUrl(), model });
+  if (plan.kind !== "start-mlx") {
+    return model;
+  }
+
+  process.stdout.write(`Starting MLX with ${plan.model}\n`);
+  let lastProgress = "";
+  try {
+    const server = await startMlxServer({
+      binary: plan.binary,
+      model: plan.model,
+      onProgress: (line) => {
+        if (line !== lastProgress && process.stdout.isTTY) {
+          lastProgress = line;
+          process.stdout.write(`\r\x1b[2K${line.slice(0, (process.stdout.columns || 80) - 1)}`);
+        }
+      }
+    });
+    process.stdout.write(`\r\x1b[2KMLX ready at ${server.baseUrl}\n`);
+    process.env.PATCHPILOT_LOCAL_URL = server.baseUrl;
+    return plan.model;
+  } catch (error) {
+    process.stdout.write(`\r\x1b[2KCould not start MLX: ${error instanceof Error ? error.message : String(error)}\n`);
+    return model;
+  }
+}
 
 function readBooleanEnv(value: string | undefined, fallback: boolean): boolean {
   if (!value) {

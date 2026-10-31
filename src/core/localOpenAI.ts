@@ -1,5 +1,6 @@
 import type { ModelChatOptions, ModelChatResult, ModelDescriptor, ModelStreamDelta, ModelTelemetry, RawToolCall } from "./types.js";
 import { toOpenAIMessages } from "./wireMessages.js";
+import { samplingFor } from "./samplingProfiles.js";
 import { fetchWithTimeout, postToModel } from "./http.js";
 import { defaultStreamIdleTimeoutMs, readServerSentJson, StreamIdleError, StreamTimer, toolCallIdleTimeoutMs } from "./stream.js";
 import { attachTokenCost } from "./tokenAccounting.js";
@@ -73,7 +74,7 @@ export type LocalModelInstance = {
 type LocalOpenAIRuntimeOptions = {
   apiKey: string;
   maxTokens: number;
-  temperature: number;
+  env: NodeJS.ProcessEnv;
 };
 
 export class LocalOpenAIClient {
@@ -119,7 +120,12 @@ export class LocalOpenAIClient {
         // Without this, most servers omit usage entirely from a stream.
         ...(streaming ? { stream_options: { include_usage: true } } : {}),
         max_tokens: this.runtimeOptions.maxTokens,
-        temperature: this.runtimeOptions.temperature,
+        ...toSamplingFields(samplingFor(options.model, this.runtimeOptions.env)),
+        // Qwen, vLLM, llama.cpp and mlx_lm read the template switch from here;
+        // "auto" leaves the server's own default alone.
+        ...(options.thinking && options.thinking !== "auto"
+          ? { chat_template_kwargs: { enable_thinking: options.thinking === "on" } }
+          : {}),
         // Requesting a JSON object alongside tools makes most servers describe
         // a call in prose instead of emitting one.
         response_format: options.tools || !options.formatJson || !allowJsonFormat ? undefined : { type: "json_object" }
@@ -555,7 +561,7 @@ export function readLocalOpenAIRuntimeOptions(env: NodeJS.ProcessEnv = process.e
   return {
     apiKey: readLocalOpenAIApiKey(env),
     maxTokens: readPositiveInteger(env.PATCHPILOT_NUM_PREDICT, 16_384),
-    temperature: readTemperature(env.PATCHPILOT_TEMPERATURE, 0.2)
+    env
   };
 }
 
@@ -580,9 +586,12 @@ function readPositiveInteger(value: string | undefined, fallback: number): numbe
   return Number.isFinite(parsedValue) && parsedValue > 0 ? parsedValue : fallback;
 }
 
-function readTemperature(value: string | undefined, fallback: number): number {
-  const parsedValue = Number.parseFloat(value ?? "");
-  return Number.isFinite(parsedValue) && parsedValue >= 0 ? parsedValue : fallback;
+function toSamplingFields(sampling: { temperature: number; topP: number; topK: number }): Record<string, number> {
+  return {
+    temperature: sampling.temperature,
+    top_p: sampling.topP,
+    ...(sampling.topK > 0 ? { top_k: sampling.topK } : {})
+  };
 }
 
 function readTokensPerSecond(responseTokens: number, elapsedMs: number, timeToFirstTokenMs: number | null): number | null {

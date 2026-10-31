@@ -1,5 +1,6 @@
 import type { ModelChatOptions, ModelChatResult, ModelStreamDelta, ModelTelemetry, RawToolCall } from "./types.js";
 import { toOllamaMessages } from "./wireMessages.js";
+import { samplingFor } from "./samplingProfiles.js";
 import { fetchWithTimeout, postToModel } from "./http.js";
 import { stripTemplateTokens } from "./localOpenAI.js";
 import { defaultStreamIdleTimeoutMs, readNewlineDelimitedJson, StreamTimer, toolCallIdleTimeoutMs } from "./stream.js";
@@ -61,9 +62,7 @@ type OllamaRuntimeOptions = {
   keepAlive: string;
   numCtx: number;
   numPredict: number;
-  temperature: number;
-  topP: number;
-  topK: number;
+  env: NodeJS.ProcessEnv;
   repeatPenalty: number;
 };
 
@@ -92,9 +91,7 @@ export class OllamaClient {
         options: {
           num_ctx: this.runtimeOptions.numCtx,
           num_predict: this.runtimeOptions.numPredict,
-          temperature: this.runtimeOptions.temperature,
-          top_p: this.runtimeOptions.topP,
-          top_k: this.runtimeOptions.topK,
+          ...toOllamaSampling(samplingFor(options.model, this.runtimeOptions.env)),
           // Sent explicitly on every request, never left to the default.
           repeat_penalty: this.runtimeOptions.repeatPenalty
         },
@@ -353,14 +350,16 @@ export function normalizeOllamaBaseUrl(value: string | undefined): string {
  * from the front* when the window is exceeded — which reads as the model
  * having forgotten its own system prompt and tools.
  */
+function toOllamaSampling(sampling: { temperature: number; topP: number; topK: number }): Record<string, number> {
+  return { temperature: sampling.temperature, top_p: sampling.topP, ...(sampling.topK > 0 ? { top_k: sampling.topK } : {}) };
+}
+
 export function readOllamaRuntimeOptions(env: NodeJS.ProcessEnv = process.env): OllamaRuntimeOptions {
   return {
     keepAlive: env.PATCHPILOT_KEEP_ALIVE?.trim() || "15m",
     numCtx: readPositiveInteger(env.PATCHPILOT_NUM_CTX, 32_768),
     numPredict: readPositiveInteger(env.PATCHPILOT_NUM_PREDICT, 16_384),
-    temperature: readTemperature(env.PATCHPILOT_TEMPERATURE, 0.2),
-    topP: readTemperature(env.PATCHPILOT_TOP_P, 0.9),
-    topK: readPositiveInteger(env.PATCHPILOT_TOP_K, 20),
+    env,
     repeatPenalty: readTemperature(env.PATCHPILOT_REPEAT_PENALTY, 1)
   };
 }

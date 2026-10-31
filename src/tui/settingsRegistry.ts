@@ -122,30 +122,28 @@ export const settingsRegistry: SettingDefinition[] = [
   {
     key: "PATCHPILOT_TEMPERATURE",
     name: "Temperature",
-    description: "Lower is steadier. Tool calling wants steady far more than it wants creative.",
+    description: "Empty uses the value the model family recommends (Qwen 0.7, gpt-oss 1.0, Devstral 0.15).",
     group: "generation",
     kind: { type: "number", min: 0, max: 2 },
-    defaultValue: "0.2",
+    defaultValue: "",
     appliesNextRun: true
   },
   {
     key: "PATCHPILOT_TOP_P",
     name: "Top-p",
-    description: "Nucleus sampling cutoff.",
+    description: "Nucleus sampling cutoff. Empty uses the model family's value.",
     group: "generation",
     kind: { type: "number", min: 0, max: 1 },
-    defaultValue: "0.9",
-    appliesTo: "ollama",
+    defaultValue: "",
     appliesNextRun: true
   },
   {
     key: "PATCHPILOT_TOP_K",
     name: "Top-k",
-    description: "Candidate cutoff. 0 disables it.",
+    description: "Candidate cutoff. 0 disables it; empty uses the model family's value.",
     group: "generation",
     kind: { type: "number", min: 0, max: 200 },
-    defaultValue: "20",
-    appliesTo: "ollama",
+    defaultValue: "",
     appliesNextRun: true
   },
   {

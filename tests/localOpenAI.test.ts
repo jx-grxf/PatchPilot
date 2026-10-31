@@ -60,22 +60,18 @@ describe("LocalOpenAIClient configuration", () => {
       .spyOn(globalThis, "fetch")
       .mockImplementation(async () => new Response(JSON.stringify({ data: [] }), { status: 200 }));
 
-    await new LocalOpenAIClient(undefined, { apiKey: "", maxTokens: 100, temperature: 0.1 }).listModels();
+    await new LocalOpenAIClient(undefined, { apiKey: "", maxTokens: 100, env: {} }).listModels();
     expect(fetchMock.mock.calls[0]?.[1]?.headers).not.toHaveProperty("Authorization");
 
-    await new LocalOpenAIClient(undefined, { apiKey: "secret", maxTokens: 100, temperature: 0.1 }).listModels();
+    await new LocalOpenAIClient(undefined, { apiKey: "secret", maxTokens: 100, env: {} }).listModels();
     expect(fetchMock.mock.calls[1]?.[1]?.headers).toMatchObject({ Authorization: "Bearer secret" });
   });
 
   it("shares the generation budget with the Ollama client's env vars", () => {
-    const options = readLocalOpenAIRuntimeOptions({ PATCHPILOT_NUM_PREDICT: "4096", PATCHPILOT_TEMPERATURE: "0.7" });
+    const options = readLocalOpenAIRuntimeOptions({ PATCHPILOT_NUM_PREDICT: "4096" });
     expect(options.maxTokens).toBe(4096);
-    expect(options.temperature).toBe(0.7);
   });
 
-  it("uses the same documented temperature default as the settings registry", () => {
-    expect(readLocalOpenAIRuntimeOptions({}).temperature).toBe(0.2);
-  });
 });
 
 describe("LocalOpenAIClient streaming", () => {
