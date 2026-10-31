@@ -542,6 +542,7 @@ export class AgentRunner {
     let todos = state.todos;
     const outcomes = new Map<string, CallOutcome>();
     const workspaceRecords: Array<{ id: string; call: AgentToolCall; workState: AgentWorkState }> = [];
+    const delegations: Array<{ planned: PlannedCall; request: SubagentRequest }> = [];
 
     for (const planned of batch) {
       if (planned.problem || (!planned.call && !planned.subagent)) {
@@ -549,24 +550,7 @@ export class AgentRunner {
         continue;
       }
       if (planned.subagent) {
-        if (this.options.signal?.aborted) {
-          outcomes.set(planned.id, cancelledOutcome(planned));
-          continue;
-        }
-        yield { type: "status", message: `delegating to ${planned.subagent.type} subagent: ${planned.subagent.description}`, workState: "planning" };
-        const envelope = await this.runChildAgent(planned.subagent);
-        const summary = `${planned.subagent.type} subagent ${envelope.status}: ${planned.subagent.description}`;
-        yield {
-          type: "tool",
-          name: "subagent",
-          summary,
-          content: formatEnvelope(envelope),
-          ok: envelope.status === "ok",
-          workState: "planning",
-          category: "state",
-          metadata: { subagent: planned.subagent.type, transcript: envelope.transcript, steps: envelope.steps, toolCalls: envelope.toolCalls, durationMs: envelope.durationMs }
-        };
-        outcomes.set(planned.id, { id: planned.id, tool: "subagent", toolName: planned.name, ok: envelope.status === "ok", summary, content: formatEnvelope(envelope), category: "state" });
+        delegations.push({ planned, request: planned.subagent });
         continue;
       }
       const call = planned.call;
@@ -582,6 +566,37 @@ export class AgentRunner {
         continue;
       }
       workspaceRecords.push({ id: planned.id, call, workState: workStateForTool(call.name) });
+    }
+
+    if (delegations.length > 0) {
+      for (const { request } of delegations) {
+        yield { type: "status", message: `delegating to ${request.type} subagent: ${request.description}`, workState: "planning" };
+      }
+      // Readers run side by side on the server's batch; writers go one at a
+      // time so two children never edit the same file or ask for approval at once.
+      const limit = delegations.every(({ request }) => request.type === "explore") ? subagentConcurrency() : 1;
+      const envelopes = await mapWithConcurrency(delegations, limit, async ({ request }) =>
+        this.options.signal?.aborted ? null : await this.runChildAgent(request)
+      );
+      for (const [index, { planned, request }] of delegations.entries()) {
+        const envelope = envelopes[index];
+        if (!envelope) {
+          outcomes.set(planned.id, cancelledOutcome(planned));
+          continue;
+        }
+        const summary = `${request.type} subagent ${envelope.status}: ${request.description}`;
+        yield {
+          type: "tool",
+          name: "subagent",
+          summary,
+          content: formatEnvelope(envelope),
+          ok: envelope.status === "ok",
+          workState: "planning",
+          category: "state",
+          metadata: { subagent: request.type, transcript: envelope.transcript, steps: envelope.steps, toolCalls: envelope.toolCalls, durationMs: envelope.durationMs }
+        };
+        outcomes.set(planned.id, { id: planned.id, tool: "subagent", toolName: planned.name, ok: envelope.status === "ok", summary, content: formatEnvelope(envelope), category: "state" });
+      }
     }
 
     for (const record of workspaceRecords) {
@@ -717,7 +732,9 @@ export class AgentRunner {
       run: (childOptions) =>
         new AgentRunner({
           ...parent,
-          // Isolated context: the child never sees this conversation.
+          // Isolated context: the child never sees this conversation, and its
+          // own history must not land in it either.
+          conversation: [],
           resumeContext: "",
           // Read-only children cannot be talked into writing by what they read.
           allowWrite: childOptions.readOnly ? false : parent.allowWrite,
@@ -1201,6 +1218,29 @@ function isAbortError(error: unknown, signal?: AbortSignal): boolean {
 
 
 /** An explicit delegation request should work without a hidden /agents toggle. */
+/**
+ * How many read-only children run at once. Two is what a 24 GB Mac serves as
+ * one batch without slowing the parent's own requests noticeably.
+ */
+export function subagentConcurrency(env: NodeJS.ProcessEnv = process.env): number {
+  const configured = Number.parseInt(env.PATCHPILOT_SUBAGENT_CONCURRENCY ?? "", 10);
+  return Number.isFinite(configured) ? Math.min(4, Math.max(1, configured)) : 2;
+}
+
+async function mapWithConcurrency<T, R>(items: T[], limit: number, worker: (item: T) => Promise<R>): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  const lanes = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (next < items.length) {
+      const index = next;
+      next += 1;
+      results[index] = await worker(items[index] as T);
+    }
+  });
+  await Promise.all(lanes);
+  return results;
+}
+
 export function shouldEnableSubagents(task: string, configured: boolean): boolean {
   return configured || /\b(?:sub[ -]?agents?|child[ -]?agents?|delegate|delegat(?:e|ion))\b/i.test(task);
 }

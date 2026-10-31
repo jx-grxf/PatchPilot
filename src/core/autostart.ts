@@ -99,15 +99,19 @@ export async function startMlxServer(options: {
       "--max-tokens", "16384",
       // Thinking costs seconds per step on a laptop; turned on per request.
       "--chat-template-args", JSON.stringify({ enable_thinking: false }),
-      // One cached prefix, capped: each extra KV cache costs gigabytes, and on
-      // a 24 GB Mac with an IDE and a browser open that pushed the server
-      // into swap until it stopped answering.
+      // Three cached prefixes (the session plus two subagents), capped: an
+      // uncapped cache pushed the server into swap on a 24 GB Mac with an IDE
+      // and a browser open until it stopped answering.
       // Smaller prefill chunks hand the GPU back to the window server more
       // often; with the default 2048 the whole Mac, mouse included, stalls
       // while a long prompt is read.
       "--prefill-step-size", "512",
-      "--prompt-cache-size", "1",
-      "--prompt-cache-bytes", String(2 * 1024 ** 3),
+      "--prompt-cache-size", "3",
+      "--prompt-cache-bytes", String(3 * 1024 ** 3),
+      // Two subagents decode as one batch; their prompts are read one after
+      // the other, which keeps the GPU from stalling the desktop.
+      "--decode-concurrency", "2",
+      "--prompt-concurrency", "1",
       "--log-level", "WARNING"
     ],
     { stdio: ["ignore", "ignore", "pipe"], detached: false }

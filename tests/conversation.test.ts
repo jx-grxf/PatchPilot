@@ -249,3 +249,62 @@ describe("/compact", () => {
     expect(requests.at(-1)?.[0]?.content).toContain("the big file");
   });
 });
+
+describe("subagents", () => {
+  it("runs two explore children side by side, each with its own history", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "pp-sub-"));
+    setModelCapabilities("local-openai", "scripted", { nativeToolCalls: true, detail: "test" });
+    let parentCalls = 0;
+    let running = 0;
+    let peak = 0;
+    const client: ModelClient = {
+      async chat(options: ModelChatOptions): Promise<ModelChatResult> {
+        const firstUser = options.messages.find((message) => message.role === "user")?.content ?? "";
+        if (firstUser.startsWith("look for")) {
+          running += 1;
+          peak = Math.max(peak, running);
+          await new Promise((resolve) => setTimeout(resolve, 30));
+          running -= 1;
+          return { content: `found it for ${firstUser}`, telemetry: telemetry() };
+        }
+        parentCalls += 1;
+        return parentCalls === 1
+          ? {
+              content: "",
+              toolCalls: [
+                { name: "task", arguments: { description: "find a", prompt: "look for a", subagent_type: "explore" } },
+                { name: "task", arguments: { description: "find b", prompt: "look for b", subagent_type: "explore" } }
+              ],
+              telemetry: telemetry()
+            }
+          : { content: "Both found.", telemetry: telemetry() };
+      },
+      async listModels() {
+        return [];
+      }
+    };
+    const conversation: ChatMessage[] = [];
+    const events = await drain(
+      new AgentRunner({
+        provider: "local-openai",
+        model: "scripted",
+        ollamaUrl: "http://127.0.0.1:1234/v1",
+        workspace,
+        mode: "bypass",
+        allowWrite: true,
+        allowShell: true,
+        maxSteps: 20,
+        subagents: true,
+        client,
+        conversation
+      }).run("search the repo")
+    );
+
+    expect(peak).toBe(2);
+    expect(events.filter((event) => event.type === "tool" && event.name === "subagent" && event.ok)).toHaveLength(2);
+    expect(conversation.some((message) => message.content.startsWith("look for"))).toBe(false);
+    const results = conversation.filter((message) => message.role === "tool").map((message) => message.content);
+    expect(results[0]).toContain("look for a");
+    expect(results[1]).toContain("look for b");
+  });
+});

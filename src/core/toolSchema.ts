@@ -203,7 +203,7 @@ export const toolDefinitions: Record<ToolName, ToolDefinition> = {
   task: {
     name: "task",
     description:
-      "Delegate a self-contained piece of work to a subagent with its own context. Use this when a task needs a lot of exploration whose detail you do not need to keep — the subagent reads widely and returns only its conclusion, which keeps your own context small. Example: task({\"description\": \"find auth entry points\", \"prompt\": \"Locate every place a request is authenticated and report each file and function.\", \"subagent_type\": \"explore\"}).",
+      "Delegate a self-contained piece of work to a subagent with its own context. Use this when a task needs a lot of exploration whose detail you do not need to keep — the subagent reads widely and returns only its conclusion, which keeps your own context small. Several explore tasks in one reply run in parallel, two at a time. Example: task({\"description\": \"find auth entry points\", \"prompt\": \"Locate every place a request is authenticated and report each file and function.\", \"subagent_type\": \"explore\"}).",
     inputSchema: {
       type: "object",
       properties: {
