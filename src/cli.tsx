@@ -10,6 +10,7 @@ import { describeModel, discoverModels, isUsableForChat, rankForAgentUse } from 
 import { normalizeModelProvider, readModelProvider } from "./core/modelClient.js";
 import { runDoctor } from "./core/doctor.js";
 import { planAutostart, startMlxServer } from "./core/autostart.js";
+import { runBench } from "./core/bench.js";
 import { ensurePatchPilotInstructions } from "./core/projectInit.js";
 import { defaultOllamaModel, resolveOllamaBaseUrl } from "./core/ollama.js";
 import { listIndexedSessions, listWorkspaceSessions, loadSessionSummary } from "./core/session.js";
@@ -56,6 +57,31 @@ program
 
     const removed = await cleanupPatchPilot(path.resolve(options.workspace), cleanupTarget);
     console.log(`cleaned ${removed.join(", ") || cleanupTarget}`);
+  });
+
+program
+  .command("bench")
+  .description("Run a few fixed coding tasks against the configured model and report pass rate and speed.")
+  .option("--provider <name>", "Model provider", defaultProvider)
+  .option("--model <name>", "Model name", defaultModel)
+  .action(async (options: Record<string, unknown>) => {
+    const provider = readModelProvider({ PATCHPILOT_PROVIDER: String(options.provider) });
+    const model = provider === "local-openai" ? await ensureLocalServer(String(options.model)) : String(options.model);
+    console.log(`bench: ${model}`);
+    const results = await runBench({
+      provider,
+      model,
+      ollamaUrl: defaultOllamaUrl,
+      onResult: (result) =>
+        console.log(
+          `${result.ok ? "pass" : "FAIL"}  ${result.name.padEnd(10)} ${result.seconds.toFixed(0).padStart(4)}s  ` +
+            `${result.modelCalls} calls  ${result.toolCalls} tools (${result.failedToolCalls} failed)  ` +
+            `${result.tokensPerSecond ? `${result.tokensPerSecond.toFixed(0)} tok/s` : "-"}${result.ok ? "" : `  ${result.detail}`}`
+        )
+    });
+    const passed = results.filter((result) => result.ok).length;
+    console.log(`${passed}/${results.length} passed`);
+    process.exit(passed === results.length ? 0 : 1);
   });
 
 program
