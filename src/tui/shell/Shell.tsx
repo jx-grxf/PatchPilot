@@ -704,7 +704,7 @@ function StatusBar(props: ShellProps & { width: number; hostLabel: string; branc
 }
 
 /** Hugging Face repo ids carry the publisher; the model name is what matters. */
-export function displayModelName(model: string): string {
+function displayModelName(model: string): string {
   return model.includes("/") ? model.slice(model.lastIndexOf("/") + 1) : model;
 }
 

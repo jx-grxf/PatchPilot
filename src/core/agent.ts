@@ -8,7 +8,7 @@ import { StreamTimer } from "./stream.js";
 import { hasProbedModel, probeModelCapabilities } from "./capability.js";
 import { stripTemplateTokens } from "./localOpenAI.js";
 import { formatEnvelope, runSubagent, subagentToolNames, type SubagentEnvelope, type SubagentRequest } from "./subagentRunner.js";
-import { applyCompaction, buildCompactionPrompt, measureContext, planCompaction, pruneToolResults } from "./contextWindow.js";
+import { applyCompaction, buildCompactionPrompt, changedFiles, measureContext, planCompaction, pruneToolResults, totalTokens } from "./contextWindow.js";
 import {
   extractFencedToolCalls,
   extractStringifiedToolCalls,
@@ -202,7 +202,7 @@ export class AgentRunner {
         return;
       }
 
-      yield* this.manageContext(messages, contextLimitTokens);
+      yield* this.manageContext(messages, contextLimitTokens, todos);
 
       const requestWorkState = stepIndex === 0 ? "planning" : "inspecting";
       await this.options.sessionStore?.append({
@@ -455,7 +455,7 @@ export class AgentRunner {
    * a local runtime. Old tool output goes first; only when that is not enough
    * is the older part of the conversation summarised by the model.
    */
-  private async *manageContext(messages: ChatMessage[], runtimeLimit: number | null): AsyncGenerator<AgentEvent> {
+  private async *manageContext(messages: ChatMessage[], runtimeLimit: number | null, todos: AgentTodoItem[]): AsyncGenerator<AgentEvent> {
     const limitTokens = runtimeLimit ?? fallbackContextTokens;
     const budget = { limitTokens, reserveTokens: Math.min(4096, Math.floor(limitTokens / 8)) };
     let usage = measureContext(messages, budget, this.lastMeasured);
@@ -477,29 +477,60 @@ export class AgentRunner {
       return;
     }
 
-    const request = planCompaction(messages, { keepTailTokens: Math.floor(limitTokens * 0.25) });
+    yield* this.compactConversation(messages, { keepTailTokens: Math.floor(limitTokens * 0.25), todos });
+  }
+
+  /**
+   * `/compact`: condenses the session's conversation now, optionally with a
+   * focus for the summary, keeping only a short recent tail word for word.
+   */
+  async *compact(focus = ""): AsyncGenerator<AgentEvent> {
+    sealDanglingToolCalls(this.conversation);
+    // Only the last message stays word for word; everything else, including
+    // large file bodies in old calls, goes into the summary.
+    yield* this.compactConversation(this.conversation, { keepTailTokens: 0, focus, todos: [] });
+  }
+
+  private async *compactConversation(
+    messages: ChatMessage[],
+    options: { keepTailTokens: number; focus?: string; todos: AgentTodoItem[] }
+  ): AsyncGenerator<AgentEvent> {
+    const request = planCompaction(messages, { keepTailTokens: options.keepTailTokens });
     if (request.stale.length === 0) {
+      yield { type: "status", message: "nothing to compact yet", workState: "done" };
       return;
     }
+    const beforeTokens = totalTokens(messages);
+    const files = changedFiles(request.stale);
+    // What the next step needs at once, so the model does not have to
+    // rediscover it after the details are gone.
+    const state = [
+      options.todos.length > 0 ? `Todo list:\n${options.todos.map((todo) => `- [${todo.status}] ${todo.content}`).join("\n")}` : "",
+      files.length > 0 ? `Files changed so far: ${files.join(", ")}. Read a file again before editing it.` : ""
+    ]
+      .filter(Boolean)
+      .join("\n\n");
     yield { type: "status", message: "compacting earlier conversation", workState: "inspecting" };
+    let summary: string;
     try {
-      const summary = await this.client.chat({
+      const reply = await this.client.chat({
         model: this.options.model,
-        messages: buildCompactionPrompt(request.stale),
+        messages: buildCompactionPrompt(request.stale, options.focus),
         thinking: "off",
         signal: this.options.signal
       });
-      messages.splice(0, messages.length, ...applyCompaction(request, stripTemplateTokens(summary.content)));
-      this.lastMeasured = null;
+      summary = stripTemplateTokens(reply.content);
     } catch (error) {
       if (isAbortError(error, this.options.signal)) {
         return;
       }
       // Without a summary the oldest exchanges are dropped instead; a run that
       // loses early detail is better than one the runtime truncates silently.
-      messages.splice(0, messages.length, ...applyCompaction(request, "(earlier conversation was dropped to fit the context window)"));
-      this.lastMeasured = null;
+      summary = "(the earlier part of the conversation was dropped to fit the context window)";
     }
+    messages.splice(0, messages.length, ...applyCompaction(request, summary, state));
+    this.lastMeasured = null;
+    yield { type: "compacted", beforeTokens, afterTokens: totalTokens(messages), workState: "inspecting" };
   }
 
   /** Runs one batch: todos and subagents in the loop, everything else in the workspace. */
@@ -883,7 +914,7 @@ const fallbackContextTokens = 32_768;
 /** Computed once per conversation: it is part of the cached prompt prefix. */
 const workspaceSummaries = new WeakMap<ChatMessage[], string>();
 
-export type PlannedCall = {
+type PlannedCall = {
   id: string;
   /** The name and arguments as the model sent them, for history. */
   name: string;
@@ -912,7 +943,7 @@ type CallOutcome = {
  * second-guessing itself, not progress. The call is answered with a refusal
  * instead of ending the run, which steers it to compile, run, or edit.
  */
-export function refuseRepeatedRewrites(batch: PlannedCall[], wholeFileWrites: Map<string, number>): void {
+function refuseRepeatedRewrites(batch: PlannedCall[], wholeFileWrites: Map<string, number>): void {
   for (const planned of batch) {
     const path = planned.call?.name === "write_file" ? planned.call.arguments.path : undefined;
     if (typeof path === "string" && (wholeFileWrites.get(path) ?? 0) >= 2) {
@@ -981,7 +1012,7 @@ function appendToolResults(messages: ChatMessage[], outcomes: CallOutcome[], not
 }
 
 /** First line is the summary, so pruning can keep it and drop the body. */
-export function formatToolResultContent(outcome: Pick<CallOutcome, "ok" | "summary" | "content" | "tool">): string {
+function formatToolResultContent(outcome: Pick<CallOutcome, "ok" | "summary" | "content" | "tool">): string {
   const limit = outcome.tool === "read_file" || outcome.tool === "read_range" ? 12_000 : 6000;
   const head = outcome.ok ? outcome.summary : `Error: ${outcome.summary}`;
   const body = outcome.content.trim() && outcome.content.trim() !== outcome.summary.trim() ? clipPromptValue(outcome.content, limit) : "";

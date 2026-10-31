@@ -181,10 +181,10 @@ function TranscriptEntry(props: { line: LogLine; columns: number }): React.React
 
     case "status":
       // The closing line of a run reads like Claude Code's "Cooked for 3m".
-      if (line.label === "done" || line.label === "failed" || line.label === "stopped") {
+      if (line.label === "done" || line.label === "failed" || line.label === "stopped" || line.label === "compacted") {
         return (
           <Box marginTop={1}>
-            <Text color={line.label === "done" ? "gray" : "yellow"}>✻ {line.text}</Text>
+            <Text color={line.label === "done" || line.label === "compacted" ? "gray" : "yellow"}>✻ {line.text}</Text>
           </Box>
         );
       }

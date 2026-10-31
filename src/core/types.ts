@@ -252,6 +252,13 @@ export type AgentEvent =
       message: string;
       workState: AgentWorkState;
     }
+  /** The conversation was condensed to make room. */
+  | {
+      type: "compacted";
+      beforeTokens: number;
+      afterTokens: number;
+      workState: AgentWorkState;
+    }
   /** How much of the model's real context window the conversation occupies. */
   | {
       type: "context";

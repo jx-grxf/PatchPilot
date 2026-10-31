@@ -153,7 +153,7 @@ async function readShebangInterpreter(binary: string): Promise<string | null> {
   }
 }
 
-export async function fetchModelIds(baseUrl: string): Promise<string[] | null> {
+async function fetchModelIds(baseUrl: string): Promise<string[] | null> {
   try {
     const response = await fetch(`${baseUrl}/models`, { signal: AbortSignal.timeout(1500) });
     if (!response.ok) {

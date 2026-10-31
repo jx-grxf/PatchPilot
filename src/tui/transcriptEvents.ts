@@ -1,6 +1,7 @@
 import type { AgentEvent } from "../core/types.js";
 import { formatTokens } from "./format.js";
 import { describeToolTarget, toolVerb } from "./toolDisplay.js";
+import { formatCompactTokens } from "./format.js";
 import type { LogLineInput } from "./types.js";
 
 /**
@@ -87,6 +88,14 @@ export function belongsInTranscript(event: AgentEvent, debug = Boolean(process.e
 
 export function eventToLine(event: AgentEvent): LogLineInput {
   switch (event.type) {
+    case "compacted":
+      return {
+        kind: "status",
+        tone: "muted",
+        label: "compacted",
+        text: `Compacted conversation (${formatCompactTokens(event.beforeTokens)} → ${formatCompactTokens(event.afterTokens)} tokens)`,
+        workState: event.workState
+      };
     case "status":
       return {
         kind: "status",

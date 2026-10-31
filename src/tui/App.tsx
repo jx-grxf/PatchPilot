@@ -54,14 +54,14 @@ import {
   validateSettingValue
 } from "./settingsRegistry.js";
 import { needsArgument, resolveSlashSubmission, type PaletteSuggestion } from "./slashCommands.js";
-import { runContextSlashCommand } from "./contextCommands.js";
+import { totalTokens } from "../core/contextWindow.js";
 import { Shell } from "./shell/Shell.js";
 import { type Artifact, attachmentKindForPath, attachmentLabel, attachmentTypeForPath, formatSessionArtifactContext } from "./shell/attachments.js";
 import { describeUltraModes, parseUltraModes } from "./shell/ultraModes.js";
 import { formatCompletionSummary, type RunOutcome } from "./runStatus.js";
 import { OnboardingPanel, type OnboardingState } from "./components/OnboardingPanel.js";
 import { filterSlashCommands, formatCommandDetail, formatCommandHelp } from "./commands.js";
-import { normalizeModelAlias, readToggle, stripTerminalControls } from "./format.js";
+import { formatCompactTokens, normalizeModelAlias, readToggle, stripTerminalControls } from "./format.js";
 import { checkOllamaHost, discoverOllamaHosts, normalizeOllamaUrl, readOllamaHostDetails, startLocalOllamaAppAndWait, type OllamaHost, type OllamaHostDetails } from "./hosts.js";
 import { motionEnabled } from "./motion.js";
 import { prewarmHighlighter } from "./highlight.js";
@@ -1711,18 +1711,51 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           return;
         }
         case "context":
-        case "ctx":
-        case "compact":
-        case "compress":
-          appendLine(
-            await runContextSlashCommand({
-              workspace: settings.workspace,
-              sessionId: sessionStoreRef.current.sessionId,
-              command: command === "compact" || command === "compress" ? "compact" : "context",
-              args
-            })
-          );
+        case "ctx": {
+          const messages = conversationRef.current;
+          const tokens = totalTokens(messages);
+          appendLine({
+            kind: "status",
+            tone: "accent",
+            label: "context",
+            text:
+              messages.length === 0
+                ? "The conversation is empty."
+                : `${messages.length} messages · ~${formatCompactTokens(tokens)} tokens` +
+                  (contextUsage ? ` · ${Math.round(contextUsage.ratio * 100)}% of ${formatCompactTokens(contextUsage.limitTokens)}` : "") +
+                  " · /compact to condense it"
+          });
           return;
+        }
+        case "compact":
+        case "compress": {
+          // Condenses the conversation the model actually sees; args become
+          // the focus of the summary, as in Claude Code's /compact.
+          if (isRunning) {
+            appendLine({ kind: "status", tone: "warning", label: "compact", text: "Wait for the current run to finish, then /compact." });
+            return;
+          }
+          if (conversationRef.current.length === 0) {
+            appendLine({ kind: "status", tone: "muted", label: "compact", text: "Nothing to compact yet." });
+            return;
+          }
+          setIsRunning(true);
+          setStatus("compacting the conversation");
+          try {
+            const runner = new AgentRunner({ ...settings, conversation: conversationRef.current });
+            for await (const event of runner.compact(args.join(" "))) {
+              if (event.type === "compacted" || (event.type === "status" && event.workState === "done")) {
+                appendLine(eventToLine(event));
+              }
+            }
+          } catch (error) {
+            appendLine({ kind: "error", tone: "danger", label: "compact", text: error instanceof Error ? error.message : String(error) });
+          } finally {
+            setIsRunning(false);
+            setStatus("idle");
+          }
+          return;
+        }
         case "sessions": {
           const sessions = await listWorkspaceSessions(settings.workspace);
           appendLine({

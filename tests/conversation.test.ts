@@ -230,3 +230,22 @@ describe("cut-off calls", () => {
     expect(requests[1]?.at(-1)?.content).toContain("cut off");
   });
 });
+
+describe("/compact", () => {
+  it("condenses the real conversation, keeps the user's words and reports the saving", async () => {
+    const { conversation, requests, makeRunner } = await setup([
+      { toolCalls: [{ name: "write", arguments: { path: "big.txt", content: "x".repeat(20_000) } }] },
+      { content: "Wrote big.txt." },
+      { content: "1. Goal: big file\n6. Next step: none" }
+    ]);
+    await drain(makeRunner().run("write a big file"));
+
+    const events = await drain(makeRunner().compact("the big file"));
+
+    const compacted = events.find((event) => event.type === "compacted");
+    expect(compacted && compacted.type === "compacted" && compacted.afterTokens < compacted.beforeTokens).toBe(true);
+    expect(conversation.some((message) => message.content === "write a big file")).toBe(true);
+    expect(conversation.some((message) => message.content.includes("Files changed so far: big.txt"))).toBe(true);
+    expect(requests.at(-1)?.[0]?.content).toContain("the big file");
+  });
+});

@@ -26,20 +26,6 @@ export function parseAgentResponse(rawContent: string): AgentResponse {
   return agentResponseSchema.parse(parsed);
 }
 
-export function formatParseError(error: unknown): string {
-  if (error instanceof z.ZodError) {
-    const firstIssue = error.issues[0];
-    if (!firstIssue) {
-      return "response did not match the PatchPilot protocol.";
-    }
-
-    const location = firstIssue.path.length > 0 ? ` at ${firstIssue.path.join(".")}` : "";
-    return `${firstIssue.message}${location}`;
-  }
-
-  return error instanceof Error ? error.message : String(error);
-}
-
 function extractJson(rawContent: string): string {
   const trimmedContent = rawContent.trim();
 
