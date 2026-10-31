@@ -20,7 +20,7 @@ import type { StreamProgress } from "../transcriptEvents.js";
 import { clipboardImageHint } from "../../core/clipboard.js";
 import { resolveLocalOpenAIBaseUrl } from "../../core/localOpenAI.js";
 import { Markdown } from "../components/Markdown.js";
-import { FlowShell } from "./FlowShell.js";
+import { estimateTranscriptRows, FlowShell } from "./FlowShell.js";
 import { readGitBranch } from "../gitBranch.js";
 import { symbols } from "./theme.js";
 import { motionEnabled, pressureColor, sparkline, trackedBar } from "../motion.js";
@@ -93,6 +93,11 @@ export function Shell(props: ShellProps): React.ReactElement {
   // The streamed answer can outgrow the screen long before it is complete;
   // only its tail is shown live, the full text lands in scrollback at the end.
   const streamingRows = Math.max(3, props.rows - 12 - (props.todos.length > 0 ? Math.min(props.todos.length, 7) + 2 : 0));
+  // Claude Code keeps the composer on the bottom edge while the window is not
+  // full yet. The live region claims the rest of the window and stacks its
+  // content at the bottom; a minimum height rather than a measured spacer, so
+  // a growing run line can never push the frame past the window for a frame.
+  const liveMinRows = Math.max(0, props.rows - estimateTranscriptRows(props.lines, width, props.transcriptEpoch === 0) - 1);
 
   return (
     <>
@@ -101,7 +106,7 @@ export function Shell(props: ShellProps): React.ReactElement {
       {/* The live region follows the transcript directly, as in Claude Code.
           Padding it to the bottom of the window left a gap that read as lost
           output while the transcript was short. */}
-      <Box flexDirection="column">
+      <Box flexDirection="column" minHeight={liveMinRows} justifyContent="flex-end">
         {props.streamingText ? (
           <Box marginTop={1}>
             <Box width={2} flexShrink={0}>

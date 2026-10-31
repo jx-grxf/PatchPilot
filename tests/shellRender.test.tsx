@@ -70,10 +70,10 @@ describe("shell renders at rest", () => {
     expect(output).not.toContain("██");
   });
 
-  it("keeps the composer right under a short transcript instead of padding to the bottom", () => {
+  it("keeps the header on top and the composer on the bottom edge of a short session", () => {
     const rows = frame({ rows: 30 }).split("\n");
     expect(rows[0]).toContain("PatchPilot v2.0.0");
-    expect(rows.length).toBeLessThan(20);
+    expect(rows.length).toBe(29);
     expect(rows.at(-1)).toContain("tab to switch");
   });
 

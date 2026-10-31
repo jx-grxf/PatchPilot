@@ -207,3 +207,43 @@ function collapse(value: string, maxLength: number): string {
   const limit = Math.max(20, maxLength);
   return normalized.length <= limit ? normalized : `${normalized.slice(0, limit - 1)}…`;
 }
+
+/**
+ * Roughly how many terminal rows the printed transcript takes. Used only to
+ * keep the composer at the bottom of a window that is not full yet, so it
+ * errs high: an overestimate leaves the composer a row or two above the
+ * edge, an underestimate would scroll the header away.
+ */
+export function estimateTranscriptRows(lines: LogLine[], columns: number, withBanner: boolean): number {
+  const bodyWidth = Math.max(10, columns - 4);
+  const wrapped = (text: string, width = bodyWidth): number =>
+    text.split("\n").reduce((rows, row) => rows + Math.max(1, Math.ceil(row.length / width)), 0);
+
+  let rows = withBanner ? 4 : 0;
+  for (const line of lines) {
+    switch (line.kind) {
+      case "user":
+        rows += 1 + wrapped(line.text);
+        break;
+      case "assistant":
+      case "final":
+        rows += 1 + wrapped(line.text) + (line.detail ? wrapped(line.detail) : 0) + 1;
+        break;
+      case "tool":
+        rows += 3 + (line.diff ? line.diff.split("\n").length : 0) + (line.detail && line.tone !== "success" ? 4 : 0);
+        break;
+      case "diff":
+        rows += 1 + (line.detail ?? line.text).split("\n").length;
+        break;
+      case "thinking":
+        rows += 1 + Math.min(3, wrapped(line.text));
+        break;
+      case "error":
+        rows += 1 + wrapped(line.text) + (line.detail ? wrapped(line.detail) : 0);
+        break;
+      default:
+        rows += 2;
+    }
+  }
+  return rows;
+}
