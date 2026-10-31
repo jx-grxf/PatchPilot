@@ -7,8 +7,7 @@ import { symbols } from "./theme.js";
 export type SubagentProgress = Extract<AgentEvent, { type: "subagent" }>;
 
 /**
- * Running subagents as a tree, as Claude Code shows them: one row per child
- * with the call it is on, so a minute of delegation does not look like a hang.
+ * Running subagents as a tree: one row per child with the call it is on, so a minute of delegation does not look like a hang.
  */
 export function AgentsDock(props: { agents: SubagentProgress[]; width: number }): React.ReactElement {
   const running = props.agents.filter((agent) => agent.state === "running").length;

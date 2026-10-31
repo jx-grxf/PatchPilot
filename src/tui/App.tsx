@@ -1745,7 +1745,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         case "compact":
         case "compress": {
           // Condenses the conversation the model actually sees; args become
-          // the focus of the summary, as in Claude Code's /compact.
+          // the focus of the summary.
           if (isRunning) {
             appendLine({ kind: "status", tone: "warning", label: "compact", text: "Wait for the current run to finish, then /compact." });
             return;

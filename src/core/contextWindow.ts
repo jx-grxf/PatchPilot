@@ -221,8 +221,8 @@ export function planCompaction(messages: ChatMessage[], options: { keepTailToken
 }
 
 /**
- * What a summary has to carry for work to continue, in the sections Claude
- * Code uses. A small model summarises far more reliably against a fixed
+ * What a summary has to carry for work to continue, as fixed sections. A
+ * small model summarises far more reliably against a fixed
  * outline than against "summarise this".
  */
 export function buildCompactionPrompt(stale: ChatMessage[], focus = ""): ChatMessage[] {
@@ -263,7 +263,7 @@ const keptUserMessageTokens = 6000;
 
 /**
  * Splices the summary in where the stale segment was. The user's own
- * messages stay word for word, as in Codex: a weak summary must never be
+ * messages stay word for word: a weak summary must never be
  * able to lose what was asked. `state` re-attaches what the next step needs
  * straight away, such as the todo list and the files changed so far.
  */
