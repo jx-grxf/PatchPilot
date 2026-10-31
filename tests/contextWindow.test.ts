@@ -164,3 +164,18 @@ describe("conversation compaction", () => {
     expect(applyCompaction(plan, "unused")).toBe(conversation);
   });
 });
+
+describe("compaction keeps tool calls with their results", () => {
+  it("never starts the kept tail on a tool result", () => {
+    const messages: ChatMessage[] = [
+      { role: "system", content: "s" },
+      { role: "user", content: "old ".repeat(400) },
+      { role: "assistant", content: "", toolCalls: [{ id: "a", name: "read", arguments: { path: "x" } }] },
+      { role: "tool", toolCallId: "a", toolName: "read", content: "x".repeat(400) },
+      { role: "tool", toolCallId: "b", toolName: "read", content: "y".repeat(40) }
+    ];
+    const request = planCompaction(messages, { keepTailTokens: 5 });
+    const tail = request.kept.filter((message) => message.role !== "system");
+    expect(tail[0]?.role).not.toBe("tool");
+  });
+});
