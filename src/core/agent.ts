@@ -1222,7 +1222,7 @@ function isAbortError(error: unknown, signal?: AbortSignal): boolean {
  * How many read-only children run at once. Two is what a 24 GB Mac serves as
  * one batch without slowing the parent's own requests noticeably.
  */
-export function subagentConcurrency(env: NodeJS.ProcessEnv = process.env): number {
+function subagentConcurrency(env: NodeJS.ProcessEnv = process.env): number {
   const configured = Number.parseInt(env.PATCHPILOT_SUBAGENT_CONCURRENCY ?? "", 10);
   return Number.isFinite(configured) ? Math.min(4, Math.max(1, configured)) : 2;
 }
