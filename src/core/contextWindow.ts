@@ -36,8 +36,20 @@ const protectedToolResultTokens = 4000;
 /** Below this there is nothing worth pruning, so the pass is skipped. */
 const minimumPrunableTokens = 1500;
 
-export function measureContext(messages: ChatMessage[], budget: ContextBudget): ContextUsage {
-  const usedTokens = totalTokens(messages);
+/**
+ * `measured` is what the runtime counted for the first `messageCount`
+ * messages on the last request. That part is exact, so only messages added
+ * since are estimated.
+ */
+export function measureContext(
+  messages: ChatMessage[],
+  budget: ContextBudget,
+  measured: { tokens: number; messageCount: number } | null = null
+): ContextUsage {
+  const usedTokens =
+    measured && measured.tokens > 0 && measured.messageCount <= messages.length
+      ? measured.tokens + totalTokens(messages.slice(measured.messageCount))
+      : totalTokens(messages);
   const usable = Math.max(1, budget.limitTokens - budget.reserveTokens);
   const ratio = usedTokens / usable;
 
@@ -50,7 +62,10 @@ export function measureContext(messages: ChatMessage[], budget: ContextBudget): 
 }
 
 export function totalTokens(messages: ChatMessage[]): number {
-  return messages.reduce((total, message) => total + estimateTokens(message.content), 0);
+  return messages.reduce(
+    (total, message) => total + estimateTokens(message.content) + (message.toolCalls ? estimateTokens(JSON.stringify(message.toolCalls)) : 0),
+    0
+  );
 }
 
 /**
@@ -101,7 +116,7 @@ export function pruneToolResults(
 
   const pruneSet = new Set(prunable);
   const next = messages.map((message, index) =>
-    pruneSet.has(index) ? { ...message, content: summariseToolResult(message.content) } : message
+    pruneSet.has(index) ? { ...message, content: summariseToolResult(message) } : message
   );
 
   return {
@@ -140,11 +155,13 @@ export function planCompaction(messages: ChatMessage[], options: { keepTailToken
       continue;
     }
 
-    if (keptTokens >= options.keepTailTokens && kept.length > 0) {
+    // A tail that opens on tool results would orphan them from the call that
+    // produced them, which chat templates reject.
+    if (keptTokens >= options.keepTailTokens && kept.length > 0 && kept[0]?.role !== "tool") {
       return { stale: rest.slice(0, index + 1), kept: [...systemMessages, ...kept] };
     }
 
-    keptTokens += estimateTokens(message.content);
+    keptTokens += totalTokens([message]);
     kept.unshift(message);
   }
 
@@ -161,9 +178,15 @@ export function buildCompactionPrompt(stale: ChatMessage[]): ChatMessage[] {
     },
     {
       role: "user",
-      content: stale.map((message) => `[${message.role}] ${message.content}`).join("\n\n")
+      content: stale.map(formatForSummary).join("\n\n")
     }
   ];
+}
+
+function formatForSummary(message: ChatMessage): string {
+  const calls = message.toolCalls?.map((call) => `${call.name}(${clip(JSON.stringify(call.arguments), 200)})`).join(", ");
+  const label = message.role === "tool" ? `tool ${message.toolName ?? ""}`.trim() : message.role;
+  return `[${label}] ${message.content}${calls ? `\ncalled: ${calls}` : ""}`;
 }
 
 /** Splices a summary back in where the stale segment was. */
@@ -191,7 +214,7 @@ export function applyCompaction(request: CompactionRequest, summary: string): Ch
  * than anchored to the first character.
  */
 function isToolResultMessage(message: ChatMessage | undefined): boolean {
-  return message?.role === "user" && message.content.slice(0, 400).includes('"tool_results"');
+  return message?.role === "tool" || (message?.role === "user" && message.content.slice(0, 400).includes('"tool_results"'));
 }
 
 /**
@@ -199,7 +222,12 @@ function isToolResultMessage(message: ChatMessage | undefined): boolean {
  * dropping the body. A model that sees "read_file ok" knows it already read
  * the file; it does not need the contents again.
  */
-function summariseToolResult(content: string): string {
+function summariseToolResult(message: ChatMessage): string {
+  const content = message.content;
+  if (message.role === "tool") {
+    // Native results lead with their summary line.
+    return `[pruned earlier output] ${clip(content.split("\n", 1)[0] ?? "", 160)}`;
+  }
   const summaries: string[] = [];
   try {
     const jsonStart = content.indexOf('{"tool_results"');

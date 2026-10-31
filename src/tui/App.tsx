@@ -10,7 +10,7 @@ import { resolveRuntimeAlias } from "../core/localRuntimes.js";
 import { ensurePatchPilotGitignore, patchPilotInitPrompt } from "../core/projectInit.js";
 import { buildSessionRecap, buildSessionResumeContext, listWorkspaceSessions, loadSessionSummary, SessionStore } from "../core/session.js";
 import { addTelemetryToSession, emptySessionTelemetry, estimateTokens } from "../core/tokenAccounting.js";
-import type { AgentTodoItem, AgentToolName, AgentWorkState, ApprovalRequest, ModelProvider, ModelTelemetry, PermissionDecision, SessionTelemetry } from "../core/types.js";
+import type { AgentTodoItem, AgentToolName, AgentWorkState, ApprovalRequest, ChatMessage, ModelProvider, ModelTelemetry, PermissionDecision, SessionTelemetry } from "../core/types.js";
 import { checkForPatchPilotUpdate, installPatchPilotUpdate, type UpdateCheckResult } from "../core/updateCheck.js";
 import { getToolSpec, WorkspaceTools } from "../core/workspace.js";
 import { clipboardHasImage, readClipboardImage } from "../core/clipboard.js";
@@ -24,7 +24,7 @@ import {
   formatUsageDetail,
   formatUsageSummary
 } from "./sessionStats.js";
-import { attachmentLimitWarning, formatAttachedDocuments, formatAttachmentDigestPath } from "./attachmentLimits.js";
+import { attachmentLimitWarning, formatAttachedDocuments } from "./attachmentLimits.js";
 import {
   loadAvailableModels,
   loadKnownOrAvailableModels,
@@ -110,9 +110,9 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   const activeHostSyncInFlightRef = useRef(false);
   const autoLoadKeysRef = useRef(new Set<string>());
   const usedOllamaModelsRef = useRef(new Set<string>());
-  // Rolling session memory: short digests of earlier turns so a later prompt
-  // ("now do X") still knows what the user asked for and where.
-  const conversationTurnsRef = useRef<string[]>([]);
+  // The session's full conversation, handed to every run so a follow-up sees
+  // what earlier turns read and changed. Reset by /clear and /new.
+  const conversationRef = useRef<ChatMessage[]>([]);
   const [lines, setLines] = useState<LogLine[]>([]);
   const [todos, setTodos] = useState<AgentTodoItem[]>([]);
   const [todoFrame, setTodoFrame] = useState(0);
@@ -1121,13 +1121,6 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         const abortController = new AbortController();
         abortControllerRef.current = abortController;
         const effectiveMode = overrides.mode ?? agentMode;
-        // Carry earlier-turn context forward so a follow-up prompt still knows
-        // what the user was doing and where. Advisory only — it never changes
-        // the workspace root or restricts the agent.
-        const sessionMemory =
-          conversationTurnsRef.current.length > 0
-            ? `Earlier in this PatchPilot session (most recent last), for continuity only — the request below still takes priority and is not restricted to these paths:\n${conversationTurnsRef.current.join("\n")}`
-            : "";
         const artifactContext = formatSessionArtifactContext(artifactsRef.current);
         const persistedContext = await contextStoreRef.current
           .buildContextBlock({
@@ -1158,18 +1151,19 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
             "ULTRAFAST is active. Optimise for speed: minimal reasoning, the fewest tool calls that still get it right, no exploratory detours. Answer as directly as possible."
           );
         }
-        const effectiveResumeContext = [resumeContext, sessionMemory, artifactContext, persistedContext, ultraInstructions.join("\n\n")]
+        // Session-level context only opens a conversation; after that the
+        // conversation itself carries it, and repeating it every turn would
+        // bloat the prompt and break the runtime's prefix cache.
+        const opensConversation = conversationRef.current.length === 0;
+        const effectiveResumeContext = [
+          ...(opensConversation ? [resumeContext, artifactContext, persistedContext] : []),
+          ultraInstructions.join("\n\n")
+        ]
           .filter(Boolean)
           .join("\n\n");
         const taskRunner = new AgentRunner({
           ...runnableSettings,
-          maxSteps: ultraloop
-            ? Math.max(runnableSettings.maxSteps, 60)
-            : ultramaxx
-              ? Math.max(runnableSettings.maxSteps, 40)
-              : ultraLean
-                ? Math.min(runnableSettings.maxSteps, 12)
-                : runnableSettings.maxSteps,
+          maxSteps: runnableSettings.maxSteps,
           thinking: ultramaxx ? "on" : ultraLean ? "off" : runnableSettings.thinking,
           subagents: ultramaxx || ultraloop ? true : ultraLean ? false : runnableSettings.subagents,
           ultramaxx,
@@ -1181,6 +1175,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           shouldStopAfterStep: () => softStopRequestedRef.current,
           sessionStore: sessionStoreRef.current,
           resumeContext: effectiveResumeContext,
+          conversation: conversationRef.current,
           approvalHandler: (request) =>
             new Promise<PermissionDecision>((resolve) => {
               if (effectiveMode === "plan") {
@@ -1340,15 +1335,6 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         abortControllerRef.current = null;
         setIsRunning(false);
         setUltramaxxRun(false);
-        // Record a short digest of this turn for cross-run continuity.
-        conversationTurnsRef.current = [
-          ...conversationTurnsRef.current,
-          `- Asked: "${task.replace(/\s+/g, " ").trim().slice(0, 220)}"${
-            turnAttachmentPaths.length > 0 ? ` attachments: ${turnAttachmentPaths.map(formatAttachmentDigestPath).join(", ")}` : ""
-          }${
-            finalMessage ? ` → outcome: ${finalMessage.replace(/\s+/g, " ").trim().slice(0, 220)}` : ""
-          }`
-        ].slice(-6);
         void contextStoreRef.current.append({
           kind: "turn",
           source: "user",
@@ -2029,7 +2015,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           setResumeContext("");
           setSessionTelemetry(emptySessionTelemetry());
           setToolTelemetry(emptyToolTelemetry());
-          conversationTurnsRef.current = [];
+          conversationRef.current = [];
           artifactsRef.current = [];
           pendingAttachmentsRef.current = [];
           return;
@@ -2063,7 +2049,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           setInput("");
           setStatus("idle");
           setWorkState("idle");
-          conversationTurnsRef.current = [];
+          conversationRef.current = [];
           artifactsRef.current = [];
           pendingAttachmentsRef.current = [];
           // Leave the transcript empty so the startup banner shows again,

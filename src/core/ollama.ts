@@ -1,4 +1,5 @@
 import type { ModelChatOptions, ModelChatResult, ModelStreamDelta, ModelTelemetry, RawToolCall } from "./types.js";
+import { toOllamaMessages } from "./wireMessages.js";
 import { fetchWithTimeout, postToModel } from "./http.js";
 import { stripTemplateTokens } from "./localOpenAI.js";
 import { defaultStreamIdleTimeoutMs, readNewlineDelimitedJson, StreamTimer, toolCallIdleTimeoutMs } from "./stream.js";
@@ -84,7 +85,7 @@ export class OllamaClient {
       },
       body: JSON.stringify({
         model: options.model,
-        messages: options.messages,
+        messages: toOllamaMessages(options.messages),
         stream: streaming,
         keep_alive: this.runtimeOptions.keepAlive,
         think: getOllamaThinkValue(options.model, options.thinking),

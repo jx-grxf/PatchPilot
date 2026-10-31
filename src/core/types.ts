@@ -1,8 +1,20 @@
-export type ChatRole = "system" | "user" | "assistant";
+export type ChatRole = "system" | "user" | "assistant" | "tool";
+
+/** A call the assistant made, kept in history in the shape the chat template expects. */
+export type ChatToolCall = {
+  id: string;
+  name: string;
+  arguments: Record<string, unknown>;
+};
 
 export type ChatMessage = {
   role: ChatRole;
   content: string;
+  /** Assistant turns that called tools. */
+  toolCalls?: ChatToolCall[];
+  /** Tool results: which call this answers. */
+  toolCallId?: string;
+  toolName?: string;
 };
 
 export type ModelProvider = "ollama" | "local-openai";

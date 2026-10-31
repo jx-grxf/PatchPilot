@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { compactTranscript, executeToolCallsWithReadParallelism, findRepeatedToolCall, trackWholeFileRewrites, isTodoOnlyFinalResponse, normalizeTodoItems, recoverMalformedToolResponse, resolveToolMode, shouldEnableSubagents, shouldExpectTodos, shouldStopAfterEmptyToolBatches, readFinalMessage } from "../src/core/agent.js";
+import { compactTranscript, executeToolCallsWithReadParallelism, findRepeatedToolCall, trackWholeFileRewrites, normalizeTodoItems, recoverMalformedToolResponse, resolveToolMode, shouldEnableSubagents, readFinalMessage } from "../src/core/agent.js";
 import type { AgentToolCall, ToolResult } from "../src/core/types.js";
 import type { WorkspaceTools } from "../src/core/workspace.js";
 
@@ -130,12 +130,6 @@ describe("agent loop guards", () => {
     expect(resolveToolMode({ mode: "build", allowWrite: true, allowShell: true })).toBe("build");
   });
 
-  it("detects multi-step implementation tasks that should start with todos", () => {
-    expect(shouldExpectTodos("fix provider retries and run the tests after changing the backend")).toBe(true);
-    expect(shouldExpectTodos("what stack is this")).toBe(false);
-    expect(shouldExpectTodos("tiny", true)).toBe(true);
-  });
-
   it("detects repeated identical workspace tool calls with stable argument order", () => {
     const recent: string[] = [];
     expect(findRepeatedToolCall([{ name: "read_file", arguments: { path: "src/a.ts", mode: "full" } }], recent)).toBeNull();
@@ -175,23 +169,6 @@ describe("agent loop guards", () => {
     expect(shouldEnableSubagents("Delegate this audit to a child agent", false)).toBe(true);
     expect(shouldEnableSubagents("inspect the repo", false)).toBe(false);
     expect(shouldEnableSubagents("inspect the repo", true)).toBe(true);
-  });
-
-  it("stops after repeated empty tool batches", () => {
-    expect(shouldStopAfterEmptyToolBatches(1)).toBe(false);
-    expect(shouldStopAfterEmptyToolBatches(2)).toBe(true);
-  });
-
-  it("rejects todo-only or deferred final answers", () => {
-    expect(isTodoOnlyFinalResponse("Die Todo-Liste wurde aktualisiert, der Überblick steht im vorherigen Schritt.")).toBe(true);
-    expect(isTodoOnlyFinalResponse("Todo list updated.")).toBe(true);
-    expect(isTodoOnlyFinalResponse("Done.")).toBe(true);
-    expect(
-      isTodoOnlyFinalResponse(
-        "Fixed the final-answer guard in src/core/agent.ts, tightened ultramaxx activation, and verified the focused Vitest files."
-      )
-    ).toBe(false);
-    expect(isTodoOnlyFinalResponse("Updated the todo list, fixed src/core/agent.ts, and verified tests/agent.test.ts.")).toBe(false);
   });
 
   it("compacts older tool-result transcript blocks and keeps recent ones verbatim", () => {

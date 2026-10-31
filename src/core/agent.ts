@@ -1,4 +1,4 @@
-import { formatParseError, parseAgentResponse } from "./json.js";
+import { parseAgentResponse } from "./json.js";
 import path from "node:path";
 import { platform, release, type } from "node:os";
 import { createModelClient } from "./modelClient.js";
@@ -8,7 +8,7 @@ import { StreamTimer } from "./stream.js";
 import { hasProbedModel, probeModelCapabilities } from "./capability.js";
 import { stripTemplateTokens } from "./localOpenAI.js";
 import { formatEnvelope, runSubagent, subagentToolNames, type SubagentEnvelope, type SubagentRequest } from "./subagentRunner.js";
-import { measureContext, pruneToolResults } from "./contextWindow.js";
+import { applyCompaction, buildCompactionPrompt, measureContext, planCompaction, pruneToolResults } from "./contextWindow.js";
 import {
   extractFencedToolCalls,
   extractStringifiedToolCalls,
@@ -40,7 +40,18 @@ export type AgentRunnerOptions = {
   subagents: boolean;
   /** Optional structural allowlist, used to keep child agents narrow. */
   toolNames?: ToolName[];
+  /**
+   * Turn context the UI adds to this request: attachments, artifacts, active
+   * ultra modes. It rides on the user message, never the system prompt, so the
+   * cached prefix stays stable.
+   */
   resumeContext?: string;
+  /**
+   * The session's conversation, owned by the caller and extended in place.
+   * Passing the same array on every turn is what gives follow-ups their
+   * context. Omitted, each run starts fresh (child agents, one-shot runs).
+   */
+  conversation?: ChatMessage[];
   allowExternalFileAnalysis?: boolean;
   allowShellMetacharacters?: boolean;
   memoryEnabled?: boolean;
@@ -57,9 +68,13 @@ export class AgentRunner {
   private readonly client: ModelClient;
   private readonly tools: WorkspaceTools;
   private readonly options: AgentRunnerOptions;
+  private readonly conversation: ChatMessage[];
+  /** What the runtime counted on the last request; beats an estimate. */
+  private lastMeasured: { tokens: number; messageCount: number } | null = null;
 
   constructor(options: AgentRunnerOptions) {
     this.options = options;
+    this.conversation = options.conversation ?? [];
     this.client =
       options.client ??
       createModelClient({
@@ -91,6 +106,12 @@ export class AgentRunner {
     });
   }
 
+  /**
+   * One user turn. The conversation persists across turns, so a follow-up such
+   * as "now create the file" sees everything the earlier turns read and did.
+   * The turn ends when the model answers without calling a tool — never on a
+   * step quota — so a short request is not cut off halfway.
+   */
   async *run(task: string): AsyncGenerator<AgentEvent> {
     const runId = createRunId();
     await this.options.sessionStore?.append({
@@ -101,9 +122,6 @@ export class AgentRunner {
       model: this.options.model,
       startedAt: new Date().toISOString()
     });
-    const workspaceSummary = await buildWorkspaceSummary(this.tools.root);
-    const ultramaxx = Boolean(this.options.ultramaxx);
-    let maxSteps = resolveMaxSteps(task, this.options.maxSteps, this.options.thinkingMode ?? "adaptive", ultramaxx);
     const thinking = this.options.thinking ?? "auto";
 
     // Ask the model once whether it can drive native tool calls. Advertising
@@ -135,9 +153,7 @@ export class AgentRunner {
     // The window the runtime actually loaded, which is not the num_ctx the
     // harness sends and not necessarily what the model advertises.
     const contextLimitTokens = await this.resolveContextLimit();
-    let sawPermissionRequest = false;
-    let pendingSubagents: SubagentRequest[] = [];
-    const completedTools: string[] = [];
+    const maxSteps = Math.max(1, this.options.maxSteps);
 
     yield {
       type: "status",
@@ -146,62 +162,47 @@ export class AgentRunner {
         : `tool protocol fallback: ${capabilities.detail}`,
       workState: "planning"
     };
-    let stepIndex = 0;
-    let repairs = 0;
-    let malformedResponses = 0;
+
+    const messages = this.conversation;
+    sealDanglingToolCalls(messages);
+    const systemPrompt = buildSystemPrompt(this.tools.root, await this.workspaceSummary(), {
+      mode,
+      allowWrite: this.options.allowWrite,
+      allowShell: this.options.allowShell,
+      hasApprovalHandler: Boolean(this.options.approvalHandler),
+      memoryEnabled: Boolean(this.options.memoryEnabled),
+      nativeTools: capabilities.nativeToolCalls
+    });
+    // The system prompt is the cached prefix of every request. It only changes
+    // when the mode does, so the runtime's prompt cache survives across turns.
+    if (messages[0]?.role === "system") {
+      if (messages[0].content !== systemPrompt) {
+        messages[0] = { role: "system", content: systemPrompt };
+      }
+    } else {
+      messages.unshift({ role: "system", content: systemPrompt });
+    }
+    messages.push({ role: "user", content: withTurnContext(task, this.options.resumeContext ?? "") });
+
     let todos: AgentTodoItem[] = [];
-    const expectsTodos = shouldExpectTodos(task, ultramaxx);
-    let didNudgeForTodos = false;
-    let didPushBackForTodos = false;
-    let didPushBackForVerification = false;
-    let hadWrite = false;
-    let verifiedSinceLastWrite = true;
-    let emptyToolBatches = 0;
-    let repeatedToolBatches = 0;
+    let protocolFailures = 0;
+    let truncations = 0;
+    let sawPermissionRequest = false;
+    const completedTools: string[] = [];
     const recentToolSignatures: string[] = [];
     const wholeFileWrites = new Map<string, number>();
 
-    if (ultramaxx) {
-      yield {
-        type: "status",
-        message: "ultramaxx backend escalation active: thinking enabled, mandatory todos, expanded verification guard",
-        workState: "planning"
-      };
-    }
-
-    const messages: ChatMessage[] = [
-      {
-          role: "system",
-        content: buildSystemPrompt(this.tools.root, "", workspaceSummary, this.options.resumeContext ?? "", {
-          provider: this.options.provider,
-          mode,
-          allowWrite: this.options.allowWrite,
-          allowShell: this.options.allowShell,
-          hasApprovalHandler: Boolean(this.options.approvalHandler)
-        }, {
-          allowExternalFileAnalysis: Boolean(this.options.allowExternalFileAnalysis),
-          memoryEnabled: Boolean(this.options.memoryEnabled),
-          allowShellMetacharacters: Boolean(this.options.allowShellMetacharacters),
-          ultramaxx,
-          expectsTodos,
-          nativeTools: capabilities.nativeToolCalls
-        })
-      },
-      {
-        role: "user",
-        content: task
-      }
-    ];
-
-    while (stepIndex < maxSteps) {
+    for (let stepIndex = 0; ; stepIndex += 1) {
       if (this.options.signal?.aborted) {
-        yield {
-          type: "final",
-          message: "Stopped.",
-          workState: "done"
-        };
+        yield* this.finish(runId, "Stopped.", "done");
         return;
       }
+      if (stepIndex >= maxSteps) {
+        yield* this.finish(runId, `Paused after ${maxSteps} steps. Say "continue" to keep going — the conversation is kept.`, "error");
+        return;
+      }
+
+      yield* this.manageContext(messages, contextLimitTokens);
 
       const requestWorkState = stepIndex === 0 ? "planning" : "inspecting";
       await this.options.sessionStore?.append({
@@ -214,9 +215,9 @@ export class AgentRunner {
         createdAt: new Date().toISOString()
       });
 
-      let modelResponse;
+      let modelResponse: ModelChatResult;
       try {
-        const chatAttempts = this.chatWithRetry({
+        modelResponse = yield* this.chatWithRetry({
           model: this.options.model,
           messages,
           thinking,
@@ -224,605 +225,395 @@ export class AgentRunner {
           requestWorkState,
           attemptLabel: `step ${stepIndex + 1}`
         });
-        for (;;) {
-          const nextAttempt = await chatAttempts.next();
-          if (nextAttempt.done) {
-            modelResponse = nextAttempt.value;
-            break;
-          }
-          yield nextAttempt.value;
-        }
       } catch (error) {
-        // A stop the user asked for is a normal outcome, not a failure. It
-        // surfaces here as a rejected fetch, and rethrowing it turns a
-        // deliberate cancel into an error the UI has to special-case — and
-        // leaves the run looking alive if that special case is ever missed.
+        // A stop the user asked for is a normal outcome, not a failure.
         if (isAbortError(error, this.options.signal)) {
-          yield { type: "final", message: "Stopped.", workState: "done" };
+          yield* this.finish(runId, "Stopped.", "done");
           return;
         }
-
         const message = error instanceof Error ? error.message : String(error);
-        await this.options.sessionStore?.append({
-          type: "run.failed",
-          runId,
-          message,
-          failedAt: new Date().toISOString()
-        });
+        await this.options.sessionStore?.append({ type: "run.failed", runId, message, failedAt: new Date().toISOString() });
         throw error;
       }
       const rawResponse = modelResponse.content;
+      this.lastMeasured =
+        modelResponse.telemetry.tokenSource === "provider" ? { tokens: modelResponse.telemetry.promptTokens, messageCount: messages.length } : null;
 
-      yield {
-        type: "metrics",
-        metrics: modelResponse.telemetry,
-        workState: requestWorkState
-      };
+      yield { type: "metrics", metrics: modelResponse.telemetry, workState: requestWorkState };
       if (modelResponse.warning) {
-        yield {
-          type: "status",
-          message: modelResponse.warning,
-          workState: requestWorkState
-        };
+        yield { type: "status", message: modelResponse.warning, workState: requestWorkState };
       }
 
-      let parsedResponse;
+      let batch: PlannedCall[];
+      let assistantText: string;
+      if (providerTools) {
+        // L0 first: a serving-layer parser failure puts a correct call into
+        // content as a string, which looks exactly like a refusal. L2 covers a
+        // well-formed call printed inside a fence.
+        const rawCalls =
+          modelResponse.toolCalls && modelResponse.toolCalls.length > 0
+            ? modelResponse.toolCalls
+            : firstNonEmpty(extractStringifiedToolCalls(rawResponse), extractFencedToolCalls(rawResponse));
+        assistantText = rawCalls === modelResponse.toolCalls ? stripTemplateTokens(rawResponse).trim() : "";
 
-      // Native tool calls, when the runtime produced any, bypass the envelope
-      // entirely. L2 also covers the measured case where a model prints a
-      // well-formed call inside a fence and makes no real call at all.
-      const nativeCalls =
-        modelResponse.toolCalls && modelResponse.toolCalls.length > 0
-          ? modelResponse.toolCalls
-          : providerTools
-            ? // L0 first: a serving-layer parser failure puts a correct call
-              // into content as a string, which looks exactly like a refusal.
-              firstNonEmpty(extractStringifiedToolCalls(rawResponse), extractFencedToolCalls(rawResponse))
-            : [];
-
-      if (nativeCalls.length > 0) {
-        const resolved = this.resolveNativeToolCalls(nativeCalls, loopBreaker);
-        if (resolved.problems.length > 0 && resolved.toolCalls.length === 0) {
-          // Every call was unusable: hand the guidance back and let the model
-          // correct within the same turn rather than ending the run.
-          // Two truncations of the same kind mean the model cannot fit this
-          // call in its budget; more attempts only cost minutes each.
-          repairs += resolved.truncatedCalls > 0 ? 2 : 1;
-          for (const problem of resolved.problems) {
-            yield { type: "status", message: problem, workState: "planning" };
+        if (rawCalls.length === 0) {
+          const answer = readFinalMessage(stripTemplateTokens(rawResponse));
+          // A model that announces the next step and stops has decided and
+          // not acted. One reminder, then its answer stands.
+          if (!sawPermissionRequest && mode !== "plan" && (looksLikePermissionRequest(answer) || looksLikeAnnouncedAction(answer))) {
+            sawPermissionRequest = true;
+            yield { type: "status", message: "model described the next step instead of taking it; re-prompting to act", workState: "planning" };
+            messages.push({ role: "assistant", content: answer });
+            messages.push({ role: "user", content: "Go ahead and do it now using the tools. Do not ask again." });
+            continue;
           }
-          messages.push({ role: "assistant", content: clipPromptValue(rawResponse, 2000) });
-          messages.push({ role: "user", content: resolved.problems.join("\n") });
-          if (repairs >= 3) {
-            yield {
-              type: "final",
-              message:
-                resolved.truncatedCalls > 0
-                  ? `The model kept running out of output tokens mid-call. Raise PATCHPILOT_NUM_PREDICT (currently the generation budget), or ask for a smaller change — writing a whole large file in one call does not fit.`
-                  : `The model could not produce a usable tool call: ${resolved.problems[0] ?? "unknown"}`,
-              workState: "error"
-            };
-            return;
-          }
-          continue;
+          const finalMessage = answer || describeCompletedWork(completedTools);
+          messages.push({ role: "assistant", content: finalMessage });
+          yield* this.finish(runId, finalMessage, "done");
+          return;
         }
 
-        for (const note of resolved.notes) {
-          yield { type: "status", message: note, workState: "planning" };
-        }
-
-        pendingSubagents = resolved.subagents;
-        parsedResponse = {
-          action: "tools" as const,
-          // The step message is narration, not an answer; it must never
-          // survive to become the final message shown to the user.
-          message: rawResponse.trim(),
-          tool_calls: resolved.toolCalls
-        };
-
-        // A turn that only delegated still did work, so it must not trip the
-        // empty-batch guard.
-        if (resolved.toolCalls.length === 0 && pendingSubagents.length > 0) {
-          parsedResponse = { ...parsedResponse, tool_calls: [] };
-        }
-      } else if (providerTools) {
-        // Capable model, no calls, no fence: it answered. Guard against a
-        // permission request made despite an explicit act-don't-ask prompt.
-        // An answer that announces the next step without taking it is the
-        // same failure as asking permission: the model decided and stopped.
-        if (!sawPermissionRequest && (looksLikePermissionRequest(rawResponse) || looksLikeAnnouncedAction(rawResponse))) {
-          sawPermissionRequest = true;
-          yield {
-            type: "status",
-            message: "model described the next step instead of taking it; re-prompting to act",
-            workState: "planning"
-          };
-          messages.push({ role: "assistant", content: clipPromptValue(rawResponse, 2000) });
-          messages.push({
-            role: "user",
-            content:
-              "You described what you would do but did not do it. Carry out that exact step now by calling the tool, then report the result. Do not ask, and do not describe it again."
-          });
-          continue;
-        }
-
-        // A model coming off the legacy protocol sometimes narrates an
-        // envelope as prose. Presenting that raw as the answer looks like a
-        // crash, so it is stripped down to its message.
-        parsedResponse = { action: "final" as const, message: readFinalMessage(rawResponse) };
+        batch = this.planNativeCalls(rawCalls, loopBreaker);
       } else {
-      try {
-        parsedResponse = parseAgentResponse(rawResponse);
-      } catch (error) {
-        const recoveredResponse = recoverMalformedToolResponse(rawResponse);
-        if (recoveredResponse) {
-          parsedResponse = recoveredResponse;
-          const recoveredPath = recoveredResponse.tool_calls[0]?.arguments.path ?? "workspace file";
-          yield {
-            type: "status",
-            message: `recovered malformed model protocol as ${recoveredResponse.tool_calls[0]?.name ?? "tool"} for ${recoveredPath}`,
-            workState: "planning"
-          };
-        } else {
-          repairs += 1;
-          malformedResponses += 1;
-          yield {
-            type: "status",
-            message: `repairing model protocol: ${formatParseError(error)}`,
-            workState: "planning"
-          };
-          messages.push({
-            role: "assistant",
-            content: clipPromptValue(rawResponse, 2000)
-          });
+        const parsed = parseEnvelope(rawResponse);
+        if (!parsed) {
+          protocolFailures += 1;
+          yield { type: "status", message: "repairing model protocol", workState: "planning" };
+          messages.push({ role: "assistant", content: clipPromptValue(rawResponse, 2000) });
           messages.push({
             role: "user",
             content:
-              "Your previous response was invalid. Return exactly one JSON object now. Do not explain. Use either {\"action\":\"tools\",\"message\":\"...\",\"tool_calls\":[...]} or {\"action\":\"final\",\"message\":\"...\"}. For simple file edits, call write_file with a workspace-relative path."
+              "Your previous response was invalid. Return exactly one JSON object: {\"action\":\"tools\",\"message\":\"...\",\"tool_calls\":[...]} or {\"action\":\"final\",\"message\":\"...\"}."
           });
-          if (repairs >= 3 || malformedResponses >= 3) {
-            yield {
-              type: "final",
-              message: "The model kept returning invalid tool protocol. Try a stronger coding model or switch child agents off for this task.",
-              workState: "error"
-            };
-            await this.options.sessionStore?.append({
-              type: "run.failed",
-              runId,
-              message: "The model kept returning invalid tool protocol.",
-              failedAt: new Date().toISOString()
-            });
+          if (protocolFailures >= 3) {
+            yield* this.finish(runId, "The model kept returning invalid tool protocol. Try a model with native tool calling.", "error");
             return;
           }
           continue;
         }
-      }
-      }
-
-      repairs = 0;
-      if (parsedResponse.action === "final") {
-        if (expectsTodos && hasOpenTodos(todos) && !didPushBackForTodos) {
-          didPushBackForTodos = true;
-          messages.push({
-            role: "assistant",
-            content: JSON.stringify(parsedResponse)
-          });
-          messages.push({
-            role: "user",
-            content: "Your todo list still has pending or in_progress items. Update the todo list first, then return final when the work is genuinely complete."
-          });
-          stepIndex += 1;
-          continue;
-        }
-
-        if (ultramaxx && hadWrite && !verifiedSinceLastWrite && !didPushBackForVerification) {
-          didPushBackForVerification = true;
-          messages.push({
-            role: "assistant",
-            content: JSON.stringify(parsedResponse)
-          });
-          messages.push({
-            role: "user",
-            content: "You changed files in ultramaxx mode without verification since the last write. Run tests, a script, shell verification, or git_diff before final."
-          });
-          stepIndex += 1;
-          continue;
-        }
-
-        if (expectsTodos && isTodoOnlyFinalResponse(parsedResponse.message)) {
-          messages.push({
-            role: "assistant",
-            content: JSON.stringify(parsedResponse)
-          });
-          messages.push({
-            role: "user",
-            content: "Your final answer was invalid because it only reported todo/status progress or deferred to an earlier step. Return a real final answer now with the actual findings, changes made, verification run, and any remaining risks. Do not mention update_todo as the outcome."
-          });
-          stepIndex += 1;
-          continue;
-        }
-
-        // A model that stops without saying anything still did work; report
-        // that rather than showing the user an empty answer.
-        const finalMessage = parsedResponse.message.trim() || describeCompletedWork(completedTools);
-        yield {
-          type: "final",
-          message: finalMessage,
-          workState: "done"
-        };
-        await this.options.sessionStore?.append({
-          type: "run.completed",
-          runId,
-          message: finalMessage,
-          completedAt: new Date().toISOString()
-        });
-        return;
-      }
-
-      if (isMeaningfulAssistantMessage(parsedResponse.message)) {
-        yield {
-          type: "assistant",
-          message: parsedResponse.message,
-          workState: "planning"
-        };
-      }
-
-      const toolCalls = parsedResponse.tool_calls.slice(0, MAX_TOOL_CALLS_PER_RESPONSE).map(normalizeToolCall);
-      if (toolCalls.length === 0 && looksLikeClarification(parsedResponse.message)) {
-        yield {
-          type: "final",
-          message: parsedResponse.message,
-          workState: "done"
-        };
-        await this.options.sessionStore?.append({
-          type: "run.completed",
-          runId,
-          message: parsedResponse.message,
-          completedAt: new Date().toISOString()
-        });
-        return;
-      }
-      if (toolCalls.length === 0) {
-        emptyToolBatches += 1;
-        messages.push({
-          role: "assistant",
-          content: JSON.stringify(parsedResponse)
-        });
-
-        if (shouldStopAfterEmptyToolBatches(emptyToolBatches)) {
-          yield {
-            type: "final",
-            message: "Stopped because the model returned a tool action without tool calls twice. Retry the task or switch models.",
-            workState: "error"
-          };
-          await this.options.sessionStore?.append({
-            type: "run.failed",
-            runId,
-            message: "Model returned empty tool batches repeatedly.",
-            failedAt: new Date().toISOString()
-          });
+        if (parsed.action === "final") {
+          const finalMessage = parsed.message.trim() || describeCompletedWork(completedTools);
+          messages.push({ role: "assistant", content: finalMessage });
+          yield* this.finish(runId, finalMessage, "done");
           return;
         }
-
-        messages.push({
-          role: "user",
-          content: "You returned action:\"tools\" without any tool_calls. Either call one valid tool now or return action:\"final\" with the completed answer."
-        });
-        stepIndex += 1;
-        continue;
-      }
-      emptyToolBatches = 0;
-
-      const { todoCalls, workspaceCalls } = splitTodoToolCalls(toolCalls);
-      if (expectsTodos && todos.length === 0 && workspaceCalls.length > 0 && !didNudgeForTodos) {
-        didNudgeForTodos = true;
-        messages.push({
-          role: "assistant",
-          content: JSON.stringify({
-            action: "tools",
-            message: parsedResponse.message,
-            tool_calls: toolCalls
-          })
-        });
-        messages.push({
-          role: "user",
-          content: "This task has multiple steps. Call update_todo with a concrete 2-6 item plan first, then continue with the needed tools."
-        });
-        stepIndex += 1;
-        continue;
+        assistantText = parsed.message;
+        batch = parsed.tool_calls.slice(0, MAX_TOOL_CALLS_PER_RESPONSE).map((call) => ({
+          id: createToolCallId(call.name),
+          name: call.name,
+          arguments: call.arguments,
+          call: normalizeToolCall(call)
+        }));
       }
 
-      // Todo is a real tool call too. Excluding it here let a weak model spend
-      // every remaining turn submitting the same unchanged checklist.
-      const repeatedCall = findRepeatedToolCall(toolCalls, recentToolSignatures);
-      if (repeatedCall) {
-        repeatedToolBatches += 1;
-        if (repeatedToolBatches >= 2) {
-          yield {
-            type: "final",
-            message: `Stopped because the model repeated ${repeatedCall.name} without making progress.`,
-            workState: "error"
-          };
-          return;
+      if (isMeaningfulAssistantMessage(assistantText)) {
+        yield { type: "assistant", message: assistantText, workState: "planning" };
+      }
+
+      for (const planned of batch) {
+        if (planned.note) {
+          yield { type: "status", message: planned.note, workState: "planning" };
         }
-        messages.push({
-          role: "assistant",
-          content: JSON.stringify({
-            action: "tools",
-            message: parsedResponse.message,
-            tool_calls: toolCalls
-          })
-        });
-        messages.push({
-          role: "user",
-          content:
-            repeatedCall.name === "update_todo" && subagentsEnabled
-              ? "The todo list is unchanged. The user explicitly requested delegation: call the task tool now, or perform the first concrete read. Do not update the todo list again."
-              : `You already ran ${repeatedCall.name} with the same arguments repeatedly. Act on the previous result or return final instead of repeating it.`
-        });
-        stepIndex += 1;
-        continue;
-      }
-      repeatedToolBatches = 0;
-
-      const todoResults: Awaited<ReturnType<typeof executeToolSafely>>[] = [];
-      for (const todoCall of todoCalls) {
-        todos = normalizeTodoItems(todoCall.arguments, todos);
-        const summary = summarizeTodos(todos);
-        yield {
-          type: "todo",
-          items: todos,
-          summary,
-          workState: "planning"
-        };
-        await this.options.sessionStore?.append({
-          type: "todo.updated",
-          runId,
-          items: todos,
-          summary,
-          createdAt: new Date().toISOString()
-        });
-        todoResults.push({
-          tool: "update_todo",
-          ok: true,
-          summary,
-          content: JSON.stringify({ items: todos }),
-          toolCallId: createToolCallId("update_todo"),
-          category: "state",
-          preview: undefined,
-          approval: undefined,
-          metadata: {
-            items: todos
-          },
-          workState: "planning"
-        });
       }
 
-      // Children run one at a time: each starts with a cold prefix cache, and
-      // two at once on a single machine evict the parent's cache as well.
-      const subagentResults: Array<Omit<Awaited<ReturnType<typeof executeToolSafely>>, "tool"> & { tool: AgentEventToolName }> = [];
-      for (const request of pendingSubagents) {
-        yield {
-          type: "status",
-          message: `delegating to ${request.type} subagent: ${request.description}`,
-          workState: "planning"
-        };
-
-        const envelope = await this.runChildAgent(request);
-        yield {
-          type: "tool",
-          name: "subagent",
-          summary: `${request.type} subagent ${envelope.status}: ${request.description}`,
-          content: formatEnvelope(envelope),
-          ok: envelope.status === "ok",
-          workState: "planning",
-          category: "state",
-          metadata: {
-            subagent: request.type,
-            transcript: envelope.transcript,
-            steps: envelope.steps,
-            toolCalls: envelope.toolCalls,
-            durationMs: envelope.durationMs
-          }
-        };
-
-        subagentResults.push({
-          tool: "subagent",
-          ok: envelope.status === "ok",
-          summary: `${request.type} subagent ${envelope.status}: ${request.description}`,
-          content: formatEnvelope(envelope),
-          toolCallId: createToolCallId("subagent"),
-          category: "state",
-          preview: undefined,
-          approval: undefined,
-          metadata: { subagent: request.type, transcript: envelope.transcript },
-          workState: "planning"
-        });
-      }
-      pendingSubagents = [];
-
-      // A child can be the long-running part of a mixed native-tool batch. If
-      // the user stops it, sibling writes from that already-issued batch must
-      // not continue afterwards.
-      if (this.options.signal?.aborted) {
-        yield { type: "final", message: "Stopped.", workState: "done" };
-        return;
-      }
-
-      const toolCallRecords = workspaceCalls.map((toolCall) => ({
-        id: createToolCallId(toolCall.name),
-        call: toolCall,
-        workState: workStateForTool(toolCall.name)
-      }));
-      const workspaceCallById = new Map(toolCallRecords.map((record) => [record.id, record.call]));
-      for (const record of toolCallRecords) {
-        await this.options.sessionStore?.append({
-          type: "tool.requested",
-          runId,
-          toolCallId: record.id,
-          tool: record.call.name,
-          arguments: record.call.arguments,
-          workState: record.workState,
-          createdAt: new Date().toISOString()
-        });
-      }
-      const toolResults = [
-        ...todoResults,
-        ...subagentResults,
-        ...(await executeToolCallsWithReadParallelism(this.tools, toolCallRecords))
-      ];
-
-      for (const toolResult of toolResults) {
-        // L5 counts only failures: a call that worked should never be refused
-        // later just because it was repeated.
-        if (!toolResult.ok) {
-          const failedCall = workspaceCallById.get(toolResult.toolCallId);
-          if (failedCall) {
-            loopBreaker.recordFailure(failedCall.name as never, failedCall.arguments);
-          }
-        }
-
-        if (toolResult.ok) {
-          completedTools.push(toolResult.tool);
-        }
-
-        if (isWriteToolResult(toolResult)) {
-          hadWrite = true;
-          verifiedSinceLastWrite = false;
-        } else if (isVerificationToolResult(toolResult)) {
-          verifiedSinceLastWrite = true;
-        }
-
-        if (toolResult.approval) {
-          yield {
-            type: "approval",
-            request: toolResult.approval.request,
-            decision: toolResult.approval.decision,
-            workState: "waiting_approval"
-          };
-          await this.options.sessionStore?.append({
-            type: "approval.requested",
-            runId,
-            request: toolResult.approval.request,
-            decision: toolResult.approval.decision,
-            createdAt: new Date().toISOString()
-          });
-        }
-
-        const workState = toolResult.ok ? toolResult.workState : "error";
-        yield {
-          type: "tool",
-          name: toolResult.tool,
-          summary: toolResult.summary,
-          ok: toolResult.ok,
-          workState,
-          toolCallId: toolResult.toolCallId,
-          category: toolResult.category,
-          preview: toolResult.preview,
-          arguments: workspaceCallById.get(toolResult.toolCallId)?.arguments,
-          content: toolResult.ok ? undefined : toolResult.content,
-          metadata: toolResult.metadata
-        };
-        await this.options.sessionStore?.append({
-          type: "tool.completed",
-          runId,
-          toolCallId: toolResult.toolCallId,
-          tool: toolResult.tool,
-          ok: toolResult.ok,
-          summary: toolResult.summary,
-          workState,
-          createdAt: new Date().toISOString()
-        });
-      }
-
-      const rewrite = trackWholeFileRewrites(wholeFileWrites, toolResults, workspaceCallById);
-      if (rewrite.exhaustedPath) {
-        yield {
-          type: "final",
-          message: `Stopped because the model kept rewriting ${rewrite.exhaustedPath} from scratch instead of editing it.`,
-          workState: "error"
-        };
-        return;
+      // A batch where nothing was usable is a formatting failure. The model
+      // gets each problem back as the result of its call and corrects itself;
+      // only a run of such batches ends the turn.
+      const usable = batch.filter((planned) => !planned.problem);
+      if (usable.length === 0) {
+        protocolFailures += 1;
+        truncations += batch.some((planned) => planned.truncated) ? 1 : 0;
+      } else {
+        protocolFailures = 0;
       }
 
       messages.push({
         role: "assistant",
-        content: JSON.stringify({
-          action: "tools",
-          message: parsedResponse.message,
-          tool_calls: toolCalls
-        })
+        content: assistantText,
+        toolCalls: batch.map((planned) => ({ id: planned.id, name: planned.name, arguments: planned.arguments }))
       });
-      messages.push({
-        role: "user",
-        content: rewrite.notice ? `${formatToolResultsForPrompt(toolResults)}\n\n${rewrite.notice}` : formatToolResultsForPrompt(toolResults)
-      });
-      if (contextLimitTokens) {
-        const usage = measureContext(messages, {
-          limitTokens: contextLimitTokens,
-          reserveTokens: Math.min(2048, Math.floor(contextLimitTokens / 8))
-        });
-        yield {
-          type: "context",
-          usedTokens: usage.usedTokens,
-          limitTokens: usage.limitTokens,
-          ratio: usage.ratio,
-          pressure: usage.pressure,
-          workState: "verifying"
-        };
-      }
 
-      // Prune old tool output before anything else: it is what actually
-      // floods a small window, and it is the cheapest thing to discard.
-      const pruned = pruneToolResults(messages);
-      if (pruned.prunedCount > 0) {
-        messages.length = 0;
-        messages.push(...pruned.messages);
-        yield {
-          type: "status",
-          message: `pruned ${pruned.prunedCount} older tool result${pruned.prunedCount === 1 ? "" : "s"} (~${pruned.prunedTokens} tokens)`,
-          workState: "verifying"
-        };
-      }
+      const results = yield* this.executeBatch(runId, batch, { todos, subagentsEnabled });
+      todos = results.todos;
+      // Results always land in history, even after a stop, so every call in
+      // the assistant turn above has its answer and the next request is valid.
+      const outcomes = results.outcomes;
 
-      stepIndex += 1;
-      if (this.options.shouldStopAfterStep?.()) {
-        yield {
-          type: "final",
-          message: "Stopped after the current step.",
-          workState: "done"
-        };
-        await this.options.sessionStore?.append({
-          type: "run.failed",
-          runId,
-          message: "Stopped after the current step.",
-          failedAt: new Date().toISOString()
-        });
-        return;
-      }
-      if ((this.options.thinkingMode ?? "adaptive") === "adaptive" && stepIndex >= maxSteps && shouldExtendAdaptiveRun(task, toolResults, maxSteps, ultramaxx ? 60 : 32)) {
-        const nextMaxSteps = Math.min(ultramaxx ? 60 : 32, maxSteps + 4);
-        if (nextMaxSteps > maxSteps) {
-          maxSteps = nextMaxSteps;
-          yield {
-            type: "status",
-            message: `expanded adaptive thinking budget to ${maxSteps} steps`,
-            workState: "planning"
-          };
+      for (const outcome of outcomes) {
+        if (!outcome.ok) {
+          const failed = batch.find((planned) => planned.id === outcome.id)?.call;
+          if (failed) {
+            loopBreaker.recordFailure(failed.name as never, failed.arguments);
+          }
+        } else {
+          completedTools.push(outcome.tool);
         }
       }
+
+      const callsById = new Map(batch.flatMap((planned) => (planned.call ? [[planned.id, planned.call] as const] : [])));
+      const rewrite = trackWholeFileRewrites(
+        wholeFileWrites,
+        outcomes.map((outcome) => ({ tool: outcome.tool, ok: outcome.ok, toolCallId: outcome.id, category: outcome.category })),
+        callsById,
+        { warnAt: 2, stopAt: 6 }
+      );
+      const repeated = findRepeatedToolCall(
+        batch.flatMap((planned) => (planned.call ? [planned.call] : [])),
+        recentToolSignatures
+      );
+
+      const notices = [
+        rewrite.notice,
+        repeated ? `You already ran ${repeated.name} with these exact arguments. Use the earlier result instead of repeating the call.` : null
+      ].filter((notice): notice is string => Boolean(notice));
+      appendToolResults(messages, outcomes, notices, Boolean(providerTools));
+
+      if (this.options.signal?.aborted) {
+        yield* this.finish(runId, "Stopped.", "done");
+        return;
+      }
+      if (rewrite.exhaustedPath) {
+        yield* this.finish(runId, `Stopped because the model kept rewriting ${rewrite.exhaustedPath} from scratch instead of editing it.`, "error");
+        return;
+      }
+      if (truncations >= 2) {
+        yield* this.finish(
+          runId,
+          "The model kept running out of output tokens mid-call. Raise PATCHPILOT_NUM_PREDICT, or ask for a smaller change.",
+          "error"
+        );
+        return;
+      }
+      if (protocolFailures >= 4) {
+        const problem = batch.find((planned) => planned.problem)?.problem ?? "unknown";
+        yield* this.finish(runId, `The model could not produce a usable tool call: ${problem}`, "error");
+        return;
+      }
+      if (this.options.shouldStopAfterStep?.()) {
+        yield* this.finish(runId, "Stopped after the current step.", "done");
+        return;
+      }
+    }
+  }
+
+  private async *finish(runId: string, message: string, workState: "done" | "error"): AsyncGenerator<AgentEvent> {
+    yield { type: "final", message, workState };
+    await this.options.sessionStore?.append(
+      workState === "done"
+        ? { type: "run.completed", runId, message, completedAt: new Date().toISOString() }
+        : { type: "run.failed", runId, message, failedAt: new Date().toISOString() }
+    );
+  }
+
+  private async workspaceSummary(): Promise<string> {
+    const cached = workspaceSummaries.get(this.conversation);
+    if (cached !== undefined) {
+      return cached;
+    }
+    const summary = await buildWorkspaceSummary(this.tools.root);
+    workspaceSummaries.set(this.conversation, summary);
+    return summary;
+  }
+
+  /**
+   * Keeps the conversation inside the window without touching it when there
+   * is room: every rewrite of earlier messages costs a full prompt re-read on
+   * a local runtime. Old tool output goes first; only when that is not enough
+   * is the older part of the conversation summarised by the model.
+   */
+  private async *manageContext(messages: ChatMessage[], runtimeLimit: number | null): AsyncGenerator<AgentEvent> {
+    const limitTokens = runtimeLimit ?? fallbackContextTokens;
+    const budget = { limitTokens, reserveTokens: Math.min(4096, Math.floor(limitTokens / 8)) };
+    let usage = measureContext(messages, budget, this.lastMeasured);
+    if (runtimeLimit) {
+      yield { type: "context", usedTokens: usage.usedTokens, limitTokens, ratio: usage.ratio, pressure: usage.pressure, workState: "inspecting" };
+    }
+    if (usage.ratio < 0.7) {
+      return;
     }
 
-    yield {
-      type: "final",
-      message: "Stopped after the thinking budget. The task is not finished yet.",
-      workState: "error"
+    const pruned = pruneToolResults(messages);
+    if (pruned.prunedCount > 0) {
+      messages.splice(0, messages.length, ...pruned.messages);
+      this.lastMeasured = null;
+      yield { type: "status", message: `pruned ${pruned.prunedCount} older tool results (~${pruned.prunedTokens} tokens)`, workState: "inspecting" };
+      usage = measureContext(messages, budget, null);
+    }
+    if (usage.ratio < 0.85) {
+      return;
+    }
+
+    const request = planCompaction(messages, { keepTailTokens: Math.floor(limitTokens * 0.25) });
+    if (request.stale.length === 0) {
+      return;
+    }
+    yield { type: "status", message: "compacting earlier conversation", workState: "inspecting" };
+    try {
+      const summary = await this.client.chat({
+        model: this.options.model,
+        messages: buildCompactionPrompt(request.stale),
+        thinking: "off",
+        signal: this.options.signal
+      });
+      messages.splice(0, messages.length, ...applyCompaction(request, stripTemplateTokens(summary.content)));
+      this.lastMeasured = null;
+    } catch (error) {
+      if (isAbortError(error, this.options.signal)) {
+        return;
+      }
+      // Without a summary the oldest exchanges are dropped instead; a run that
+      // loses early detail is better than one the runtime truncates silently.
+      messages.splice(0, messages.length, ...applyCompaction(request, "(earlier conversation was dropped to fit the context window)"));
+      this.lastMeasured = null;
+    }
+  }
+
+  /** Runs one batch: todos and subagents in the loop, everything else in the workspace. */
+  private async *executeBatch(
+    runId: string,
+    batch: PlannedCall[],
+    state: { todos: AgentTodoItem[]; subagentsEnabled: boolean }
+  ): AsyncGenerator<AgentEvent, { outcomes: CallOutcome[]; todos: AgentTodoItem[] }> {
+    let todos = state.todos;
+    const outcomes = new Map<string, CallOutcome>();
+    const workspaceRecords: Array<{ id: string; call: AgentToolCall; workState: AgentWorkState }> = [];
+
+    for (const planned of batch) {
+      if (planned.problem || (!planned.call && !planned.subagent)) {
+        outcomes.set(planned.id, { id: planned.id, tool: "update_todo", toolName: planned.name, ok: false, summary: planned.problem ?? "invalid call", content: planned.problem ?? "" });
+        continue;
+      }
+      if (planned.subagent) {
+        if (this.options.signal?.aborted) {
+          outcomes.set(planned.id, cancelledOutcome(planned));
+          continue;
+        }
+        yield { type: "status", message: `delegating to ${planned.subagent.type} subagent: ${planned.subagent.description}`, workState: "planning" };
+        const envelope = await this.runChildAgent(planned.subagent);
+        const summary = `${planned.subagent.type} subagent ${envelope.status}: ${planned.subagent.description}`;
+        yield {
+          type: "tool",
+          name: "subagent",
+          summary,
+          content: formatEnvelope(envelope),
+          ok: envelope.status === "ok",
+          workState: "planning",
+          category: "state",
+          metadata: { subagent: planned.subagent.type, transcript: envelope.transcript, steps: envelope.steps, toolCalls: envelope.toolCalls, durationMs: envelope.durationMs }
+        };
+        outcomes.set(planned.id, { id: planned.id, tool: "subagent", toolName: planned.name, ok: envelope.status === "ok", summary, content: formatEnvelope(envelope), category: "state" });
+        continue;
+      }
+      const call = planned.call;
+      if (!call) {
+        continue;
+      }
+      if (call.name === "update_todo") {
+        todos = normalizeTodoItems(call.arguments, todos);
+        const summary = summarizeTodos(todos);
+        yield { type: "todo", items: todos, summary, workState: "planning" };
+        await this.options.sessionStore?.append({ type: "todo.updated", runId, items: todos, summary, createdAt: new Date().toISOString() });
+        outcomes.set(planned.id, { id: planned.id, tool: "update_todo", toolName: planned.name, ok: true, summary, content: summary, category: "state" });
+        continue;
+      }
+      workspaceRecords.push({ id: planned.id, call, workState: workStateForTool(call.name) });
+    }
+
+    for (const record of workspaceRecords) {
+      await this.options.sessionStore?.append({
+        type: "tool.requested",
+        runId,
+        toolCallId: record.id,
+        tool: record.call.name,
+        arguments: record.call.arguments,
+        workState: record.workState,
+        createdAt: new Date().toISOString()
+      });
+    }
+    const results = this.options.signal?.aborted ? [] : await executeToolCallsWithReadParallelism(this.tools, workspaceRecords);
+    for (const result of results) {
+      const call = workspaceRecords.find((record) => record.id === result.toolCallId)?.call;
+      if (result.approval) {
+        yield { type: "approval", request: result.approval.request, decision: result.approval.decision, workState: "waiting_approval" };
+        await this.options.sessionStore?.append({ type: "approval.requested", runId, request: result.approval.request, decision: result.approval.decision, createdAt: new Date().toISOString() });
+      }
+      const workState = result.ok ? result.workState : "error";
+      yield {
+        type: "tool",
+        name: result.tool,
+        summary: result.summary,
+        ok: result.ok,
+        workState,
+        toolCallId: result.toolCallId,
+        category: result.category,
+        preview: result.preview,
+        arguments: call?.arguments,
+        content: result.ok ? undefined : result.content,
+        metadata: result.metadata
+      };
+      await this.options.sessionStore?.append({
+        type: "tool.completed",
+        runId,
+        toolCallId: result.toolCallId,
+        tool: result.tool,
+        ok: result.ok,
+        summary: result.summary,
+        workState,
+        createdAt: new Date().toISOString()
+      });
+      const planned = batch.find((entry) => entry.id === result.toolCallId);
+      outcomes.set(result.toolCallId, {
+        id: result.toolCallId,
+        tool: result.tool,
+        toolName: planned?.name ?? result.tool,
+        ok: result.ok,
+        summary: result.summary,
+        content: result.content,
+        category: result.category,
+        metadata: result.metadata
+      });
+    }
+
+    return {
+      todos,
+      outcomes: batch.map((planned) => outcomes.get(planned.id) ?? cancelledOutcome(planned))
     };
-    await this.options.sessionStore?.append({
-      type: "run.failed",
-      runId,
-      message: "Stopped after the thinking budget.",
-      failedAt: new Date().toISOString()
+  }
+
+  /**
+   * Runs the repair ladder over one batch of native calls. Every call keeps an
+   * id, so a call that cannot run is answered with guidance in its own result
+   * slot and the rest of the batch still executes.
+   */
+  private planNativeCalls(rawCalls: RawToolCall[], loopBreaker: ToolCallLoopBreaker): PlannedCall[] {
+    return rawCalls.slice(0, MAX_TOOL_CALLS_PER_RESPONSE).map((rawCall, index) => {
+      const fallbackName = typeof rawCall.name === "string" && rawCall.name ? rawCall.name : "unknown";
+      const fallbackArguments = isRecord(rawCall.arguments) ? rawCall.arguments : {};
+      const id = `call_${Date.now().toString(36)}_${index}`;
+      const repaired = repairToolCall(rawCall);
+      if ("message" in repaired) {
+        return { id, name: fallbackName, arguments: fallbackArguments, problem: repaired.message, truncated: Boolean(repaired.truncated) };
+      }
+      const looping = loopBreaker.check(repaired.name, repaired.arguments);
+      if (looping) {
+        return { id, name: repaired.name, arguments: repaired.arguments, problem: looping.message };
+      }
+      const note = repaired.repairs.length > 0 ? `repaired ${repaired.name} call: ${repaired.repairs.join(", ")}` : undefined;
+      // Subagents are dispatched by the loop, not by the workspace.
+      if (repaired.name === "task") {
+        return {
+          id,
+          name: repaired.name,
+          arguments: repaired.arguments,
+          note,
+          subagent: {
+            type: repaired.arguments.subagent_type === "general" ? "general" : "explore",
+            description: String(repaired.arguments.description ?? "subtask"),
+            prompt: String(repaired.arguments.prompt ?? "")
+          }
+        };
+      }
+      return { id, name: repaired.name, arguments: repaired.arguments, note, call: normalizeToolCall(toWorkspaceCall(repaired.name, repaired.arguments)) };
     });
   }
 
@@ -843,61 +634,6 @@ export class AgentRunner {
     }
 
     return null;
-  }
-
-  /**
-   * Runs the repair ladder over one batch of native calls. Calls that survive
-   * are executed; calls that do not come back as guidance the model can act on
-   * in the same turn. A batch is never abandoned because one call was bad.
-   */
-  private resolveNativeToolCalls(
-    rawCalls: RawToolCall[],
-    loopBreaker: ToolCallLoopBreaker
-  ): { toolCalls: AgentToolCall[]; subagents: SubagentRequest[]; problems: string[]; notes: string[]; truncatedCalls: number } {
-    const toolCalls: AgentToolCall[] = [];
-    const subagents: SubagentRequest[] = [];
-    const problems: string[] = [];
-    const notes: string[] = [];
-    let truncatedCalls = 0;
-
-    for (const rawCall of rawCalls.slice(0, MAX_TOOL_CALLS_PER_RESPONSE)) {
-      const repaired = repairToolCall(rawCall);
-      if ("message" in repaired) {
-        problems.push(repaired.message);
-        // A truncated call cannot be fixed by retrying it, so count it against
-        // the loop budget immediately rather than letting the model regenerate
-        // the same oversized payload until the step budget runs out.
-        if (repaired.truncated) {
-          truncatedCalls += 1;
-        }
-        continue;
-      }
-
-      const looping = loopBreaker.check(repaired.name, repaired.arguments);
-      if (looping) {
-        problems.push(looping.message);
-        continue;
-      }
-
-      if (repaired.repairs.length > 0) {
-        notes.push(`repaired ${repaired.name} call: ${repaired.repairs.join(", ")}`);
-      }
-
-      // Subagents are dispatched by the loop, not by the workspace, so they
-      // never reach the tool executor.
-      if (repaired.name === "task") {
-        subagents.push({
-          type: repaired.arguments.subagent_type === "general" ? "general" : "explore",
-          description: String(repaired.arguments.description ?? "subtask"),
-          prompt: String(repaired.arguments.prompt ?? "")
-        });
-        continue;
-      }
-
-      toolCalls.push(toWorkspaceCall(repaired.name, repaired.arguments));
-    }
-
-    return { toolCalls, subagents, problems, notes, truncatedCalls };
   }
 
   /**
@@ -1087,6 +823,108 @@ function firstNonEmpty<T>(...candidates: T[][]): T[] {
 /** How often streaming progress is reported, in milliseconds. */
 const streamProgressIntervalMs = 120;
 
+/** Used for compaction decisions when the runtime does not report its window. */
+const fallbackContextTokens = 32_768;
+
+/** Computed once per conversation: it is part of the cached prompt prefix. */
+const workspaceSummaries = new WeakMap<ChatMessage[], string>();
+
+type PlannedCall = {
+  id: string;
+  /** The name and arguments as the model sent them, for history. */
+  name: string;
+  arguments: Record<string, unknown>;
+  call?: AgentToolCall;
+  subagent?: SubagentRequest;
+  problem?: string;
+  truncated?: boolean;
+  note?: string;
+};
+
+type CallOutcome = {
+  id: string;
+  tool: AgentEventToolName;
+  /** The surface name the model used, so the result matches its call. */
+  toolName: string;
+  ok: boolean;
+  summary: string;
+  content: string;
+  category?: ToolCategory;
+  metadata?: Record<string, unknown>;
+};
+
+function cancelledOutcome(planned: PlannedCall): CallOutcome {
+  return { id: planned.id, tool: planned.call?.name ?? "update_todo", toolName: planned.name, ok: false, summary: "cancelled", content: "Cancelled by the user before it ran." };
+}
+
+/**
+ * A run stopped mid-batch can leave an assistant turn whose calls never got
+ * results. Most chat templates reject that history outright, so each missing
+ * result is filled in before the next request.
+ */
+export function sealDanglingToolCalls(messages: ChatMessage[]): void {
+  for (let index = 0; index < messages.length; index += 1) {
+    const message = messages[index];
+    if (message?.role !== "assistant" || !message.toolCalls?.length) {
+      continue;
+    }
+    const answered = new Set<string>();
+    let cursor = index + 1;
+    while (messages[cursor]?.role === "tool") {
+      answered.add(messages[cursor]?.toolCallId ?? "");
+      cursor += 1;
+    }
+    const missing = message.toolCalls
+      .filter((call) => !answered.has(call.id))
+      .map((call): ChatMessage => ({ role: "tool", toolCallId: call.id, toolName: call.name, content: "cancelled: the user stopped the run before this call ran" }));
+    if (missing.length > 0) {
+      messages.splice(cursor, 0, ...missing);
+      index = cursor + missing.length - 1;
+    }
+  }
+}
+
+export function withTurnContext(task: string, context: string): string {
+  return context.trim() ? `${task}\n\n<context>\n${context.trim()}\n</context>` : task;
+}
+
+/**
+ * Native runs answer each call in its own tool message, matched by id. The
+ * envelope protocol has no such slot, so its results travel as one user turn.
+ */
+function appendToolResults(messages: ChatMessage[], outcomes: CallOutcome[], notices: string[], native: boolean): void {
+  if (!native) {
+    const body = formatToolResultsForPrompt(outcomes);
+    messages.push({ role: "user", content: notices.length > 0 ? `${body}\n\n${notices.join("\n")}` : body });
+    return;
+  }
+  outcomes.forEach((outcome, index) => {
+    const isLast = index === outcomes.length - 1;
+    messages.push({
+      role: "tool",
+      toolCallId: outcome.id,
+      toolName: outcome.toolName,
+      content: [formatToolResultContent(outcome), ...(isLast ? notices : [])].join("\n\n")
+    });
+  });
+}
+
+/** First line is the summary, so pruning can keep it and drop the body. */
+export function formatToolResultContent(outcome: Pick<CallOutcome, "ok" | "summary" | "content" | "tool">): string {
+  const limit = outcome.tool === "read_file" || outcome.tool === "read_range" ? 12_000 : 6000;
+  const head = outcome.ok ? outcome.summary : `Error: ${outcome.summary}`;
+  const body = outcome.content.trim() && outcome.content.trim() !== outcome.summary.trim() ? clipPromptValue(outcome.content, limit) : "";
+  return body ? `${head}\n${body}` : head;
+}
+
+function parseEnvelope(rawResponse: string): ReturnType<typeof parseAgentResponse> | null {
+  try {
+    return parseAgentResponse(rawResponse);
+  } catch {
+    return recoverMalformedToolResponse(rawResponse);
+  }
+}
+
 export function recoverMalformedToolResponse(rawContent: string): { action: "tools"; message: string; tool_calls: Array<{ name: "write_file"; arguments: { path: string; content: string } }> } | null {
   const targetPath = readWriteFileToolPath(rawContent);
   if (!targetPath) {
@@ -1134,227 +972,81 @@ function readWriteFileToolPath(rawContent: string): string | null {
   );
 }
 
-function shouldUseSubagents(task: string): boolean {
-  const normalizedTask = task.toLowerCase();
-  if (normalizedTask.trim().split(/\s+/).filter(Boolean).length < 2) {
-    return false;
-  }
 
-  return /\b(repo|repository|projekt|project|code|file|datei|test|build|fix|debug|implement|refactor|review|analyze|analyse|analysiere|prüf|pruef|bewerte|architektur|erklär|erklaer|such|find|install|commit|diff|patch|src|readme|sprache|programmiersprache|stack|framework|dependencies|abhängigkeiten|abhaengigkeiten|typescript|javascript|node|swift|python|c)\b/.test(
-    normalizedTask
-  );
-}
 
-export function shouldExpectTodos(task: string, ultramaxx = false): boolean {
-  if (ultramaxx) {
-    return true;
-  }
 
-  const words = task.trim().split(/\s+/).filter(Boolean).length;
-  return (
-    words > 8 &&
-    /\b(implement|refactor|fix|debug|add|build|migrate|rewrite|hardening|verify|test|release|umsetz|reparier|baue|füge|fuege|prüf|pruef)\b/i.test(task)
-  );
-}
-
-export function isTodoOnlyFinalResponse(message: string): boolean {
-  const normalized = message.trim().toLowerCase().replace(/\s+/g, " ");
-  if (!normalized) {
-    return true;
-  }
-
-  const mentionsTodoState = /\b(update_todo|todo(?:s|-list| list|-liste| liste)?|checklist|aufgabenliste)\b/i.test(normalized);
-  const mentionsProgressOnly = /\b(updated|aktualisiert|completed|complete|done|erledigt|abgeschlossen|marked|gepflegt)\b/i.test(normalized);
-  const defersToEarlierStep =
-    /\b(previous|prior|earlier|above|already|before)\b/i.test(normalized) ||
-    /\b(vorherig|vorherigen|vorher|oben|zuvor|bereits|letzten schritt)\b/i.test(normalized);
-  const mentionsDeferredAnswer = /\b(summary|overview|answer|result|findings|zusammenfassung|überblick|ueberblick|antwort|ergebnis)\b/i.test(normalized);
-  const hasConcreteOutcome = /\b(fixed|implemented|changed|added|removed|verified|tested|ran|created|gefixt|implementiert|geändert|geaendert|ergänzt|ergaenzt|verifiziert|getestet)\b|(?:^|\s)(?:src|tests|docs)\//i.test(
-    normalized
-  );
-  const wordCount = normalized.split(/\s+/).filter(Boolean).length;
-
-  if (mentionsTodoState && defersToEarlierStep) {
-    return true;
-  }
-
-  if (mentionsTodoState && mentionsProgressOnly && !hasConcreteOutcome && wordCount <= 18) {
-    return true;
-  }
-
-  if (mentionsDeferredAnswer && defersToEarlierStep && !hasConcreteOutcome && wordCount <= 24) {
-    return true;
-  }
-
-  return /^(done|complete|completed|erledigt|fertig|ok)[.! ]*$/i.test(normalized);
-}
-
+/**
+ * Kept short and stable on purpose. Small models follow a few clear rules far
+ * better than many, and the prompt is the cached prefix of every request: any
+ * byte that changes between turns forces the runtime to re-read all of it.
+ */
 function buildSystemPrompt(
   workspaceRoot: string,
-  subagentContext: string,
   workspaceSummary: string,
-  resumeContext: string,
-  permissions: {
-    provider: ModelProvider;
+  settings: {
     mode: "plan" | "build" | "bypass";
     allowWrite: boolean;
     allowShell: boolean;
     hasApprovalHandler: boolean;
-  },
-  experimental: {
-    allowExternalFileAnalysis: boolean;
     memoryEnabled: boolean;
-    allowShellMetacharacters: boolean;
-    ultramaxx: boolean;
-    expectsTodos: boolean;
     /** Native tool calling replaces the JSON envelope protocol section. */
     nativeTools: boolean;
   }
 ): string {
-  const workspaceLabel = path.basename(workspaceRoot) || "workspace";
-  const writePolicy = permissions.allowWrite
-    ? "write tools bypass approval for this run"
-    : permissions.hasApprovalHandler && permissions.mode === "build"
-      ? "write tools require interactive approval"
-      : "write tools are unavailable";
-  const shellPolicy = permissions.allowShell
-    ? "shell and test tools bypass approval for this run"
-    : permissions.hasApprovalHandler && permissions.mode === "build"
-      ? "shell and test tools require interactive approval"
-      : "shell and test tools are unavailable";
-  const bypassPolicy = permissions.allowWrite && permissions.allowShell
-    ? "Build+bypass mode may run write, script, test, or shell tools without per-tool approval. Keep actions narrow and avoid broad destructive commands."
-    : "Only explicitly enabled permission groups bypass approval. Unavailable tool groups stay blocked.";
+  const modeLine =
+    settings.mode === "plan"
+      ? "Mode: plan. You can only read and search. Investigate, then answer with findings or a concrete plan."
+      : settings.mode === "bypass" || (settings.allowWrite && settings.allowShell)
+        ? "Mode: build with bypass. Changes and commands run without approval, so keep them narrow and never destructive."
+        : settings.hasApprovalHandler
+          ? "Mode: build. Changes and commands may ask the user for approval; just make the call, the harness handles approval."
+          : "Mode: build. Only the tools you were given are available.";
+
   return [
-    "You are PatchPilot, a local coding agent running inside a terminal TUI.",
-    "You help inspect, edit, test, and explain code inside one workspace.",
-    `Runtime OS: ${type()} ${release()} (${platform()}). Use OS-appropriate shell commands and paths.`,
-    `Workspace root: ${workspaceRoot}`,
-    `Workspace label: ${workspaceLabel}`,
-    `Execution mode: ${permissions.mode}.`,
-    `Permission policy: ${writePolicy}; ${shellPolicy}.`,
-    permissions.mode === "plan"
-      ? "Plan mode is read-only: inspect files, explain findings, and return an implementation plan. Do not call write_file, apply_patch, run_script, run_tests, or run_shell."
-      : permissions.mode === "bypass"
-        ? bypassPolicy
-        : "Build mode may request write, script, test, or shell tools when necessary. Prefer focused tool calls and keep risky actions easy to approve.",
-    `All tool paths are relative to the workspace root. If the workspace is named "${workspaceLabel}", do not prefix paths with "${workspaceLabel}/". Use "." for the workspace root.`,
-    "Treat short questions about this project, its language, stack, quality, architecture, dependencies, tests, or files as workspace questions.",
-    "For greetings, small talk, or clearly non-workspace chat, answer normally without tool calls.",
-    "For ambiguous pronouns like this project or it, assume the current workspace unless the user points elsewhere.",
-    "If you ask the user a question, use a final response and do not call tools.",
-    "Do not invent repository facts. If you have not read a file, say you have not verified it.",
-    "Never pass placeholder examples like relative/path, path/to/file, or <path> as tool arguments.",
-    "For repository summaries, inspect README.md, package.json, tests, docs, and top-level source files before answering.",
-    "For implementation tasks, first inspect the narrowest relevant files, then edit only what is needed.",
-    experimental.expectsTodos
-      ? "This task requires proactive todos. Your FIRST tool call MUST be update_todo with a concrete 2-6 item plan before reading or editing. After each completed step, call update_todo to mark progress. Exactly one item may be in_progress."
-      : "If a task needs more than one tool call or touches more than one file, your FIRST tool call MUST be update_todo with a concrete 2-6 item plan. Tiny one-file edits, single-file reads, and direct answers do not need todos.",
-    "Todo example required: user asks to fix a provider bug and run tests -> first call update_todo, then inspect, edit, verify, and mark items completed.",
-    "Todo example not required: user asks what package manager this repo uses -> inspect package files or answer directly.",
-    experimental.ultramaxx
-      ? "ULTRAMAXX mode is active: use xhigh care, keep todos mandatory, verify after writes before final, and do not skip self-checks."
-      : "",
-    experimental.expectsTodos
-      ? "Final answers must contain the actual outcome: findings, changes made, verification run, and remaining risks when relevant. Never use final just to say the todo list was updated or that the answer is in a previous step."
-      : "",
-    "When diagnosing a failure, form a concrete hypothesis, gather targeted evidence with tools, then fix the smallest cause.",
-    experimental.allowExternalFileAnalysis
-      ? "Experimental file analysis is enabled: inspect_document may inspect supported absolute paths outside the workspace when the user provides them."
-      : "Experimental file analysis is disabled: inspect_document is limited to the workspace.",
-    experimental.memoryEnabled
-      ? "Experimental memory is enabled: use memory_search for relevant durable context and memory_remember when the user asks you to remember something or states durable project guidance."
-      : "Experimental memory is disabled.",
-    experimental.allowShellMetacharacters
-      ? "Experimental shell metacharacters are enabled: run_shell may use pipes, &&, and ;. Redirects, shell expansion, background jobs, OR chains, and multiline commands still require explicit approval even in bypass."
-      : "Experimental shell metacharacters are disabled: run_shell may use simple commands and pipes only.",
-    "You can reach the web with the fetch_url tool. Never claim you cannot access the internet; if you need a specific page, call fetch_url with a public http(s) URL.",
-    workspaceSummary ? ["", "Workspace context:", workspaceSummary].join("\n") : "",
-    resumeContext
-      ? [
-          "",
-          "Resumed session context:",
-          resumeContext,
-          "",
-          "Use this as compact historical context. Re-read files before making claims about current workspace contents."
-        ].join("\n")
-      : "",
-    subagentContext
-      ? [
-          "",
-          "Advisory subagent context:",
-          subagentContext,
-          "",
-          "Use this guidance as a starting point, but verify with tools before changing code."
-        ].join("\n")
-      : "",
+    "You are PatchPilot, a coding agent working in the user's terminal on one workspace.",
+    `Workspace root: ${workspaceRoot}. All paths are relative to it.`,
+    `OS: ${type()} ${release()} (${platform()}).`,
+    modeLine,
     "",
-    // Native tool calling: the runtime enforces the shape, so the prompt only
-    // has to carry intent. Repeating a JSON protocol alongside real tools makes
-    // some models describe a call in prose instead of emitting one.
-    ...(experimental.nativeTools
+    "How to work:",
+    "- Do the task. When the user asks you to create, change, or run something, do it with tools instead of describing it or asking for permission.",
+    "- The conversation is continuous: \"it\", \"the file\", \"that\" refer to what came earlier in this conversation. Only ask a question when the request is genuinely ambiguous.",
+    "- Read a file before you edit it. Prefer edit for changes to existing files; use write for new files.",
+    "- Check your work when it can be checked (tests, build, running the script).",
+    "- Never invent facts about the code. If you have not read it, read it.",
+    "- For a task with several steps, keep a short todo list and update it as you go.",
+    settings.memoryEnabled ? "- Use memory tools for durable project notes when the user asks you to remember something." : "",
+    "- When you are done, reply in a few plain sentences: what you did and anything left open.",
+    "",
+    ...(settings.nativeTools
       ? [
-          "Use the provided tools to do the work. Call a tool whenever you need to read, search, change, or run something.",
-          "Do not describe a tool call in prose or in a code block — actually call the tool.",
-          "You may call several independent tools at once. Read a file before editing it.",
-          "Never repeat a tool call that just failed with the same arguments. Change the arguments or try a different approach.",
-          "Answer in plain prose only when the work is done or you genuinely cannot proceed.",
-          "Keep the todo list current: exactly one item in_progress, finished items completed.",
-          "Use bash for git, tests and scripts. Prefer read, glob and grep for reading and searching — they are faster and need no approval."
+          "Call tools through the tool interface. Never write a tool call as text or in a code block.",
+          "You may call several independent tools at once. If a call fails, read the error and change the call rather than repeating it."
         ]
-      : [
-    "Return only JSON. Do not use Markdown outside JSON.",
-    "Return exactly one JSON object. Never return a JSON array.",
+      : envelopeProtocol(settings.memoryEnabled)),
+    workspaceSummary ? ["", "Project notes:", workspaceSummary].join("\n") : ""
+  ]
+    .filter((line, index, lines) => line !== "" || lines[index - 1] !== "")
+    .join("\n");
+}
+
+/** For runtimes without tool calling: the same tools, spoken as JSON. */
+function envelopeProtocol(memoryEnabled: boolean): string[] {
+  return [
+    "Reply with exactly one JSON object and nothing else.",
+    "To act: {\"action\":\"tools\",\"message\":\"short reason\",\"tool_calls\":[{\"name\":\"list_files\",\"arguments\":{\"path\":\".\"}}]}",
+    "When done: {\"action\":\"final\",\"message\":\"your answer\"}",
     "",
-    "When you need context or want to act, return:",
-    "{\"action\":\"tools\",\"message\":\"short reason\",\"tool_calls\":[{\"name\":\"list_files\",\"arguments\":{\"path\":\".\"}}]}",
-    "",
-    "When the task is complete, return:",
-    "{\"action\":\"final\",\"message\":\"short useful answer\"}",
-    "",
-    "Available tools:",
-    "- update_todo: {\"items\":[{\"id\":\"inspect\",\"content\":\"Inspect relevant files\",\"status\":\"in_progress\"},{\"id\":\"verify\",\"content\":\"Run checks\",\"status\":\"pending\"}]} to maintain the visible task checklist. For multi-step implementation work, call this before and after meaningful task changes.",
-    "- list_files: {\"path\":\".\"}",
-    "- find_files: {\"query\":\"agent\",\"limit\":80} for matching workspace file paths without reading file contents",
-    "- read_file: {\"path\":\"src/index.ts\"}",
-    "- read_range: {\"path\":\"src/index.ts\",\"start\":1,\"end\":80}",
-    "- file_info: {\"path\":\"src/index.ts\"}",
-    "- search_text: {\"query\":\"functionName\"}",
-    "- fetch_url: {\"url\":\"https://example.com/page\",\"max_chars\":20000} to fetch a public web page or HTTP API and read it as text. Keyless and available to every model. Pass a plain URL (no Markdown link syntax). Network access needs approval in build mode and is blocked in plan mode; private/loopback hosts are blocked and redirects are not auto-followed.",
-    "- inspect_document: {\"path\":\"docs/spec.pdf\",\"mode\":\"auto\"} for pdf, docx, images, and text/code files. Use mode \"local\" or \"ocr\" only when the user explicitly asks for local text/OCR extraction.",
-    ...(experimental.memoryEnabled
-      ? [
-          "- memory_search: {\"query\":\"provider setup\",\"limit\":5}",
-          "- memory_remember: {\"content\":\"durable note\",\"tags\":[\"project\"]}"
-        ]
-      : []),
-    "- git_status: {} for current branch and dirty files",
-    "- git_diff: {\"path\":\"src/index.ts\"} or {} for all current changes",
-    "- git_log: {\"limit\":8} for recent commits without shell access",
-    "- git_show: {\"revision\":\"HEAD\",\"path\":\"src/index.ts\"} or {\"revision\":\"HEAD\"} for a compact revision summary",
-    "- list_changed_files: {}",
-    "- list_scripts: {} for package manager scripts from package.json",
-    "- repo_overview: {} for package metadata, Git state, and top-level files",
-    "- test_list: {} for likely tests and test-related scripts without running them",
-    "- dependency_tree: {} for top-level package dependencies",
-    "- write_file: {\"path\":\"test2/test.txt\",\"content\":\"full file content\"} for new files or intentional full-file replacement",
-    "- edit_file: {\"path\":\"src/index.ts\",\"find\":\"old unique text\",\"replace\":\"new text\"} or {\"path\":\"src/index.ts\",\"startLine\":10,\"endLine\":12,\"expected\":\"current lines\",\"replacement\":\"new lines\"} for existing files. Include expected with line-range edits when you have read the target lines.",
-    "- create_pdf: {\"path\":\"docs/summary.pdf\",\"title\":\"Summary\",\"content\":\"plain text\"}",
-    "- create_docx: {\"path\":\"docs/summary.docx\",\"title\":\"Summary\",\"content\":\"plain text\"}",
-    "- apply_patch: {\"patch\":\"unified git patch\"}",
-    "- run_script: {\"script\":\"test\"}",
-    "- run_tests: {}",
-    "- run_shell: {\"command\":\"single simple command to run in the workspace\"}"
-        ]),
-    "",
-    "Act like a coding agent. For simple create/edit/run requests, use tools directly instead of over-warning.",
-    "Do not call search_text with an empty query. Use list_files {\"path\":\".\"} to inspect a directory.",
-    "Prefer reading before risky edits. For existing files, prefer edit_file or apply_patch over full-file write_file.",
-    "Batch small related tool calls in one response when it helps avoid extra thinking steps.",
-    "Keep update_todo current: mark exactly what you are doing as in_progress and completed tasks as completed.",
-    "In final answers, separate verified facts from remaining risks.",
-    "Keep tool requests and final answers compact."
-  ].join("\n");
+    "Tools:",
+    "- update_todo {\"items\":[{\"id\":\"a\",\"content\":\"...\",\"status\":\"in_progress\"}]}",
+    "- list_files {\"path\":\".\"} · find_files {\"query\":\"agent\"} · search_text {\"query\":\"functionName\"}",
+    "- read_file {\"path\":\"src/index.ts\"} · read_range {\"path\":\"src/index.ts\",\"start\":1,\"end\":80}",
+    "- write_file {\"path\":\"notes.txt\",\"content\":\"full file content\"} for new files",
+    "- edit_file {\"path\":\"src/index.ts\",\"find\":\"old unique text\",\"replace\":\"new text\"}",
+    "- run_shell {\"command\":\"npm test\"} · git_status {} · git_diff {}",
+    "- fetch_url {\"url\":\"https://example.com\"}",
+    ...(memoryEnabled ? ["- memory_search {\"query\":\"...\"} · memory_remember {\"content\":\"...\"}"] : [])
+  ];
 }
 
 /** Unwraps a narrated protocol envelope so it never reaches the user raw. */
@@ -1402,17 +1094,7 @@ function isAbortError(error: unknown, signal?: AbortSignal): boolean {
   return false;
 }
 
-function looksLikeClarification(message: string): boolean {
-  const normalizedMessage = message.trim().toLowerCase();
-  return (
-    normalizedMessage.endsWith("?") &&
-    /\b(what|which|please provide|would you like|do you want|can you specify|welche|was genau|bitte)\b/.test(normalizedMessage)
-  );
-}
 
-export function shouldStopAfterEmptyToolBatches(emptyToolBatches: number): boolean {
-  return emptyToolBatches >= 2;
-}
 
 /** An explicit delegation request should work without a hidden /agents toggle. */
 export function shouldEnableSubagents(task: string, configured: boolean): boolean {
@@ -1522,15 +1204,6 @@ function normalizeToolCall(toolCall: Parameters<WorkspaceTools["execute"]>[0]): 
   return toolCall;
 }
 
-function splitTodoToolCalls(toolCalls: Parameters<WorkspaceTools["execute"]>[0][]): {
-  todoCalls: Parameters<WorkspaceTools["execute"]>[0][];
-  workspaceCalls: Parameters<WorkspaceTools["execute"]>[0][];
-} {
-  return {
-    todoCalls: toolCalls.filter((toolCall) => toolCall.name === "update_todo"),
-    workspaceCalls: toolCalls.filter((toolCall) => toolCall.name !== "update_todo")
-  };
-}
 
 export function normalizeTodoItems(argumentsValue: Record<string, unknown>, existingItems: AgentTodoItem[] = []): AgentTodoItem[] {
   const rawItems = Array.isArray(argumentsValue.items) ? argumentsValue.items : Array.isArray(argumentsValue.todos) ? argumentsValue.todos : [];
@@ -1571,9 +1244,6 @@ function summarizeTodos(items: AgentTodoItem[]): string {
   return active ? `${completed}/${items.length} done, working on ${active.content}` : `${completed}/${items.length} todos done`;
 }
 
-function hasOpenTodos(items: AgentTodoItem[]): boolean {
-  return items.some((item) => item.status === "pending" || item.status === "in_progress");
-}
 
 function dedupeTodoItems(items: AgentTodoItem[]): AgentTodoItem[] {
   const seen = new Set<string>();
@@ -1654,9 +1324,6 @@ function isParallelSafeToolCall(toolCall: WorkspaceToolCallRecord): boolean {
   return spec.sideEffects === "none" && spec.permission === "none" && spec.category !== "state";
 }
 
-function isWriteToolResult(toolResult: { ok: boolean; category?: ToolCategory; tool: AgentEventToolName }): boolean {
-  return toolResult.ok && (toolResult.category === "write" || (toolResult.tool !== "subagent" && getToolSpec(toolResult.tool).sideEffects === "write"));
-}
 
 function isVerificationToolResult(toolResult: { ok: boolean; category?: ToolCategory; tool: AgentEventToolName }): boolean {
   return toolResult.ok && (toolResult.category === "test" || toolResult.category === "shell" || toolResult.tool === "git_diff");
@@ -1789,28 +1456,25 @@ function createToolCallId(tool: AgentEventToolName): string {
   return `${tool}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+/**
+ * Only what the model cannot cheaply find itself: the project's own agent
+ * instructions and the top-level layout. Everything else it reads on demand.
+ */
 async function buildWorkspaceSummary(workspaceRoot: string): Promise<string> {
-  const [patchPilotInstructions, packageJson, tsconfig, readme, productContext, architecture, commands] = await Promise.all([
-    readWorkspaceFile(workspaceRoot, "PATCHPILOT.md", 4000),
-    readWorkspaceFile(workspaceRoot, "package.json", 4000),
-    readWorkspaceFile(workspaceRoot, "tsconfig.json", 1600),
-    readWorkspaceFile(workspaceRoot, "README.md", 3000),
-    readWorkspaceFile(workspaceRoot, "docs/product-context.md", 4000),
-    readWorkspaceFile(workspaceRoot, "docs/architecture.md", 2200),
-    readWorkspaceFile(workspaceRoot, "src/tui/commands.ts", 2400)
-  ]);
+  const { readdir } = await import("node:fs/promises");
+  const instructionFiles = ["PATCHPILOT.md", "AGENTS.md", "CLAUDE.md"];
+  const instructions = (await Promise.all(instructionFiles.map((file) => readWorkspaceFile(workspaceRoot, file, 6000))))
+    .map((content, index) => (content ? `${instructionFiles[index]}:\n${content}` : ""))
+    .find(Boolean);
+  const entries = await readdir(workspaceRoot, { withFileTypes: true }).catch(() => []);
+  const layout = entries
+    .filter((entry) => !entry.name.startsWith(".") && entry.name !== "node_modules")
+    .map((entry) => (entry.isDirectory() ? `${entry.name}/` : entry.name))
+    .sort()
+    .slice(0, 60)
+    .join("  ");
 
-  return [
-    patchPilotInstructions ? `PATCHPILOT.md instructions:\n${patchPilotInstructions}` : "",
-    productContext ? `PatchPilot product context:\n${productContext}` : "",
-    packageJson ? `package.json:\n${packageJson}` : "",
-    tsconfig ? `tsconfig.json:\n${tsconfig}` : "",
-    readme ? `README excerpt:\n${readme}` : "",
-    architecture ? `Architecture excerpt:\n${architecture}` : "",
-    commands ? `TUI command definitions excerpt:\n${commands}` : ""
-  ]
-    .filter(Boolean)
-    .join("\n\n");
+  return [instructions ?? "", layout ? `Top-level files: ${layout}` : ""].filter(Boolean).join("\n\n");
 }
 
 async function readWorkspaceFile(workspaceRoot: string, relativePath: string, maxLength: number): Promise<string> {
@@ -1825,52 +1489,8 @@ async function readWorkspaceFile(workspaceRoot: string, relativePath: string, ma
   return clipPromptValue(content.trim(), maxLength);
 }
 
-function resolveMaxSteps(task: string, configuredMaxSteps: number, thinkingMode: AgentRunnerOptions["thinkingMode"], ultramaxx = false): number {
-  if (thinkingMode !== "adaptive") {
-    return Math.max(2, configuredMaxSteps);
-  }
 
-  const words = task.trim().split(/\s+/).filter(Boolean).length;
-  const looksComplex = shouldUseSubagents(task) || words > 18 || /\b(implement|refactor|debug|fix|review|architektur|performance|pipeline|context|memory|provider)\b/i.test(task);
-  if (ultramaxx) {
-    return Math.max(40, configuredMaxSteps);
-  }
-  const adaptiveSteps = looksComplex ? Math.max(configuredMaxSteps, 12) : Math.min(configuredMaxSteps, 5);
-  return Math.max(3, Math.min(20, adaptiveSteps));
-}
 
-function shouldExtendAdaptiveRun(
-  task: string,
-  toolResults: Array<{
-    ok: boolean;
-    summary: string;
-    tool?: AgentEventToolName;
-    category?: ToolCategory;
-    metadata?: Record<string, unknown>;
-  }>,
-  currentMaxSteps: number,
-  ceiling = 32
-): boolean {
-  if (currentMaxSteps >= ceiling) {
-    return false;
-  }
-
-  const hasUsefulProgress = toolResults.some((result) =>
-    result.ok &&
-    (result.category === "write" ||
-      result.category === "test" ||
-      result.category === "shell" ||
-      result.tool === "git_diff" ||
-      (result.tool === "update_todo" && todoMetadataHasCompletedItem(result.metadata)))
-  );
-  const hasRecoverableFailure = toolResults.some((result) => !result.ok && /not found|missing|requires|denied|failed|unreadable/i.test(result.summary));
-  return hasUsefulProgress || hasRecoverableFailure || (shouldUseSubagents(task) && hasUsefulProgress);
-}
-
-function todoMetadataHasCompletedItem(metadata: Record<string, unknown> | undefined): boolean {
-  const items = Array.isArray(metadata?.items) ? metadata.items : [];
-  return items.some((item) => isRecord(item) && item.status === "completed");
-}
 
 function clipPromptValue(value: string, maxLength: number): string {
   if (value.length <= maxLength) {

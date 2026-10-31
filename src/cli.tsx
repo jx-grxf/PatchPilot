@@ -163,7 +163,7 @@ program
   .option("--provider <name>", "Model provider: ollama, or local-openai for any OpenAI-compatible local server (LM Studio, MLX, llama.cpp, vLLM).", defaultProvider)
   .option("--model <name>", "Model name", defaultModel)
   .option("--ollama-url <url>", "Ollama base URL", defaultOllamaUrl)
-  .option("--steps <count>", "Maximum agent steps", "8")
+  .option("--steps <count>", "Safety limit on model calls per request", "200")
   .option("--apply", "Allow file writes inside the workspace.", false)
   .option("--allow-shell", "Allow shell commands inside the workspace.", false)
   .option("--subagents", "Enable isolated explore/general child agents.", readBooleanEnv(process.env.PATCHPILOT_SUBAGENTS, false))
@@ -195,7 +195,7 @@ program
         packageVersion={readPackageVersion()}
         allowWrite={Boolean(options.apply)}
         allowShell={Boolean(options.allowShell)}
-        maxSteps={Number.isFinite(maxSteps) ? maxSteps : 8}
+        maxSteps={Number.isFinite(maxSteps) ? maxSteps : 200}
         subagents={Boolean(options.subagents)}
       />,
       // Only changed rows are rewritten, so a ticking spinner no longer

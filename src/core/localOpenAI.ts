@@ -1,4 +1,5 @@
 import type { ModelChatOptions, ModelChatResult, ModelDescriptor, ModelStreamDelta, ModelTelemetry, RawToolCall } from "./types.js";
+import { toOpenAIMessages } from "./wireMessages.js";
 import { fetchWithTimeout, postToModel } from "./http.js";
 import { defaultStreamIdleTimeoutMs, readServerSentJson, StreamIdleError, StreamTimer, toolCallIdleTimeoutMs } from "./stream.js";
 import { attachTokenCost } from "./tokenAccounting.js";
@@ -112,7 +113,7 @@ export class LocalOpenAIClient {
       headers: this.buildHeaders(),
       body: JSON.stringify({
         model: options.model,
-        messages: options.messages,
+        messages: toOpenAIMessages(options.messages),
         stream: streaming,
         tools: options.tools,
         // Without this, most servers omit usage entirely from a stream.
