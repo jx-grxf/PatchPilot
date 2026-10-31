@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
-import { access } from "node:fs/promises";
+import { access, readFile } from "node:fs/promises";
 import { constants } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -75,9 +75,16 @@ export async function startMlxServer(options: {
 }): Promise<ManagedServer> {
   const port = await findFreePort(8080);
   const baseUrl = `http://127.0.0.1:${port}/v1`;
+  const python = await readShebangInterpreter(options.binary);
+  // With its own interpreter, the server runs with tool-call parsing switched
+  // off: tools still reach the chat template, but the call streams as text
+  // PatchPilot parses itself, so a file can be shown while it is written.
+  // mlx_lm otherwise holds the whole call back until it is complete.
+  const [command, prefix] = python ? [python, ["-c", rawToolTextBootstrap]] : [options.binary, []];
   const child = spawn(
-    options.binary,
+    command,
     [
+      ...prefix,
       "--model", options.model,
       "--host", "127.0.0.1",
       "--port", String(port),
@@ -123,6 +130,25 @@ export async function startMlxServer(options: {
 
   server.stop();
   throw new Error(`mlx_lm.server did not become ready in time: ${lastLine || "no output"}`);
+}
+
+const rawToolTextBootstrap = [
+  "import sys",
+  "import mlx_lm.tokenizer_utils as t",
+  "t.TokenizerWrapper.has_tool_calling = property(lambda self: False)",
+  "from mlx_lm.server import main",
+  "sys.argv[0] = 'mlx_lm.server'",
+  "main()"
+].join("\n");
+
+async function readShebangInterpreter(binary: string): Promise<string | null> {
+  try {
+    const firstLine = (await readFile(binary, "utf8")).split("\n", 1)[0] ?? "";
+    const interpreter = firstLine.startsWith("#!") ? firstLine.slice(2).trim() : "";
+    return /python[\d.]*$/.test(interpreter) && !interpreter.includes(" ") ? interpreter : null;
+  } catch {
+    return null;
+  }
 }
 
 export async function fetchModelIds(baseUrl: string): Promise<string[] | null> {

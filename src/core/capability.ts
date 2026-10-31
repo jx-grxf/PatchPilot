@@ -1,5 +1,5 @@
 import { toProviderTools, toolDefinitions } from "./toolSchema.js";
-import { extractFencedToolCalls, extractStringifiedToolCalls } from "./toolRepair.js";
+import { extractFencedToolCalls, extractStringifiedToolCalls, extractTaggedToolCalls } from "./toolRepair.js";
 import type { ModelClient, ModelProvider } from "./types.js";
 
 /**
@@ -97,7 +97,8 @@ async function runProbe(options: {
   // A call the serving layer failed to parse still proves the model can make
   // one; the loop recovers those, and falling back to the JSON envelope for
   // the whole session over a parser bug costs far more.
-  const recovered = extractStringifiedToolCalls(result.content)[0] ?? extractFencedToolCalls(result.content)[0];
+  const recovered =
+    extractTaggedToolCalls(result.content)[0] ?? extractStringifiedToolCalls(result.content)[0] ?? extractFencedToolCalls(result.content)[0];
   const call = result.toolCalls?.[0] ?? recovered;
   if (!call) {
     return {

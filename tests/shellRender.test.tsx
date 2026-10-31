@@ -135,7 +135,7 @@ describe("shell renders live state", () => {
         arguments: { path: "src/a.ts" }
       }
     });
-    expect(output).toContain("write_file");
+    expect(output).toContain("Allow Write?");
   });
 
   it("renders the todo dock when there are todos", () => {

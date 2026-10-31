@@ -74,6 +74,7 @@ import {
   preferencesEnvValues,
   readOnboardingPreferences
 } from "./onboardingPreferences.js";
+import { toolVerb } from "./toolDisplay.js";
 import { type AgentMode, type LogLine, type LogLineInput, type ToolTelemetry } from "./types.js";
 
 export type PatchPilotAppProps = AgentRunnerOptions & {
@@ -1207,17 +1208,8 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
 
               setPendingApproval(request);
               setWorkState("waiting_approval");
-              setStatus(`approval needed for ${request.tool}`);
-              appendLine({
-                kind: "approval",
-                tone: "warning",
-                label: "approval",
-                text: `${request.tool} needs ${request.permission} approval`,
-                detail: `${request.preview}  Press y once, a session, or n deny.`,
-                workState: "waiting_approval",
-                tool: request.tool,
-                preview: request.preview
-              });
+              // The prompt box asks; scrollback only records the answer.
+              setStatus(`approval needed for ${toolVerb(request.tool)}`);
               approvalResolverRef.current = resolve;
             })
         });

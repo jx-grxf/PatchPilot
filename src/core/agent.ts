@@ -12,6 +12,7 @@ import { applyCompaction, buildCompactionPrompt, measureContext, planCompaction,
 import {
   extractFencedToolCalls,
   extractStringifiedToolCalls,
+  extractTaggedToolCalls,
   looksLikeAnnouncedAction,
   looksLikePermissionRequest,
   repairToolCall,
@@ -262,11 +263,13 @@ export class AgentRunner {
         // L0 first: a serving-layer parser failure puts a correct call into
         // content as a string, which looks exactly like a refusal. L2 covers a
         // well-formed call printed inside a fence.
+        const taggedCalls = extractTaggedToolCalls(rawResponse);
         const rawCalls =
           modelResponse.toolCalls && modelResponse.toolCalls.length > 0
             ? modelResponse.toolCalls
-            : firstNonEmpty(extractStringifiedToolCalls(rawResponse), extractFencedToolCalls(rawResponse));
-        assistantText = rawCalls === modelResponse.toolCalls ? stripTemplateTokens(rawResponse).trim() : "";
+            : firstNonEmpty(taggedCalls, extractStringifiedToolCalls(rawResponse), extractFencedToolCalls(rawResponse));
+        assistantText =
+          rawCalls === modelResponse.toolCalls || rawCalls === taggedCalls ? stripTemplateTokens(textBeforeToolCall(rawResponse)).trim() : "";
 
         if (rawCalls.length === 0) {
           const answer = readFinalMessage(stripTemplateTokens(rawResponse));

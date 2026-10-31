@@ -97,7 +97,9 @@ function TranscriptEntry(props: { line: LogLine; columns: number }): React.React
           <Box width={2} flexShrink={0}>
             <Text color={line.workState === "error" ? "yellow" : "white"}>{symbols.assistant}</Text>
           </Box>
-          <Box flexDirection="column" flexGrow={1}>
+          {/* An explicit width: without it Ink wraps against the terminal
+              edge and the gutter pushes the last word past it. */}
+          <Box flexDirection="column" width={bodyWidth}>
             <Markdown text={line.text} width={bodyWidth} />
             {line.detail ? <Markdown text={line.detail} width={bodyWidth} dim /> : null}
           </Box>

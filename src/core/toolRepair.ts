@@ -167,6 +167,33 @@ export function extractStringifiedToolCalls(content: string): Array<{ name: unkn
 }
 
 /**
+ * Calls the model wrote as `<tool_call>` blocks, which is what arrives when
+ * the runtime streams raw text and leaves parsing to the harness (PatchPilot
+ * starts MLX that way so a file can be shown while it is written). Covers the
+ * Qwen3-Coder XML form and the Hermes JSON form.
+ */
+export function extractTaggedToolCalls(content: string): Array<{ name: unknown; arguments: unknown }> {
+  const calls: Array<{ name: unknown; arguments: unknown }> = [];
+  for (const match of content.matchAll(/<tool_call>([\s\S]*?)<\/tool_call>/g)) {
+    const body = match[1] ?? "";
+    const name = body.match(/<function=([\w.-]+)>/)?.[1];
+    if (name) {
+      const args: Record<string, unknown> = {};
+      for (const parameter of body.matchAll(/<parameter=([\w.-]+)>\n?([\s\S]*?)\n?<\/parameter>/g)) {
+        args[parameter[1] ?? ""] = parameter[2] ?? "";
+      }
+      calls.push({ name, arguments: args });
+      continue;
+    }
+    const call = readCallShape(parseLooseJson(body.trim()));
+    if (call) {
+      calls.push(call);
+    }
+  }
+  return calls;
+}
+
+/**
  * L2 — recovers tool calls a model printed as text instead of emitting through
  * the API. This is a measured failure mode, not a hypothetical: some models
  * produce a perfectly formed call inside a markdown fence and make zero actual

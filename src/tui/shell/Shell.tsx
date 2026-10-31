@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Box, Text, useInput } from "ink";
 import type { AgentTodoItem, AgentToolName, AgentWorkState, ApprovalRequest, ModelProvider, SessionTelemetry } from "../../core/types.js";
-import { formatToolHeading } from "../toolDisplay.js";
+import { formatToolHeading, toolVerb } from "../toolDisplay.js";
 import type { CommandSuggestionItem } from "./CommandPalette.js";
 import { formatCompactTokens, shortenMiddle } from "../format.js";
 import type { OllamaHostDetails } from "../hosts.js";
@@ -107,7 +107,7 @@ export function Shell(props: ShellProps): React.ReactElement {
             <Box width={2} flexShrink={0}>
               <Text color="white">{symbols.assistant}</Text>
             </Box>
-            <Box flexDirection="column" flexGrow={1}>
+            <Box flexDirection="column" width={width - 4}>
               <Markdown text={tailLines(props.streamingText, streamingRows)} width={width - 4} />
             </Box>
           </Box>
@@ -248,7 +248,7 @@ function ApprovalPrompt(props: { request: ApprovalRequest | null; bypassConfirma
     <Box borderStyle="round" borderColor="yellow" flexDirection="column" paddingX={1} marginTop={1}>
       <Box justifyContent="space-between">
         <Text color="yellow" bold>
-          {symbols.approval} Allow {request.tool}?
+          {symbols.approval} Allow {toolVerb(request.tool)}?
         </Text>
         <Text color="gray">
           {request.permission} · {request.risk} risk

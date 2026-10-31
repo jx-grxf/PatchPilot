@@ -1,6 +1,6 @@
 import type { AgentEvent } from "../core/types.js";
 import { formatTokens } from "./format.js";
-import { describeToolTarget } from "./toolDisplay.js";
+import { describeToolTarget, toolVerb } from "./toolDisplay.js";
 import type { LogLineInput } from "./types.js";
 
 /**
@@ -159,7 +159,12 @@ export function eventToLine(event: AgentEvent): LogLineInput {
         kind: "approval",
         tone: event.decision === "deny" ? "warning" : "success",
         label: "approval",
-        text: `${event.request.tool} ${event.decision.replace("_", " ")}`,
+        text:
+          event.decision === "deny"
+            ? `Denied ${toolVerb(event.request.tool)}`
+            : event.decision === "allow_session"
+              ? `Allowed ${toolVerb(event.request.tool)} for this session`
+              : `Allowed ${toolVerb(event.request.tool)} once`,
         detail: event.request.preview,
         workState: event.workState,
         tool: event.request.tool,

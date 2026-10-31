@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   extractFencedToolCalls,
   extractStringifiedToolCalls,
+  extractTaggedToolCalls,
   looksLikePermissionRequest,
   parseLooseJson,
   repairToolCall,
@@ -279,5 +280,21 @@ describe("tool descriptions carry a worked example", () => {
       // The example must name the tool it belongs to.
       expect(tool.description.split("Example:")[1]).toContain(`${tool.name}(`);
     }
+  });
+});
+
+describe("extractTaggedToolCalls", () => {
+  it("reads Qwen3-Coder XML calls", () => {
+    const content = "On it.\n<tool_call>\n<function=write>\n<parameter=path>\nhello.txt\n</parameter>\n<parameter=content>\nline 1\nline 2\n</parameter>\n</function>\n</tool_call>";
+    expect(extractTaggedToolCalls(content)).toEqual([{ name: "write", arguments: { path: "hello.txt", content: "line 1\nline 2" } }]);
+  });
+
+  it("reads Hermes JSON calls and several in a row", () => {
+    const content = '<tool_call>\n{"name": "read", "arguments": {"path": "a"}}\n</tool_call>\n<tool_call>\n{"name": "read", "arguments": {"path": "b"}}\n</tool_call>';
+    expect(extractTaggedToolCalls(content).map((call) => call.arguments)).toEqual([{ path: "a" }, { path: "b" }]);
+  });
+
+  it("ignores an unfinished call", () => {
+    expect(extractTaggedToolCalls("<tool_call>\n<function=write>\n<parameter=path>\na")).toEqual([]);
   });
 });

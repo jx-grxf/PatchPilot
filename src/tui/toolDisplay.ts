@@ -37,6 +37,10 @@ const toolVerbs: Record<AgentEventToolName, string> = {
   subagent: "Task"
 };
 
+export function toolVerb(name: AgentEventToolName): string {
+  return toolVerbs[name] ?? name;
+}
+
 export function formatToolHeading(name: AgentEventToolName | undefined, label: string, target: string | undefined): string {
   const verb = name ? toolVerbs[name] : label;
   return target ? `${verb}(${target})` : verb;
