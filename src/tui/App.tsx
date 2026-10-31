@@ -1110,6 +1110,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       let finalMessage = "";
       let turnAttachmentPaths: string[] = [];
       let outcome: RunOutcome = "done";
+      let runSignal: AbortSignal | undefined;
       try {
         const runnableSettings = await resolveRunnableSettings(settings, modelOptions, appendLine, setModelOptions, (message) => {
         });
@@ -1120,6 +1121,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
 
         const abortController = new AbortController();
         abortControllerRef.current = abortController;
+        runSignal = abortController.signal;
         const effectiveMode = overrides.mode ?? agentMode;
         const artifactContext = formatSessionArtifactContext(artifactsRef.current);
         const persistedContext = await contextStoreRef.current
@@ -1339,6 +1341,11 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
             .join("\n"),
           priority: turnAttachmentPaths.length > 0 ? 65 : 35
         }).catch(() => undefined);
+        // The loop reports a stop as a normal end; the closing line should
+        // still say the user stopped it, not that it finished.
+        if (outcome === "done" && runSignal?.aborted) {
+          outcome = "stopped";
+        }
         appendLine({
           kind: "status",
           tone: outcome === "done" ? "muted" : "warning",

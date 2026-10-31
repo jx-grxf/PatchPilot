@@ -216,3 +216,17 @@ describe("rewrite guard", () => {
     expect((runner as unknown as { turnTokens: number }).turnTokens).toBe(2);
   });
 });
+
+describe("cut-off calls", () => {
+  it("never shows an unfinished tool call as the answer", async () => {
+    const { requests, makeRunner } = await setup([
+      { content: "Writing it.\n<tool_call>\n<function=write>\n<parameter=path>\na.c\n</parameter>\n<parameter=content>\n#include" },
+      { content: "Done." }
+    ]);
+
+    const events = await drain(makeRunner().run("write a.c"));
+
+    expect(events.some((event) => event.type === "final" && event.message.includes("<tool_call>"))).toBe(false);
+    expect(requests[1]?.at(-1)?.content).toContain("cut off");
+  });
+});

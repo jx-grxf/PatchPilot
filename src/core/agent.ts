@@ -235,6 +235,12 @@ export class AgentRunner {
         await this.options.sessionStore?.append({ type: "run.failed", runId, message, failedAt: new Date().toISOString() });
         throw error;
       }
+      // A stop mid-stream ends the read as if the reply were complete; what
+      // arrived is a fragment and must not be taken as an answer.
+      if (this.options.signal?.aborted) {
+        yield* this.finish(runId, "Stopped.", "done");
+        return;
+      }
       const rawResponse = modelResponse.content;
       this.lastMeasured =
         modelResponse.telemetry.tokenSource === "provider" ? { tokens: modelResponse.telemetry.promptTokens, messageCount: messages.length } : null;
@@ -275,6 +281,18 @@ export class AgentRunner {
         assistantText =
           rawCalls === modelResponse.toolCalls || rawCalls === taggedCalls ? stripTemplateTokens(textBeforeToolCall(rawResponse)).trim() : "";
 
+        if (rawCalls.length === 0 && rawResponse.includes("<tool_call>")) {
+          // A call that never closed: the output ran out mid-call. Treat it
+          // like any cut-off reply rather than printing raw markup as an answer.
+          truncations += 1;
+          if (truncations >= 3) {
+            yield* this.finish(runId, "The model kept stopping in the middle of a tool call. Ask for a smaller change.", "error");
+            return;
+          }
+          messages.push({ role: "assistant", content: stripTemplateTokens(textBeforeToolCall(rawResponse)).trim() });
+          messages.push({ role: "user", content: "Your tool call was cut off before it was complete. Make the call again, smaller if it was a large file." });
+          continue;
+        }
         if (rawCalls.length === 0) {
           const answer = readFinalMessage(stripTemplateTokens(rawResponse));
           // A model that announces the next step and stops has decided and
