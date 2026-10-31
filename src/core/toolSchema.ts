@@ -81,7 +81,7 @@ export const toolDefinitions: Record<ToolName, ToolDefinition> = {
   write: {
     name: "write",
     description:
-      "Write a complete file, creating it or replacing its entire contents. Use this only for new files or a deliberate full rewrite; to change part of an existing file use edit, which is safer and cheaper. Example: write({\"path\": \"src/util/slug.ts\", \"content\": \"export function slug(v) { return v.trim(); }\"}).",
+      "Write a complete file, creating it or replacing its entire contents. Use this only for new files or a deliberate full rewrite; to change part of an existing file use edit, which is safer and cheaper. Example: write({\"path\": \"slug.js\", \"content\": \"export function slug(v) { return v.trim(); }\"}). Use exactly the file name the user gave, in the folder they meant.",
     inputSchema: {
       type: "object",
       properties: {

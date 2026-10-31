@@ -281,7 +281,7 @@ export class AgentRunner {
         assistantText =
           rawCalls === modelResponse.toolCalls || rawCalls === taggedCalls ? stripTemplateTokens(textBeforeToolCall(rawResponse)).trim() : "";
 
-        if (rawCalls.length === 0 && rawResponse.includes("<tool_call>")) {
+        if (rawCalls.length === 0 && (rawResponse.includes("<tool_call>") || /<function=[\w.-]+>/.test(rawResponse))) {
           // A call that never closed: the output ran out mid-call. Treat it
           // like any cut-off reply rather than printing raw markup as an answer.
           truncations += 1;
@@ -1115,6 +1115,7 @@ function buildSystemPrompt(
     "- The conversation is continuous: \"it\", \"the file\", \"that\" refer to what came earlier in this conversation. Only ask a question when the request is genuinely ambiguous.",
     "- Read a file before you edit it. Use edit for changes to existing files; use write only for new files.",
     "- After writing code, compile or run it. Change it only for a problem a check actually showed, and change only that part. Never rewrite a whole file on a hunch.",
+    "- Once a check passes and the request is met, stop and give your final answer. Do not re-run a check that already passed or re-read a file you just wrote.",
     "- Check your work when it can be checked (tests, build, running the script).",
     "- Never invent facts about the code. If you have not read it, read it.",
     "- For a task with several steps, keep a short todo list and update it as you go.",

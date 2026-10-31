@@ -174,18 +174,21 @@ export function extractStringifiedToolCalls(content: string): Array<{ name: unkn
  */
 export function extractTaggedToolCalls(content: string): Array<{ name: unknown; arguments: unknown }> {
   const calls: Array<{ name: unknown; arguments: unknown }> = [];
-  for (const match of content.matchAll(/<tool_call>([\s\S]*?)<\/tool_call>/g)) {
-    const body = match[1] ?? "";
-    const name = body.match(/<function=([\w.-]+)>/)?.[1];
-    if (name) {
-      const args: Record<string, unknown> = {};
-      for (const parameter of body.matchAll(/<parameter=([\w.-]+)>\n?([\s\S]*?)\n?<\/parameter>/g)) {
-        args[parameter[1] ?? ""] = parameter[2] ?? "";
-      }
-      calls.push({ name, arguments: args });
-      continue;
+  // The XML form is matched on <function=…> alone: some tokenizers treat
+  // <tool_call> as a special token the runtime drops when it detokenizes, so
+  // only the closing tag survives.
+  for (const match of content.matchAll(/<function=([\w.-]+)>([\s\S]*?)<\/function>/g)) {
+    const args: Record<string, unknown> = {};
+    for (const parameter of (match[2] ?? "").matchAll(/<parameter=([\w.-]+)>\n?([\s\S]*?)\n?<\/parameter>/g)) {
+      args[parameter[1] ?? ""] = parameter[2] ?? "";
     }
-    const call = readCallShape(parseLooseJson(body.trim()));
+    calls.push({ name: match[1], arguments: args });
+  }
+  if (calls.length > 0) {
+    return calls;
+  }
+  for (const match of content.matchAll(/<tool_call>([\s\S]*?)<\/tool_call>/g)) {
+    const call = readCallShape(parseLooseJson((match[1] ?? "").trim()));
     if (call) {
       calls.push(call);
     }

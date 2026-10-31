@@ -7,12 +7,13 @@ import path from "node:path";
 import { supportsMlx } from "./localRuntimes.js";
 
 /**
- * Fast MoE coder that fits a 24 GB Mac with room for a long context: 3B
- * active parameters per token, about 13 GB on disk. A complete model on
- * purpose: the expert-pruned (REAP) Qwen3.6 of the same size garbled
- * literals and fell into repetition loops in real sessions.
+ * Small enough (6 GB) that an IDE and a browser keep running beside it on a
+ * 24 GB Mac. The 13 GB models tried before (Qwen3.6-35B-A3B REAP, Qwen3-Coder
+ * 30B) pushed the Mac into swap until even the mouse stalled, and the pruned
+ * REAP model also garbled literals. This one passed `patchpilot bench` 3/3
+ * at about 52 tok/s with no extra calls.
  */
-export const defaultMlxModel = "mlx-community/Qwen3-Coder-30B-A3B-Instruct-3bit";
+export const defaultMlxModel = "mlx-community/Qwen3.5-9B-4bit";
 
 export type AutostartPlan =
   | { kind: "use-existing"; baseUrl: string; model: string }
@@ -98,7 +99,15 @@ export async function startMlxServer(options: {
       "--max-tokens", "16384",
       // Thinking costs seconds per step on a laptop; turned on per request.
       "--chat-template-args", JSON.stringify({ enable_thinking: false }),
-      "--prompt-cache-size", "4",
+      // One cached prefix, capped: each extra KV cache costs gigabytes, and on
+      // a 24 GB Mac with an IDE and a browser open that pushed the server
+      // into swap until it stopped answering.
+      // Smaller prefill chunks hand the GPU back to the window server more
+      // often; with the default 2048 the whole Mac, mouse included, stalls
+      // while a long prompt is read.
+      "--prefill-step-size", "512",
+      "--prompt-cache-size", "1",
+      "--prompt-cache-bytes", String(2 * 1024 ** 3),
       "--log-level", "WARNING"
     ],
     { stdio: ["ignore", "ignore", "pipe"], detached: false }

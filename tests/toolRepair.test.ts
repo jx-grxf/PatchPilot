@@ -298,3 +298,10 @@ describe("extractTaggedToolCalls", () => {
     expect(extractTaggedToolCalls("<tool_call>\n<function=write>\n<parameter=path>\na")).toEqual([]);
   });
 });
+
+describe("extractTaggedToolCalls without the opening tag", () => {
+  it("reads a call whose <tool_call> token the runtime dropped", () => {
+    const content = "I'll add it.\n\n<function=edit>\n<parameter=path>\ngreet.js\n</parameter>\n<parameter=old_string>\na\n</parameter>\n<parameter=new_string>\nb\n</parameter>\n</function>\n</tool_call>";
+    expect(extractTaggedToolCalls(content)).toEqual([{ name: "edit", arguments: { path: "greet.js", old_string: "a", new_string: "b" } }]);
+  });
+});

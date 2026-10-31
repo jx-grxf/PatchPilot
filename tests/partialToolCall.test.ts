@@ -30,3 +30,11 @@ describe("readPartialToolCallText", () => {
     expect(readPartialToolCallText("just an answer")).toBeNull();
   });
 });
+
+describe("printed calls without <tool_call>", () => {
+  it("still finds the call and keeps it out of the answer text", () => {
+    const text = "Writing.\n\n<function=write>\n<parameter=path>\na.js\n</parameter>\n<parameter=content>\nconsole.log(1)";
+    expect(readPartialToolCallText(text)).toMatchObject({ name: "write", path: "a.js" });
+    expect(textBeforeToolCall(text)).toBe("Writing.\n\n");
+  });
+});

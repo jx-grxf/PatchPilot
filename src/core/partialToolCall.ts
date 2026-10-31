@@ -22,11 +22,11 @@ export function readPartialArguments(argumentsText: string): PartialCall {
  * and the Qwen3-Coder XML form inside `<tool_call>`.
  */
 export function readPartialToolCallText(text: string): PartialCall | null {
-  const start = text.indexOf("<tool_call>");
+  const start = callStart(text);
   if (start === -1) {
     return null;
   }
-  const call = text.slice(start + "<tool_call>".length);
+  const call = text.slice(start).replace(/^<tool_call>/, "");
 
   const xmlName = call.match(/<function=([\w.-]+)>/)?.[1];
   if (xmlName) {
@@ -47,8 +47,17 @@ export function readPartialToolCallText(text: string): PartialCall | null {
 
 /** Text before a printed tool call; the call itself is shown as a preview. */
 export function textBeforeToolCall(text: string): string {
-  const start = text.indexOf("<tool_call>");
+  const start = callStart(text);
   return start === -1 ? text : text.slice(0, start);
+}
+
+/**
+ * Where a printed call begins. `<function=` counts on its own because some
+ * runtimes drop `<tool_call>` as a special token while detokenizing.
+ */
+function callStart(text: string): number {
+  const starts = [text.indexOf("<tool_call>"), text.search(/<function=[\w.-]/)].filter((index) => index !== -1);
+  return starts.length > 0 ? Math.min(...starts) : -1;
 }
 
 function optional<K extends string>(key: K, value: string | undefined): Partial<Record<K, string>> {
