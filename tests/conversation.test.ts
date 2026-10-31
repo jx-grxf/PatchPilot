@@ -308,3 +308,39 @@ describe("subagents", () => {
     expect(results[1]).toContain("look for b");
   });
 });
+
+describe("offered tools", () => {
+  it("refuses a call to a tool the run was not given instead of running it", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "pp-offered-"));
+    setModelCapabilities("local-openai", "scripted", { nativeToolCalls: true, detail: "test" });
+    const { client, requests } = scriptedClient([
+      { toolCalls: [{ name: "bash", arguments: { command: "touch escaped.txt" } }] },
+      { content: "ok" }
+    ]);
+    let asked = false;
+    await drain(
+      new AgentRunner({
+        provider: "local-openai",
+        model: "scripted",
+        ollamaUrl: "http://127.0.0.1:1234/v1",
+        workspace,
+        mode: "plan",
+        allowWrite: false,
+        allowShell: false,
+        maxSteps: 5,
+        subagents: false,
+        toolNames: ["read", "glob", "grep"],
+        client,
+        conversation: [],
+        approvalHandler: async () => {
+          asked = true;
+          return "allow_once";
+        }
+      }).run("look around")
+    );
+    expect(asked).toBe(false);
+    const result = requests[1]?.find((message) => message.role === "tool");
+    expect(result?.content).toContain("bash is not available here");
+    await expect(readFile(path.join(workspace, "escaped.txt"), "utf8")).rejects.toThrow();
+  });
+});

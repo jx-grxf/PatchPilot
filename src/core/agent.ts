@@ -7,7 +7,7 @@ import { MAX_TOOL_CALLS_PER_RESPONSE, type AgentEvent, type AgentEventToolName, 
 import { StreamTimer } from "./stream.js";
 import { hasProbedModel, probeModelCapabilities } from "./capability.js";
 import { stripTemplateTokens } from "./localOpenAI.js";
-import { formatEnvelope, runSubagent, subagentToolNames, type SubagentEnvelope, type SubagentRequest } from "./subagentRunner.js";
+import { formatEnvelope, runSubagent, subagentToolNames, type SubagentDependencies, type SubagentEnvelope, type SubagentRequest } from "./subagentRunner.js";
 import { applyCompaction, buildCompactionPrompt, changedFiles, measureContext, planCompaction, pruneToolResults, totalTokens } from "./contextWindow.js";
 import {
   extractFencedToolCalls,
@@ -310,7 +310,7 @@ export class AgentRunner {
           return;
         }
 
-        batch = this.planNativeCalls(rawCalls, loopBreaker);
+        batch = this.planNativeCalls(rawCalls, loopBreaker, availableTools.map((tool) => tool.name));
       } else {
         const parsed = parseEnvelope(rawResponse);
         if (!parsed) {
@@ -569,15 +569,53 @@ export class AgentRunner {
     }
 
     if (delegations.length > 0) {
-      for (const { request } of delegations) {
-        yield { type: "status", message: `delegating to ${request.type} subagent: ${request.description}`, workState: "planning" };
+      const live = (planned: PlannedCall, request: SubagentRequest, state: Extract<AgentEvent, { type: "subagent" }>["state"], extra: Partial<Extract<AgentEvent, { type: "subagent" }>> = {}): AgentEvent => ({
+        type: "subagent",
+        id: planned.id,
+        agentType: request.type,
+        description: request.description,
+        state,
+        toolCalls: 0,
+        workState: "planning",
+        ...extra
+      });
+      for (const { planned, request } of delegations) {
+        yield live(planned, request, "running");
       }
+      // Children report progress from inside an await; a queue hands it to
+      // this generator so the UI sees each child working, not just its end.
+      const pending: AgentEvent[] = [];
+      let wake: (() => void) | null = null;
+      const push = (event: AgentEvent) => {
+        pending.push(event);
+        wake?.();
+      };
       // Readers run side by side on the server's batch; writers go one at a
       // time so two children never edit the same file or ask for approval at once.
       const limit = delegations.every(({ request }) => request.type === "explore") ? subagentConcurrency() : 1;
-      const envelopes = await mapWithConcurrency(delegations, limit, async ({ request }) =>
-        this.options.signal?.aborted ? null : await this.runChildAgent(request)
-      );
+      let finished = false;
+      const work = mapWithConcurrency(delegations, limit, async ({ planned, request }) => {
+        if (this.options.signal?.aborted) {
+          return null;
+        }
+        const envelope = await this.runChildAgent(request, (progress) => push(live(planned, request, "running", progress)));
+        push(live(planned, request, envelope.status, { toolCalls: envelope.toolCalls }));
+        return envelope;
+      }).finally(() => {
+        finished = true;
+        wake?.();
+      });
+      while (!finished || pending.length > 0) {
+        if (pending.length === 0) {
+          await new Promise<void>((resolve) => {
+            wake = resolve;
+          });
+          wake = null;
+          continue;
+        }
+        yield pending.shift() as AgentEvent;
+      }
+      const envelopes = await work;
       for (const [index, { planned, request }] of delegations.entries()) {
         const envelope = envelopes[index];
         if (!envelope) {
@@ -593,7 +631,8 @@ export class AgentRunner {
           ok: envelope.status === "ok",
           workState: "planning",
           category: "state",
-          metadata: { subagent: request.type, transcript: envelope.transcript, steps: envelope.steps, toolCalls: envelope.toolCalls, durationMs: envelope.durationMs }
+          toolCallId: planned.id,
+          metadata: { subagent: request.type, description: request.description, summary: envelope.summary, transcript: envelope.transcript, steps: envelope.steps, toolCalls: envelope.toolCalls, durationMs: envelope.durationMs }
         };
         outcomes.set(planned.id, { id: planned.id, tool: "subagent", toolName: planned.name, ok: envelope.status === "ok", summary, content: formatEnvelope(envelope), category: "state" });
       }
@@ -667,7 +706,7 @@ export class AgentRunner {
    * id, so a call that cannot run is answered with guidance in its own result
    * slot and the rest of the batch still executes.
    */
-  private planNativeCalls(rawCalls: RawToolCall[], loopBreaker: ToolCallLoopBreaker): PlannedCall[] {
+  private planNativeCalls(rawCalls: RawToolCall[], loopBreaker: ToolCallLoopBreaker, offered: string[]): PlannedCall[] {
     return rawCalls.slice(0, MAX_TOOL_CALLS_PER_RESPONSE).map((rawCall, index) => {
       const fallbackName = typeof rawCall.name === "string" && rawCall.name ? rawCall.name : "unknown";
       const fallbackArguments = isRecord(rawCall.arguments) ? rawCall.arguments : {};
@@ -675,6 +714,11 @@ export class AgentRunner {
       const repaired = repairToolCall(rawCall);
       if ("message" in repaired) {
         return { id, name: fallbackName, arguments: fallbackArguments, problem: repaired.message, truncated: Boolean(repaired.truncated) };
+      }
+      // A model may print a call to a tool it was never given; running it
+      // anyway let a read-only subagent reach the shell.
+      if (!offered.includes(repaired.name)) {
+        return { id, name: repaired.name, arguments: repaired.arguments, problem: `${repaired.name} is not available here. Available tools: ${offered.join(", ")}.` };
       }
       const looping = loopBreaker.check(repaired.name, repaired.arguments);
       if (looping) {
@@ -723,10 +767,11 @@ export class AgentRunner {
    * failure is a result the parent reasons about, never an exception that ends
    * the parent's run.
    */
-  private async runChildAgent(request: SubagentRequest): Promise<SubagentEnvelope> {
+  private async runChildAgent(request: SubagentRequest, onProgress?: SubagentDependencies["onProgress"]): Promise<SubagentEnvelope> {
     const parent = this.options;
     return await runSubagent(request, {
       client: this.client,
+      onProgress,
       transcriptDir: path.join(parent.workspace, ".patchpilot", "subagents"),
       signal: parent.signal,
       run: (childOptions) =>
@@ -739,6 +784,9 @@ export class AgentRunner {
           // Read-only children cannot be talked into writing by what they read.
           allowWrite: childOptions.readOnly ? false : parent.allowWrite,
           allowShell: false,
+          // A reader has nothing to ask permission for; without a handler a
+          // stray call fails instead of prompting the user mid-run.
+          approvalHandler: childOptions.readOnly ? undefined : parent.approvalHandler,
           mode: childOptions.readOnly ? "plan" : parent.mode,
           toolNames: subagentToolNames(childOptions.readOnly),
           // Thinking belongs to the orchestrator; children answer.

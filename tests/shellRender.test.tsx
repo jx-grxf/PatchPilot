@@ -28,6 +28,7 @@ function props(overrides: Partial<ShellProps> = {}): ShellProps {
     sessionTelemetry: emptySessionTelemetry(),
     lines: [],
     todos: [],
+    agents: [],
     todoFrame: 0,
     pendingApproval: null,
     bypassConfirmation: false,
@@ -146,6 +147,29 @@ describe("shell renders live state", () => {
       ]
     });
     expect(output).toContain("Add the flag");
+  });
+
+  it("shows running subagents as a tree with the call each is on", () => {
+    const output = frame({
+      agents: [
+        { type: "subagent", id: "call_a", agentType: "explore", description: "find compile bug", state: "running", toolCalls: 3, activity: { name: "read_file", arguments: { path: "src/Main.java" } }, workState: "planning" },
+        { type: "subagent", id: "call_b", agentType: "explore", description: "check speed", state: "running", toolCalls: 0, workState: "planning" }
+      ]
+    });
+    expect(output).toContain("2 agents running");
+    expect(output).toContain("Explore (find compile bug)");
+    expect(output).toContain("Read(src/Main.java) · 3 tool calls");
+    expect(output).toContain("Starting…");
+  });
+
+  it("renders a finished subagent with the start of its answer", () => {
+    const lines: LogLine[] = [
+      { id: 1, kind: "tool", tone: "success", label: "Explore", text: "Done · 4 tool calls · 12s", target: "find compile bug", category: "state", agent: true, detail: "Main.java misses a semicolon on line 12." }
+    ];
+    const output = frame({ lines });
+    expect(output).toContain("Explore(find compile bug)");
+    expect(output).toContain("Done · 4 tool calls · 12s");
+    expect(output).toContain("misses a semicolon");
   });
 
   it("renders a transcript with markdown and a diff", () => {

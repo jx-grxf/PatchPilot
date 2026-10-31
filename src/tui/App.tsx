@@ -41,10 +41,12 @@ import { formatModelDescription, formatModelLabel, formatModelOptions } from "./
 import { cacheModelList } from "./modelRuntime.js";
 import {
   belongsInTranscript,
+  describeApproval,
   eventToLine,
   eventToStatus,
   type StreamProgress
 } from "./transcriptEvents.js";
+import type { SubagentProgress } from "./shell/AgentsDock.js";
 import { ConfigPanel, visibleSettings } from "./components/ConfigPanel.js";
 import { ModelPicker, type ModelPickerState } from "./components/ModelPicker.js";
 import {
@@ -116,6 +118,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   const conversationRef = useRef<ChatMessage[]>([]);
   const [lines, setLines] = useState<LogLine[]>([]);
   const [todos, setTodos] = useState<AgentTodoItem[]>([]);
+  const [agents, setAgents] = useState<SubagentProgress[]>([]);
   const [todoFrame, setTodoFrame] = useState(0);
   const [isRunning, setIsRunning] = useState(false);
   const [status, setStatus] = useState("idle");
@@ -366,13 +369,13 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       approvalResolverRef.current = null;
       const nextWorkState = decision === "deny" ? "error" : workStateForApprovalTool(pendingApproval.tool);
       setInput("");
-      setStatus(decision === "deny" ? `${pendingApproval.tool} denied` : `${pendingApproval.tool} approved; running`);
+      setStatus(decision === "deny" ? `${toolVerb(pendingApproval.tool)} denied` : `Running ${toolVerb(pendingApproval.tool)}`);
       setWorkState(nextWorkState);
       appendLine({
         kind: "approval",
         tone: decision === "deny" ? "warning" : "success",
         label: "approval",
-        text: `${pendingApproval.tool} ${decision.replace("_", " ")}`,
+        text: describeApproval(pendingApproval.tool, decision),
         detail: pendingApproval.preview,
         workState: nextWorkState,
         tool: pendingApproval.tool
@@ -1072,6 +1075,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       lastEscapeStopAtRef.current = 0;
       setInput("");
       setTodos([]);
+      setAgents([]);
       setWorkState("idle");
       setStatus("starting");
       setUltramaxxRun(ultramaxx);
@@ -1242,8 +1246,14 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
             continue;
           }
 
+          if (event.type === "subagent") {
+            setAgents((current) => [...current.filter((agent) => agent.id !== event.id), event].sort((a, b) => a.id.localeCompare(b.id)));
+            continue;
+          }
+
           if (event.type === "final") {
             finalMessage = event.message;
+            setAgents([]);
           }
 
           // Best-effort: list documents PatchPilot wrote in the artifacts bar.
@@ -1254,6 +1264,10 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
             if (created?.[1]) {
               registerCreatedArtifact(created[1]);
             }
+          }
+
+          if (event.type === "tool" && event.name === "subagent") {
+            setAgents((current) => current.filter((agent) => agent.id !== event.toolCallId));
           }
 
           if (event.type === "tool") {
@@ -1303,6 +1317,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         // screen would present a half-finished preamble as the answer.
         setStreamProgress(null);
         setStreamingText("");
+        setAgents([]);
         if (abortControllerRef.current?.signal.aborted) {
           outcome = "stopped";
           appendLine({
@@ -2703,6 +2718,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       sessionTelemetry={sessionTelemetry}
       lines={lines}
       todos={todos}
+      agents={agents}
       todoFrame={todoFrame}
       clipboardImage={clipboardImage}
       pendingApproval={pendingApproval}

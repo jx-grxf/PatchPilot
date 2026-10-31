@@ -124,6 +124,8 @@ function TranscriptEntry(props: { line: LogLine; columns: number }): React.React
       const failed = line.tone === "danger" || line.tone === "warning";
       const failure = failed && line.detail ? firstLines(line.detail, 3, bodyWidth - 4) : null;
       const output = !failed && line.detail && (line.category === "shell" || line.category === "test") ? firstLines(line.detail, 4, bodyWidth - 5) : null;
+      // A subagent's answer is what the user waited for; show its start.
+      const agentAnswer = !failed && line.detail && line.agent ? firstLines(line.detail, 3, bodyWidth - 5) : null;
       return (
         <Box flexDirection="column" marginTop={1}>
           <Text wrap="truncate">
@@ -135,9 +137,9 @@ function TranscriptEntry(props: { line: LogLine; columns: number }): React.React
               {symbols.result}  {output ?? collapse(line.text, bodyWidth - 4)}
             </Text>
           </Box>
-          {failure ? (
+          {failure ?? agentAnswer ? (
             <Box paddingLeft={5}>
-              <Text color="gray">{failure}</Text>
+              <Text color="gray">{failure ?? agentAnswer}</Text>
             </Box>
           ) : null}
           {line.diff ? (

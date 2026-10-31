@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
+import { AgentsDock, type SubagentProgress } from "./AgentsDock.js";
 import { Box, Text, useInput } from "ink";
 import type { AgentTodoItem, AgentToolName, AgentWorkState, ApprovalRequest, ModelProvider, SessionTelemetry } from "../../core/types.js";
 import { formatToolHeading, toolVerb } from "../toolDisplay.js";
@@ -47,6 +48,7 @@ export type ShellProps = {
   sessionTelemetry: SessionTelemetry;
   lines: LogLine[];
   todos: AgentTodoItem[];
+  agents: SubagentProgress[];
   todoFrame: number;
   /** An image is in the OS clipboard; the footer offers ctrl+v. */
   clipboardImage?: boolean;
@@ -120,6 +122,7 @@ export function Shell(props: ShellProps): React.ReactElement {
         {props.streamProgress?.writing && (props.streamProgress.writing.path || props.streamProgress.writing.preview) ? (
           <WritingPreview writing={props.streamProgress.writing} width={width} />
         ) : null}
+        {props.agents.length > 0 ? <AgentsDock agents={props.agents} width={width} /> : null}
         {props.todos.length > 0 ? <TodoDock todos={props.todos} todoFrame={props.todoFrame} width={width} /> : null}
         {props.updatePrompt || props.updateBusy ? (
           <UpdatePrompt prompt={props.updatePrompt} busy={props.updateBusy} />

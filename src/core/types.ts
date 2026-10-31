@@ -252,6 +252,18 @@ export type AgentEvent =
       message: string;
       workState: AgentWorkState;
     }
+  /** A subagent started, made progress, or finished. Live only; the result is a tool event. */
+  | {
+      type: "subagent";
+      id: string;
+      agentType: "explore" | "general";
+      description: string;
+      state: "running" | "ok" | "failed" | "aborted";
+      toolCalls: number;
+      /** The call the child is on, for a `Read(src/Main.java)` line. */
+      activity?: { name: AgentEventToolName; arguments: Record<string, unknown> };
+      workState: AgentWorkState;
+    }
   /** The conversation was condensed to make room. */
   | {
       type: "compacted";

@@ -1,6 +1,6 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { AgentEvent, ModelClient } from "./types.js";
+import type { AgentEvent, AgentEventToolName, ModelClient } from "./types.js";
 import type { ToolName } from "./toolSchema.js";
 
 /**
@@ -70,6 +70,8 @@ export type SubagentDependencies = {
   transcriptDir: string;
   signal?: AbortSignal;
   now?: () => number;
+  /** Called on every tool call the child makes, so the UI can show it working. */
+  onProgress?: (progress: { toolCalls: number; activity: { name: AgentEventToolName; arguments: Record<string, unknown> } }) => void;
 };
 
 /**
@@ -103,6 +105,7 @@ export async function runSubagent(request: SubagentRequest, deps: SubagentDepend
           break;
         case "tool":
           toolCalls += 1;
+          deps.onProgress?.({ toolCalls, activity: { name: event.name, arguments: event.arguments ?? {} } });
           transcript.push(`- ${event.name} ${event.ok ? "ok" : "failed"}: ${event.summary}`);
           if (event.content) {
             transcript.push("", "```", event.content, "```", "");

@@ -21,6 +21,8 @@ export type LogLine = {
   preview?: string;
   /** For tool entries: the file, command or pattern the call acted on. */
   target?: string;
+  /** A finished subagent; its answer is shown under the entry. */
+  agent?: boolean;
   /** For write and edit entries: what changed, as +/- lines. */
   diff?: string;
 };

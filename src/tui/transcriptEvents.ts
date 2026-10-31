@@ -1,4 +1,4 @@
-import type { AgentEvent } from "../core/types.js";
+import type { AgentEvent, AgentEventToolName, PermissionDecision } from "../core/types.js";
 import { formatTokens } from "./format.js";
 import { describeToolTarget, toolVerb } from "./toolDisplay.js";
 import { formatCompactTokens } from "./format.js";
@@ -76,11 +76,16 @@ function formatDuration(elapsedMs: number): string {
  * stay out of scrollback unless PATCHPILOT_DEBUG is set. Todo updates already
  * show in the plan dock, so their tool entry would say the same thing twice.
  */
+export function describeApproval(tool: AgentEventToolName, decision: PermissionDecision): string {
+  const verb = toolVerb(tool);
+  return decision === "deny" ? `Denied ${verb}` : decision === "allow_session" ? `Allowed ${verb} for this session` : `Allowed ${verb} once`;
+}
+
 export function belongsInTranscript(event: AgentEvent, debug = Boolean(process.env.PATCHPILOT_DEBUG && process.env.PATCHPILOT_DEBUG !== "0")): boolean {
   if (debug) {
     return true;
   }
-  if (event.type === "status") {
+  if (event.type === "status" || event.type === "subagent") {
     return false;
   }
   return !(event.type === "tool" && event.name === "update_todo");
@@ -88,6 +93,8 @@ export function belongsInTranscript(event: AgentEvent, debug = Boolean(process.e
 
 export function eventToLine(event: AgentEvent): LogLineInput {
   switch (event.type) {
+    case "subagent":
+      return { kind: "status", tone: "muted", label: "subagent", text: `${event.agentType} agent ${event.state}: ${event.description}`, workState: event.workState };
     case "compacted":
       return {
         kind: "status",
@@ -140,6 +147,22 @@ export function eventToLine(event: AgentEvent): LogLineInput {
       };
     case "tool": {
       const subagentType = typeof event.metadata?.subagent === "string" ? event.metadata.subagent : null;
+      if (subagentType) {
+        const calls = Number(event.metadata?.toolCalls ?? 0);
+        const seconds = Math.round(Number(event.metadata?.durationMs ?? 0) / 1000);
+        return {
+          kind: "tool",
+          tone: event.ok ? "success" : "warning",
+          label: subagentType === "explore" ? "Explore" : "Agent",
+          text: `${event.ok ? "Done" : "Failed"} · ${calls === 1 ? "1 tool call" : `${calls} tool calls`} · ${seconds}s`,
+          detail: typeof event.metadata?.summary === "string" ? event.metadata.summary : event.content,
+          workState: event.workState,
+          toolCallId: event.toolCallId,
+          category: "state",
+          agent: true,
+          target: typeof event.metadata?.description === "string" ? event.metadata.description : undefined
+        };
+      }
       return {
         kind: event.name === "git_diff" ? "diff" : "tool",
         tone: event.ok ? "success" : "warning",
@@ -168,12 +191,7 @@ export function eventToLine(event: AgentEvent): LogLineInput {
         kind: "approval",
         tone: event.decision === "deny" ? "warning" : "success",
         label: "approval",
-        text:
-          event.decision === "deny"
-            ? `Denied ${toolVerb(event.request.tool)}`
-            : event.decision === "allow_session"
-              ? `Allowed ${toolVerb(event.request.tool)} for this session`
-              : `Allowed ${toolVerb(event.request.tool)} once`,
+        text: describeApproval(event.request.tool, event.decision),
         detail: event.request.preview,
         workState: event.workState,
         tool: event.request.tool,
@@ -231,6 +249,10 @@ export function eventToStatus(event: AgentEvent): string {
     return "thinking";
   }
 
+  if (event.type === "subagent") {
+    return `${event.agentType} agent: ${event.description}`;
+  }
+
   if (event.type === "tool") {
     return `${event.name}: ${event.summary}`;
   }
@@ -240,7 +262,7 @@ export function eventToStatus(event: AgentEvent): string {
   }
 
   if (event.type === "approval") {
-    return `${event.request.tool}: ${event.decision.replace("_", " ")}`;
+    return describeApproval(event.request.tool, event.decision);
   }
 
   return event.type;
