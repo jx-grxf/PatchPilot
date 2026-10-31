@@ -531,9 +531,8 @@ export class WorkspaceTools {
 
     const normalizedLimit = Math.max(1, Math.min(200, Math.floor(limit || 80)));
     const files = await walkFiles(this.root, this.root, await this.rootRealPath, 10, 1200);
-    const matches = files
-      .filter((filePath) => filePath.toLowerCase().includes(normalizedQuery))
-      .slice(0, normalizedLimit);
+    const matchesQuery = fileQueryMatcher(normalizedQuery);
+    const matches = files.filter((filePath) => matchesQuery(filePath.toLowerCase())).slice(0, normalizedLimit);
 
     return {
       ok: true,
@@ -563,6 +562,10 @@ export class WorkspaceTools {
     }
 
     const absolutePath = await this.resolveReadPath(requestedPath);
+    const directory = await this.listDirectoryForRead(absolutePath, "read_file");
+    if (directory) {
+      return directory;
+    }
     if (!isLikelyTextFile(absolutePath)) {
       return denied(`read_file supports text/code files. Use inspect_document for ${path.extname(absolutePath) || "this file"} files.`);
     }
@@ -578,6 +581,29 @@ export class WorkspaceTools {
       tool: "read_file",
       category: toolSpecs.read_file.category,
       metadata: textContentMetadata(content)
+    };
+  }
+
+  /**
+   * Reading a folder is how a model asks what is in it. Told to use
+   * inspect_document instead, it went to the shell.
+   */
+  private async listDirectoryForRead(absolutePath: string, tool: "read_file" | "read_range"): Promise<ToolResult | null> {
+    const info = await stat(absolutePath).catch(() => null);
+    if (!info?.isDirectory()) {
+      return null;
+    }
+    const entries = (await readdir(absolutePath, { withFileTypes: true }))
+      .filter((entry) => !entry.name.startsWith("."))
+      .map((entry) => (entry.isDirectory() ? `${entry.name}/` : entry.name))
+      .sort();
+    const relative = normalizeRelative(this.root, absolutePath) || ".";
+    return {
+      ok: true,
+      summary: `${relative} is a folder with ${entries.length} entr${entries.length === 1 ? "y" : "ies"}`,
+      content: `${relative} is a folder, not a file. It contains:\n${entries.join("\n") || "(nothing)"}\nRead one of these files, or use glob to search deeper.`,
+      tool,
+      category: toolSpecs[tool].category
     };
   }
 
@@ -599,6 +625,10 @@ export class WorkspaceTools {
     }
 
     const absolutePath = await this.resolveReadPath(requestedPath);
+    const directory = await this.listDirectoryForRead(absolutePath, "read_range");
+    if (directory) {
+      return directory;
+    }
     if (!isLikelyTextFile(absolutePath)) {
       return denied(`read_range supports text/code files. Use inspect_document for ${path.extname(absolutePath) || "this file"} files.`, "read_range");
     }
@@ -3417,4 +3447,54 @@ function readStringRecord(value: unknown): Record<string, string> {
 
 function stripQuotes(value: string): string {
   return value.replace(/^['"]|['"]$/g, "");
+}
+
+/**
+ * The glob tool promises patterns like `**\/*.java`; a plain substring test
+ * matched none of them, so a model searching for a file type found nothing
+ * and fell back to the shell. A query without glob characters still matches
+ * as a substring, and a pattern without a slash matches the file name at any
+ * depth, which is what `*.java` almost always means.
+ */
+export function fileQueryMatcher(query: string): (filePath: string) => boolean {
+  const pattern = query.replace(/^\.\//, "");
+  if (!/[*?[{]/.test(pattern)) {
+    return (filePath) => filePath.includes(pattern);
+  }
+  const regex = globToRegExp(pattern);
+  return pattern.includes("/") ? (filePath) => regex.test(filePath) : (filePath) => regex.test(filePath.slice(filePath.lastIndexOf("/") + 1));
+}
+
+function globToRegExp(pattern: string): RegExp {
+  let source = "";
+  for (let index = 0; index < pattern.length; index += 1) {
+    const char = pattern[index] as string;
+    if (char === "*") {
+      if (pattern[index + 1] === "*") {
+        // `**/` spans zero or more directories; a bare `**` anything at all.
+        const slash = pattern[index + 2] === "/";
+        source += slash ? "(?:.*/)?" : ".*";
+        index += slash ? 2 : 1;
+      } else {
+        source += "[^/]*";
+      }
+    } else if (char === "?") {
+      source += "[^/]";
+    } else if (char === "{") {
+      const end = pattern.indexOf("}", index);
+      if (end === -1) {
+        source += "\\{";
+        continue;
+      }
+      source += `(?:${pattern.slice(index + 1, end).split(",").map((part) => part.replace(/[.+^$()|\\]/g, "\\$&").replaceAll("*", "[^/]*")).join("|")})`;
+      index = end;
+    } else if (char === "[") {
+      const end = pattern.indexOf("]", index);
+      source += end === -1 ? "\\[" : pattern.slice(index, end + 1);
+      index = end === -1 ? index : end;
+    } else {
+      source += char.replace(/[.+^$()|\\]/g, "\\$&");
+    }
+  }
+  return new RegExp(`^${source}$`);
 }

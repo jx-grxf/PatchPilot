@@ -5,7 +5,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { deflateRawSync } from "node:zlib";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { WorkspaceTools } from "../src/core/workspace.js";
+import { fileQueryMatcher, WorkspaceTools } from "../src/core/workspace.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -1775,3 +1775,33 @@ function createMinimalDocx(text: string): Buffer {
 
   return Buffer.concat([localRecord, centralRecord, endRecord]);
 }
+
+describe("file queries", () => {
+  const files = ["src/Calculator.java", "src/core/agent.ts", "src/core/agent.test.ts", "README.md", "a/b/c/deep.java"];
+  const find = (query: string) => files.filter((file) => fileQueryMatcher(query.toLowerCase())(file.toLowerCase()));
+
+  it("matches glob patterns the tool description promises", () => {
+    expect(find("**/*.java")).toEqual(["src/Calculator.java", "a/b/c/deep.java"]);
+    expect(find("*.java")).toEqual(["src/Calculator.java", "a/b/c/deep.java"]);
+    expect(find("src/*.java")).toEqual(["src/Calculator.java"]);
+    expect(find("src/**/*.test.ts")).toEqual(["src/core/agent.test.ts"]);
+    expect(find("**/*.{md,java}")).toEqual(["src/Calculator.java", "README.md", "a/b/c/deep.java"]);
+    expect(find("./src/core/agent.?s")).toEqual(["src/core/agent.ts"]);
+  });
+
+  it("still matches a plain name as a substring", () => {
+    expect(find("calculator")).toEqual(["src/Calculator.java"]);
+  });
+});
+
+describe("reading a folder", () => {
+  it("lists the folder instead of pointing at inspect_document", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "pp-dir-"));
+    await mkdir(path.join(root, "src", "util"), { recursive: true });
+    await writeFile(path.join(root, "src", "Main.java"), "class Main {}");
+    const result = await new WorkspaceTools({ root }).execute({ name: "read_file", arguments: { path: "src" } });
+    expect(result.ok).toBe(true);
+    expect(result.content).toContain("Main.java");
+    expect(result.content).toContain("util/");
+  });
+});
