@@ -1,6 +1,6 @@
 import type { ModelChatOptions, ModelChatResult, ModelDescriptor, ModelStreamDelta, ModelTelemetry, RawToolCall } from "./types.js";
 import { toOpenAIMessages } from "./wireMessages.js";
-import { samplingFor } from "./samplingProfiles.js";
+import { samplingFor, type Sampling } from "./samplingProfiles.js";
 import { fetchWithTimeout, postToModel } from "./http.js";
 import { defaultStreamIdleTimeoutMs, readServerSentJson, StreamIdleError, StreamTimer, toolCallIdleTimeoutMs } from "./stream.js";
 import { attachTokenCost } from "./tokenAccounting.js";
@@ -585,11 +585,12 @@ function readPositiveInteger(value: string | undefined, fallback: number): numbe
   return Number.isFinite(parsedValue) && parsedValue > 0 ? parsedValue : fallback;
 }
 
-function toSamplingFields(sampling: { temperature: number; topP: number; topK: number }): Record<string, number> {
+function toSamplingFields(sampling: Sampling): Record<string, number> {
   return {
     temperature: sampling.temperature,
     top_p: sampling.topP,
-    ...(sampling.topK > 0 ? { top_k: sampling.topK } : {})
+    ...(sampling.topK > 0 ? { top_k: sampling.topK } : {}),
+    ...(sampling.presencePenalty > 0 ? { presence_penalty: sampling.presencePenalty } : {})
   };
 }
 

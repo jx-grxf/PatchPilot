@@ -1,6 +1,6 @@
 import type { ModelChatOptions, ModelChatResult, ModelStreamDelta, ModelTelemetry, RawToolCall } from "./types.js";
 import { toOllamaMessages } from "./wireMessages.js";
-import { samplingFor } from "./samplingProfiles.js";
+import { samplingFor, type Sampling } from "./samplingProfiles.js";
 import { fetchWithTimeout, postToModel } from "./http.js";
 import { stripTemplateTokens } from "./localOpenAI.js";
 import { defaultStreamIdleTimeoutMs, readNewlineDelimitedJson, StreamTimer, toolCallIdleTimeoutMs } from "./stream.js";
@@ -351,8 +351,9 @@ export function normalizeOllamaBaseUrl(value: string | undefined): string {
  * from the front* when the window is exceeded — which reads as the model
  * having forgotten its own system prompt and tools.
  */
-function toOllamaSampling(sampling: { temperature: number; topP: number; topK: number }): Record<string, number> {
-  return { temperature: sampling.temperature, top_p: sampling.topP, ...(sampling.topK > 0 ? { top_k: sampling.topK } : {}) };
+function toOllamaSampling(sampling: Sampling): Record<string, number> {
+  return { temperature: sampling.temperature, top_p: sampling.topP, ...(sampling.topK > 0 ? { top_k: sampling.topK } : {}),
+    ...(sampling.presencePenalty > 0 ? { presence_penalty: sampling.presencePenalty } : {}) };
 }
 
 export function readOllamaRuntimeOptions(env: NodeJS.ProcessEnv = process.env): OllamaRuntimeOptions {

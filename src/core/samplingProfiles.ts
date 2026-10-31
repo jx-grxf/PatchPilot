@@ -1,4 +1,4 @@
-export type Sampling = { temperature: number; topP: number; topK: number };
+export type Sampling = { temperature: number; topP: number; topK: number; presencePenalty: number };
 
 /**
  * The sampling each family's authors publish for coding work. A single
@@ -6,14 +6,16 @@ export type Sampling = { temperature: number; topP: number; topK: number };
  * gpt-oss noticeably worse; matching the published values fixes both.
  */
 const profiles: Array<{ match: RegExp; sampling: Sampling }> = [
-  { match: /qwen|qwq/i, sampling: { temperature: 0.7, topP: 0.8, topK: 20 } },
-  { match: /gpt-oss/i, sampling: { temperature: 1.0, topP: 1.0, topK: 0 } },
-  { match: /gemma/i, sampling: { temperature: 1.0, topP: 0.95, topK: 64 } },
-  { match: /devstral|mistral|codestral/i, sampling: { temperature: 0.15, topP: 0.95, topK: 0 } },
-  { match: /glm/i, sampling: { temperature: 0.6, topP: 0.95, topK: 0 } }
+  // Qwen publishes presence_penalty 1.5 for its quantized releases: without
+  // it they fall into loops that repeat one line until the output limit.
+  { match: /qwen|qwq/i, sampling: { temperature: 0.7, topP: 0.8, topK: 20, presencePenalty: 1.5 } },
+  { match: /gpt-oss/i, sampling: { temperature: 1.0, topP: 1.0, topK: 0, presencePenalty: 0 } },
+  { match: /gemma/i, sampling: { temperature: 1.0, topP: 0.95, topK: 64, presencePenalty: 0 } },
+  { match: /devstral|mistral|codestral/i, sampling: { temperature: 0.15, topP: 0.95, topK: 0, presencePenalty: 0 } },
+  { match: /glm/i, sampling: { temperature: 0.6, topP: 0.95, topK: 0, presencePenalty: 0 } }
 ];
 
-const fallback: Sampling = { temperature: 0.3, topP: 0.9, topK: 20 };
+const fallback: Sampling = { temperature: 0.3, topP: 0.9, topK: 20, presencePenalty: 0 };
 
 /** Explicit PATCHPILOT_* settings always win over the family profile. */
 export function samplingFor(model: string, env: NodeJS.ProcessEnv = process.env): Sampling {
@@ -21,7 +23,8 @@ export function samplingFor(model: string, env: NodeJS.ProcessEnv = process.env)
   return {
     temperature: readNumber(env.PATCHPILOT_TEMPERATURE) ?? base.temperature,
     topP: readNumber(env.PATCHPILOT_TOP_P) ?? base.topP,
-    topK: readNumber(env.PATCHPILOT_TOP_K) ?? base.topK
+    topK: readNumber(env.PATCHPILOT_TOP_K) ?? base.topK,
+    presencePenalty: readNumber(env.PATCHPILOT_PRESENCE_PENALTY) ?? base.presencePenalty
   };
 }
 
