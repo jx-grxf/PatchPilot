@@ -142,7 +142,8 @@ export function eventToLine(event: AgentEvent): LogLineInput {
         toolCallId: event.toolCallId,
         category: event.category,
         preview: event.preview,
-        target: describeToolTarget(event.arguments)
+        target: describeToolTarget(event.arguments),
+        ...(event.ok && typeof event.metadata?.diff === "string" && event.metadata.diff ? { diff: event.metadata.diff } : {})
       };
     }
     case "todo":

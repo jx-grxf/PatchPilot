@@ -234,6 +234,7 @@ async function ensureLocalServer(model: string): Promise<string> {
     });
     process.stdout.write(`\r\x1b[2KMLX ready at ${server.baseUrl}\n`);
     process.env.PATCHPILOT_LOCAL_URL = server.baseUrl;
+    process.env.PATCHPILOT_RUNTIME_LABEL = "MLX";
     return plan.model;
   } catch (error) {
     process.stdout.write(`\r\x1b[2KCould not start MLX: ${error instanceof Error ? error.message : String(error)}\n`);

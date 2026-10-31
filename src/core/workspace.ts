@@ -11,6 +11,7 @@ import { deflateRawSync, inflateRawSync } from "node:zlib";
 import { fetchWithTimeout } from "./http.js";
 import { readTextLimited } from "./stream.js";
 import { MemoryStore } from "./memory.js";
+import { compactDiff } from "./lineDiff.js";
 import type { AgentToolCall, AgentToolName, ApprovalRequest, PermissionDecision, ToolPermission, ToolResult, ToolSpec } from "./types.js";
 
 const execFileAsync = promisify(execFile);
@@ -1014,18 +1015,23 @@ export class WorkspaceTools {
       }
     }
 
+    const previous = await readFile(absolutePath, "utf8").catch(() => "");
     await mkdir(path.dirname(absolutePath), { recursive: true });
     await writeFile(absolutePath, normalized.content, "utf8");
+    const lineCount = normalized.content.split(/\r?\n/).length;
 
     return {
       ok: true,
-      summary: `wrote ${normalizeRelative(this.root, absolutePath)}`,
+      summary: previous
+        ? `rewrote ${normalizeRelative(this.root, absolutePath)} (${lineCount} lines)`
+        : `created ${normalizeRelative(this.root, absolutePath)} (${lineCount} lines)`,
       content: `Wrote ${normalized.content.length} characters.${normalized.normalized ? " Normalized escaped newlines before writing." : ""}`,
       tool: "write_file",
       category: toolSpecs.write_file.category,
       preview: `Write ${normalizeRelative(this.root, absolutePath)}`,
       metadata: {
-        normalizedEscapedContent: normalized.normalized
+        normalizedEscapedContent: normalized.normalized,
+        diff: compactDiff(previous, normalized.content, { maxLines: previous ? 24 : 12 })
       }
     };
   }
@@ -1196,7 +1202,8 @@ export class WorkspaceTools {
       content: `Edited ${normalizeRelative(this.root, absolutePath)}.`,
       tool: "edit_file",
       category: toolSpecs.edit_file.category,
-      preview: `Edit ${normalizeRelative(this.root, absolutePath)}`
+      preview: `Edit ${normalizeRelative(this.root, absolutePath)}`,
+      metadata: { diff: compactDiff(originalContent, nextContent) }
     };
   }
 

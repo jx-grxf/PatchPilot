@@ -30,11 +30,6 @@ export type AgentRunnerOptions = {
   allowWrite: boolean;
   allowShell: boolean;
   maxSteps: number;
-  /**
-   * How the step budget is chosen. Adaptive unless a caller insists: the model
-   * is a better judge of how many steps a task needs than a flag is.
-   */
-  thinkingMode?: "fixed" | "adaptive";
   /** Left to the model unless explicitly forced. */
   thinking?: ThinkingSetting;
   subagents: boolean;
@@ -657,14 +652,13 @@ export class AgentRunner {
           allowShell: false,
           mode: childOptions.readOnly ? "plan" : parent.mode,
           toolNames: subagentToolNames(childOptions.readOnly),
-          // Thinking budget belongs to the orchestrator; children answer.
+          // Thinking belongs to the orchestrator; children answer.
           thinking: "off",
-          thinkingMode: "fixed",
           // No grandchildren: depth is bounded by construction.
           subagents: false,
           ultramaxx: false,
           sessionStore: undefined,
-          maxSteps: Math.min(parent.maxSteps, 8)
+          maxSteps: Math.min(parent.maxSteps, 25)
         }).run(childOptions.task)
     });
   }

@@ -70,6 +70,11 @@ export function FlowShell(props: FlowShellProps): React.ReactElement {
  * spacing rather than relying on a parent to lay entries out relative to one
  * another.
  */
+function languageFromPath(target: string | undefined): string | undefined {
+  const extension = target?.match(/\.([a-z0-9]+)$/i)?.[1];
+  return extension?.toLowerCase();
+}
+
 function TranscriptEntry(props: { line: LogLine; columns: number }): React.ReactElement {
   const { line } = props;
   const bodyWidth = props.columns - 4;
@@ -130,6 +135,11 @@ function TranscriptEntry(props: { line: LogLine; columns: number }): React.React
           {failure ? (
             <Box paddingLeft={5}>
               <Text color="gray">{failure}</Text>
+            </Box>
+          ) : null}
+          {line.diff ? (
+            <Box paddingLeft={3}>
+              <DiffBlock lines={line.diff.split("\n")} width={bodyWidth - 3} language={languageFromPath(line.target)} />
             </Box>
           ) : null}
         </Box>

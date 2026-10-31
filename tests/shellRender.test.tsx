@@ -74,7 +74,7 @@ describe("shell renders at rest", () => {
     const rows = frame({ rows: 30 }).split("\n");
     expect(rows[0]).toContain("PatchPilot v2.0.0");
     expect(rows.length).toBeLessThan(20);
-    expect(rows.at(-1)).toContain("tab to cycle");
+    expect(rows.at(-1)).toContain("tab to switch");
   });
 
   it("shows every entry of a long transcript", () => {

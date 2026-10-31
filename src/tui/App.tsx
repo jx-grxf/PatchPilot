@@ -177,7 +177,6 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
     allowWrite: props.allowWrite,
     allowShell: props.allowShell,
     maxSteps: props.maxSteps,
-    thinkingMode: props.thinkingMode,
     thinking: props.thinking,
     subagents: props.subagents
   });
@@ -1085,7 +1084,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       if (ultra.modes.length > 0) {
         const engagedDetail: string[] = [];
         if (ultramaxx) {
-          engagedDetail.push("ultramaxx: thinking on, expanded step budget, child agents on.");
+          engagedDetail.push("ultramaxx: thinking on, child agents on.");
         }
         if (ultracheap) {
           engagedDetail.push("ultracheap: terse output, thinking and child agents off.");
@@ -1097,7 +1096,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           engagedDetail.push(`ultrafocus: the agent stays inside ${ultra.focusPath}.`);
         }
         if (ultraloop) {
-          engagedDetail.push("ultraloop: expanded budget with explicit final self-check before finishing.");
+          engagedDetail.push("ultraloop: explicit final self-check before finishing.");
         }
         appendLine({
           tone: "accent",

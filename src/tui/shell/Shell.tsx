@@ -14,7 +14,6 @@ import type { BannerInfo } from "./Banner.js";
 import { composerView, deleteComposerText, insertComposerText } from "./composer.js";
 import { shouldRecallForward, shouldRecallHistory } from "../promptHistory.js";
 import { CommandPalette } from "./CommandPalette.js";
-import { estimateCloudEquivalentCost, formatSavedCost } from "./savings.js";
 import type { ContextUsageView } from "../App.js";
 import type { StreamProgress } from "../transcriptEvents.js";
 import { clipboardImageHint } from "../../core/clipboard.js";
@@ -148,7 +147,12 @@ export function Shell(props: ShellProps): React.ReactElement {
 
 function describeHost(props: Pick<ShellProps, "provider" | "activeHost">): string {
   // Naming the provider twice tells the user nothing; the endpoint does.
-  return props.provider === "ollama" ? props.activeHost?.host.deviceName ?? "ollama" : readEndpointLabel(resolveLocalOpenAIBaseUrl());
+  if (props.provider === "ollama") {
+    return props.activeHost?.host.deviceName ?? "ollama";
+  }
+  const endpoint = readEndpointLabel(resolveLocalOpenAIBaseUrl());
+  const runtime = process.env.PATCHPILOT_RUNTIME_LABEL;
+  return runtime ? `${runtime} ${endpoint}` : endpoint;
 }
 
 function tailLines(text: string, maxLines: number): string {
@@ -590,38 +594,45 @@ function ComposerCursorRow(props: { text: string; cursorCol: number; frame: numb
 }
 
 const modeStyles: Record<AgentMode, { glyph: string; label: string; color: "green" | "yellow" | "red" }> = {
-  plan: { glyph: "⏸", label: "plan mode (read-only)", color: "green" },
-  build: { glyph: "▸", label: "build mode (asks before changes)", color: "yellow" },
-  bypass: { glyph: "▸▸", label: "bypass on (no prompts)", color: "red" }
+  plan: { glyph: "⏸", label: "plan", color: "green" },
+  build: { glyph: "▸", label: "build", color: "yellow" },
+  bypass: { glyph: "▸▸", label: "bypass", color: "red" }
 };
 
-/** Under the composer: where the session runs, then the mode and what keys do now. */
+const modeExplanations: Record<AgentMode, string> = {
+  plan: "read-only",
+  build: "asks before changes",
+  bypass: "no prompts"
+};
+
+/**
+ * Under the composer. The first line is what changes while you work — mode,
+ * model, context, tokens — the second says what the keys do right now.
+ */
 function StatusBar(props: ShellProps & { width: number; hostLabel: string; branch: string | null; approvalActive: boolean }): React.ReactElement {
   const mode = modeStyles[props.agentMode];
   const session = props.sessionTelemetry;
   const promptTokens = useTween(session.promptTokens);
   const responseTokens = useTween(session.responseTokens);
   const flash = useFlash(props.agentMode);
-  const savedUsd = estimateCloudEquivalentCost(session.promptTokens, session.responseTokens, session.cachedPromptTokens);
   // The CLI's --apply/--allow-shell flags grant more than the mode says; that
   // is worth the width, defaults are not.
   const overrides = props.agentMode === "bypass" ? [] : [props.allowWrite ? "write" : "", props.allowShell ? "shell" : ""].filter(Boolean);
-  const hint = props.isRunning ? "esc to interrupt" : props.approvalActive ? "" : props.clipboardImage ? clipboardImageHint() : "/ for commands";
-  const separator = <Text color="gray"> │ </Text>;
+  const hint = props.isRunning ? "esc to interrupt" : props.approvalActive ? "" : props.clipboardImage ? clipboardImageHint() : "/ commands";
+  const separator = <Text color="gray"> · </Text>;
+  const cachedShare = session.promptTokens > 0 ? session.cachedPromptTokens / session.promptTokens : 0;
 
   return (
     <Box flexDirection="column" paddingX={1}>
       <Text wrap="truncate">
-        <Text bold>{shortenMiddle(projectName(props.workspace), 28)}</Text>
+        <Text color={mode.color} inverse={flash} bold>
+          {flash ? " " : ""}
+          {mode.glyph} {mode.label}
+          {flash ? " " : ""}
+        </Text>
+        {overrides.length > 0 ? <Text color="red"> {overrides.join("+")} always on</Text> : null}
         {separator}
-        <Text>{shortenMiddle(props.model, 32)}</Text>
-        <Text color="gray"> on {shortenMiddle(props.hostLabel, 22)}</Text>
-        {props.branch ? (
-          <>
-            {separator}
-            <Text color="gray">{shortenMiddle(props.branch, 32)}</Text>
-          </>
-        ) : null}
+        <Text>{shortenMiddle(displayModelName(props.model), 34)}</Text>
         {props.contextUsage ? (
           <>
             {separator}
@@ -632,22 +643,17 @@ function StatusBar(props: ShellProps & { width: number; hostLabel: string; branc
           <>
             {separator}
             <Text color="gray">
-              {formatCompactTokens(Math.round(promptTokens))} in · {formatCompactTokens(Math.round(responseTokens))} out
-              {savedUsd !== null && savedUsd >= 0.01 ? ` · ${formatSavedCost(savedUsd)} saved` : ""}
+              {formatCompactTokens(Math.round(promptTokens))} in
+              {cachedShare >= 0.05 ? ` (${Math.round(cachedShare * 100)}% cached)` : ""} · {formatCompactTokens(Math.round(responseTokens))} out
             </Text>
           </>
         ) : null}
       </Text>
       <Box justifyContent="space-between">
         <Box flexShrink={1}>
-          <Text wrap="truncate">
-            <Text color={mode.color} inverse={flash} bold={flash}>
-              {flash ? " " : ""}
-              {mode.glyph} {mode.label}
-              {flash ? " " : ""}
-            </Text>
-            {overrides.length > 0 ? <Text color="red"> · {overrides.join(" + ")} always on</Text> : null}
-            <Text color="gray"> · tab to cycle</Text>
+          <Text color="gray" wrap="truncate">
+            {modeExplanations[props.agentMode]} · tab to switch · {shortenMiddle(projectName(props.workspace), 24)}
+            {props.branch ? ` on ${shortenMiddle(props.branch, 28)}` : ""} · {shortenMiddle(props.hostLabel, 22)}
           </Text>
         </Box>
         {hint ? (
@@ -658,6 +664,11 @@ function StatusBar(props: ShellProps & { width: number; hostLabel: string; branc
       </Box>
     </Box>
   );
+}
+
+/** Hugging Face repo ids carry the publisher; the model name is what matters. */
+export function displayModelName(model: string): string {
+  return model.includes("/") ? model.slice(model.lastIndexOf("/") + 1) : model;
 }
 
 /**

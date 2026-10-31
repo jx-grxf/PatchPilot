@@ -15,6 +15,8 @@ export type BannerInfo = {
  * started; the status bar under the composer is what stays current.
  */
 export function Banner(props: BannerInfo): React.ReactElement {
+  const width = Math.max(20, props.columns - 4);
+  const model = props.model.includes("/") ? props.model.slice(props.model.lastIndexOf("/") + 1) : props.model;
   return (
     <Box flexDirection="column" paddingX={1} marginBottom={1}>
       <Text>
@@ -23,15 +25,16 @@ export function Banner(props: BannerInfo): React.ReactElement {
         </Text>
         {props.version ? <Text color="gray"> v{props.version}</Text> : null}
       </Text>
-      <Text color="gray" wrap="truncate">
-        {props.model} · {props.host}
+      <Text wrap="truncate">
+        <Text bold>{shortenMiddle(model, Math.max(16, width - props.host.length - 3))}</Text>
+        <Text color="gray"> · {props.host}</Text>
       </Text>
-      <Text color="gray">{shortenMiddle(abbreviateHome(props.workspace), Math.max(20, props.columns - 4))}</Text>
+      <Text color="gray">{shortenMiddle(abbreviateHome(props.workspace), width)}</Text>
     </Box>
   );
 }
 
-export function abbreviateHome(path: string): string {
+function abbreviateHome(path: string): string {
   const home = process.env.HOME;
   return home && (path === home || path.startsWith(`${home}/`)) ? `~${path.slice(home.length)}` : path;
 }
