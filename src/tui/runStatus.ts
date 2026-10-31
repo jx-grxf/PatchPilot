@@ -59,9 +59,9 @@ export function describeRunActivity(workState: AgentWorkState, progress: StreamP
     // Most local servers parse a tool call out of the token stream and only
     // send its arguments once the call is complete. Without saying so, a long
     // file write looks exactly like a hang.
-    return progress.writing.chars === 0
+    return progress.writing.chars === 0 && progress.tokens === 0
       ? { label, detail: "server sends the arguments when the call is complete" }
-      : { label, detail: `${formatCount(progress.writing.chars)} chars` };
+      : { label, detail: progress.tokens > 0 ? `${formatCount(progress.tokens)} tok` : `${formatCount(progress.writing.chars)} chars` };
   }
 
   // Generating with no visible tokens yet means the model is reasoning.

@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Box, Text, useInput } from "ink";
-import type { AgentTodoItem, AgentWorkState, ApprovalRequest, ModelProvider, SessionTelemetry } from "../../core/types.js";
+import type { AgentTodoItem, AgentToolName, AgentWorkState, ApprovalRequest, ModelProvider, SessionTelemetry } from "../../core/types.js";
+import { formatToolHeading } from "../toolDisplay.js";
 import type { CommandSuggestionItem } from "./CommandPalette.js";
 import { formatCompactTokens, shortenMiddle } from "../format.js";
 import type { OllamaHostDetails } from "../hosts.js";
@@ -111,6 +112,9 @@ export function Shell(props: ShellProps): React.ReactElement {
             </Box>
           </Box>
         ) : null}
+        {props.streamProgress?.writing && (props.streamProgress.writing.path || props.streamProgress.writing.preview) ? (
+          <WritingPreview writing={props.streamProgress.writing} width={width} />
+        ) : null}
         {props.todos.length > 0 ? <TodoDock todos={props.todos} todoFrame={props.todoFrame} width={width} /> : null}
         {props.updatePrompt || props.updateBusy ? (
           <UpdatePrompt prompt={props.updatePrompt} busy={props.updateBusy} />
@@ -154,6 +158,34 @@ function describeHost(props: Pick<ShellProps, "provider" | "activeHost">): strin
   const runtime = process.env.PATCHPILOT_RUNTIME_LABEL;
   return runtime ? `${runtime} ${endpoint}` : endpoint;
 }
+
+/**
+ * The file a call is writing, shown as it streams. Without it a long write is
+ * minutes of a counter; with it you can see whether it is going the right way.
+ */
+function WritingPreview(props: { writing: NonNullable<StreamProgress["writing"]>; width: number }): React.ReactElement {
+  const tool = props.writing.tool;
+  const heading = formatToolHeading(surfaceToolNames[tool], tool.charAt(0).toUpperCase() + tool.slice(1), props.writing.path);
+  const lines = props.writing.preview ? props.writing.preview.split("\n") : [];
+  return (
+    <Box flexDirection="column" marginTop={1}>
+      <Text wrap="truncate">
+        <Text color="cyan">{symbols.tool} </Text>
+        <Text bold>{heading}</Text>
+      </Text>
+      {lines.map((line, index) => (
+        <Box key={index} paddingLeft={2}>
+          <Text color="gray" wrap="truncate">
+            {index === 0 ? `${symbols.result}  ` : "   "}
+            {line.replace(/\t/g, "  ").slice(0, props.width - 6) || " "}
+          </Text>
+        </Box>
+      ))}
+    </Box>
+  );
+}
+
+const surfaceToolNames: Record<string, AgentToolName> = { write: "write_file", edit: "edit_file", bash: "run_shell", read: "read_file" };
 
 function tailLines(text: string, maxLines: number): string {
   const lines = text.split("\n");

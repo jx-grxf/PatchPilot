@@ -34,7 +34,7 @@ export type StreamProgress = {
   tokens: number;
   tokensPerSecond: number | null;
   /** Set while the model is writing a tool call rather than prose. */
-  writing?: { tool: string; chars: number } | null;
+  writing?: { tool: string; chars: number; path?: string; preview?: string } | null;
 };
 
 /**

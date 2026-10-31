@@ -138,7 +138,7 @@ describe("LocalOpenAIClient streaming", () => {
       model: "gemma-4-12b",
       messages: [{ role: "user", content: "write it" }],
       onDelta: (delta) => {
-        if (delta.toolCall) progress.push(delta.toolCall);
+        if (delta.toolCall) progress.push({ name: delta.toolCall.name, argumentChars: delta.toolCall.argumentChars });
       }
     });
 

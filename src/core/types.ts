@@ -32,7 +32,7 @@ export type ModelStreamDelta = {
    * an argument produces no visible content for minutes; without this the user
    * sees a rising counter and nothing else.
    */
-  toolCall?: { name: string; argumentChars: number };
+  toolCall?: { name: string; argumentChars: number; argumentsText?: string };
 };
 
 /** A tool advertised to the runtime, in the shape both providers accept. */
@@ -239,8 +239,11 @@ export type AgentEvent =
        */
       content: string;
       tokensPerSecond: number | null;
-      /** What the model is assembling, when it is writing a tool call. */
-      writing?: { tool: string; chars: number };
+      /**
+       * What the model is assembling, when it is writing a tool call: the file
+       * it targets and the tail of what it has written so far.
+       */
+      writing?: { tool: string; chars: number; path?: string; preview?: string };
       workState: AgentWorkState;
     }
   /** Reasoning text, where the runtime reports it apart from the answer. */

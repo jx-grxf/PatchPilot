@@ -212,7 +212,7 @@ export class LocalOpenAIClient {
           };
           partialCalls.set(index, merged);
           if (merged.name) {
-            delta.toolCall = { name: merged.name, argumentChars: merged.arguments.length };
+            delta.toolCall = { name: merged.name, argumentChars: merged.arguments.length, argumentsText: merged.arguments };
           }
         }
 

@@ -19,6 +19,7 @@ import {
 } from "./toolRepair.js";
 import { toolsForMode, toProviderTools, toWorkspaceCall, type ToolMode, type ToolName } from "./toolSchema.js";
 import { estimateTokens } from "./tokenAccounting.js";
+import { readPartialArguments, readPartialToolCallText, textBeforeToolCall, type PartialCall } from "./partialToolCall.js";
 import { getToolSpec, WorkspaceTools } from "./workspace.js";
 
 export type AgentRunnerOptions = {
@@ -732,7 +733,8 @@ export class AgentRunner {
   }): AsyncGenerator<AgentEvent, ModelChatResult> {
     const timer = new StreamTimer();
     let visibleText = "";
-    let writing: { tool: string; chars: number } | null = null;
+    let writing: { tool: string; chars: number; path?: string; preview?: string } | null = null;
+    let streamedArgumentChars = 0;
     let tokens = 0;
     let wake: (() => void) | null = null;
     let finished = false;
@@ -764,7 +766,12 @@ export class AgentRunner {
           }
           if (delta.toolCall) {
             timer.markFirstToken();
-            writing = { tool: delta.toolCall.name, chars: delta.toolCall.argumentChars };
+            // Argument text is generated tokens too; counting only prose made
+            // the counter stand still for the whole of a file write.
+            const added = Math.max(0, delta.toolCall.argumentChars - streamedArgumentChars);
+            streamedArgumentChars = delta.toolCall.argumentChars;
+            tokens += Math.ceil(added / 4);
+            writing = describeWriting(delta.toolCall.name, delta.toolCall.argumentChars, delta.toolCall.argumentsText ? readPartialArguments(delta.toolCall.argumentsText) : {});
           }
           nudge();
         }
@@ -790,12 +797,18 @@ export class AgentRunner {
       }
 
       const generating = timer.timeToFirstTokenMs !== null;
+      // A runtime that parses calls only once they are complete streams them
+      // as text first; show that as a file preview, not as the answer.
+      const printedCall = readPartialToolCallText(visibleText);
+      if (printedCall?.name) {
+        writing = describeWriting(printedCall.name, printedCall.body?.length ?? 0, printedCall);
+      }
       yield {
         type: "stream",
         phase: generating ? "generating" : "prompt",
         elapsedMs: timer.elapsedMs,
         tokens,
-        content: stripTemplateTokens(visibleText),
+        content: stripTemplateTokens(textBeforeToolCall(visibleText)),
         ...(writing ? { writing } : {}),
         tokensPerSecond: generating && timer.generationMs > 0 ? tokens / (timer.generationMs / 1000) : null,
         workState: options.requestWorkState
@@ -805,6 +818,13 @@ export class AgentRunner {
 
     return await chat;
   }
+}
+
+const writingPreviewLines = 8;
+
+function describeWriting(tool: string, chars: number, partial: PartialCall): { tool: string; chars: number; path?: string; preview?: string } {
+  const preview = partial.body ? partial.body.split("\n").slice(-writingPreviewLines).join("\n") : undefined;
+  return { tool, chars, ...(partial.path ? { path: partial.path } : {}), ...(preview ? { preview } : {}) };
 }
 
 /** A last-resort answer built from what actually ran. */
