@@ -4,8 +4,10 @@
  */
 export const symbols = {
   user: "›",
-  assistant: "◆",
+  // Answers and tool calls share the dot; colour and the ⎿ result line tell them apart.
+  assistant: "●",
   tool: "●",
+  result: "⎿",
   approval: "⚠",
   // A benign "update available" must never read like a destructive-action gate.
   update: "↑",

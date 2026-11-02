@@ -70,16 +70,14 @@ describe("shell renders at rest", () => {
     expect(output).not.toContain("██");
   });
 
-  it("pins the composer to the bottom while the transcript is short", async () => {
-    const { lastFrame } = render(<Shell {...props({ rows: 30 })} />);
-    // Exact heights are measured just after the frame commits.
-    await vi.waitFor(() => expect((lastFrame() ?? "").split("\n").length).toBe(29));
-    const rows = (lastFrame() ?? "").split("\n");
+  it("keeps the composer right under a short transcript instead of padding to the bottom", () => {
+    const rows = frame({ rows: 30 }).split("\n");
     expect(rows[0]).toContain("PatchPilot v2.0.0");
+    expect(rows.length).toBeLessThan(20);
     expect(rows.at(-1)).toContain("tab to cycle");
   });
 
-  it("stops padding once the transcript fills the window", () => {
+  it("shows every entry of a long transcript", () => {
     const lines: LogLine[] = Array.from({ length: 60 }, (_, index) => ({ id: index + 1, kind: "status", tone: "muted", label: "status", text: `entry ${index}` }));
     const output = frame({ rows: 30, lines });
     expect(output).toContain("entry 59");
@@ -114,7 +112,7 @@ describe("shell renders live state", () => {
         writing: { tool: "write_file", chars: 12_400 }
       }
     });
-    expect(toolCall).toContain("Writing write_file");
+    expect(toolCall).toContain("Writing a file");
     expect(toolCall).toContain("12k chars");
   });
 
@@ -159,7 +157,8 @@ describe("shell renders live state", () => {
 
     const output = frame({ lines });
     expect(output).toContain("add a farewell function");
-    expect(output).toContain("edit_file");
+    expect(output).toContain("Update");
+    expect(output).not.toContain("edit_file");
     expect(output).toContain("farewell()");
   });
 });

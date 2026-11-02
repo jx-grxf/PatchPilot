@@ -1,5 +1,6 @@
 import type { AgentWorkState } from "../core/types.js";
 import type { StreamProgress } from "./transcriptEvents.js";
+import { describeStreamingCall } from "./toolDisplay.js";
 
 /**
  * A star that grows and settles rather than a wheel that spins: it reads as
@@ -54,7 +55,7 @@ export function describeRunActivity(workState: AgentWorkState, progress: StreamP
   }
 
   if (progress.writing) {
-    const label = `Writing ${progress.writing.tool}`;
+    const label = describeStreamingCall(progress.writing.tool);
     // Most local servers parse a tool call out of the token stream and only
     // send its arguments once the call is complete. Without saying so, a long
     // file write looks exactly like a hang.

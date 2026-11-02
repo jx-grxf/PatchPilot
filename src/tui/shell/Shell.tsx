@@ -17,9 +17,10 @@ import { CommandPalette } from "./CommandPalette.js";
 import { estimateCloudEquivalentCost, formatSavedCost } from "./savings.js";
 import type { ContextUsageView } from "../App.js";
 import type { StreamProgress } from "../transcriptEvents.js";
+import { clipboardImageHint } from "../../core/clipboard.js";
 import { resolveLocalOpenAIBaseUrl } from "../../core/localOpenAI.js";
 import { Markdown } from "../components/Markdown.js";
-import { estimateTranscriptRows, FlowShell, measureTranscriptRows } from "./FlowShell.js";
+import { FlowShell } from "./FlowShell.js";
 import { readGitBranch } from "../gitBranch.js";
 import { symbols } from "./theme.js";
 import { motionEnabled, pressureColor, sparkline, trackedBar } from "../motion.js";
@@ -47,6 +48,8 @@ export type ShellProps = {
   lines: LogLine[];
   todos: AgentTodoItem[];
   todoFrame: number;
+  /** An image is in the OS clipboard; the footer offers ctrl+v. */
+  clipboardImage?: boolean;
   pendingApproval: ApprovalRequest | null;
   bypassConfirmation: boolean;
   updatePrompt: {
@@ -62,8 +65,10 @@ export type ShellProps = {
   rows: number;
   columns: number;
   activeHost: OllamaHostDetails | null;
-  /** A settings or flags screen, shown in place of the palette while open. */
+  /** A settings, setup or picker screen, shown in place of the palette while open. */
   panel?: React.ReactNode;
+  /** While set, the composer does not take keys and shows this instead. */
+  inputLocked?: string;
   onChange: (value: string) => void;
   onSubmit: (value: string) => void;
   onAttach: (path: string) => string;
@@ -74,9 +79,7 @@ export type ShellProps = {
 
 /**
  * History goes to the terminal's own scrollback through `<Static>`; only the
- * live region below it redraws. While the transcript is shorter than the
- * window, the live region pads itself so the composer sits on the bottom rows
- * and the launch header stays at the top, as in a fullscreen app.
+ * live region below it redraws, and it sits directly under the last entry.
  *
  * Keyboard routing for the palette, approvals and mode switching stays in App;
  * the composer owns typing.
@@ -87,20 +90,6 @@ export function Shell(props: ShellProps): React.ReactElement {
   const hostLabel = describeHost(props);
   const [branch] = useState(() => readGitBranch(props.workspace));
   const [banner] = useState<BannerInfo>(() => ({ version: props.version, model: props.model, host: hostLabel, workspace: props.workspace, columns: width }));
-  const bannerShown = props.transcriptEpoch === 0 ? banner : null;
-  const [, setMeasureTick] = useState(0);
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      if (measureTranscriptRows(props.lines, width, bannerShown)) {
-        setMeasureTick((tick) => tick + 1);
-      }
-    }, 0);
-    return () => clearTimeout(timer);
-  }, [props.lines, width, bannerShown]);
-  const staticRows = estimateTranscriptRows(props.lines, width, bannerShown);
-  // One row short of the window: a frame as tall as the terminal makes Ink
-  // clear and repaint the whole screen on every update, which flickers.
-  const liveMinHeight = Math.max(0, props.rows - 1 - staticRows);
   // The streamed answer can outgrow the screen long before it is complete;
   // only its tail is shown live, the full text lands in scrollback at the end.
   const streamingRows = Math.max(3, props.rows - 12 - (props.todos.length > 0 ? Math.min(props.todos.length, 7) + 2 : 0));
@@ -109,11 +98,18 @@ export function Shell(props: ShellProps): React.ReactElement {
     <>
       {/* Static must be the first child and outside any height-bounded box. */}
       <FlowShell lines={props.lines} transcriptEpoch={props.transcriptEpoch} columns={width} banner={banner} />
-      <Box flexDirection="column" minHeight={liveMinHeight}>
-        <Box flexGrow={1} />
+      {/* The live region follows the transcript directly, as in Claude Code.
+          Padding it to the bottom of the window left a gap that read as lost
+          output while the transcript was short. */}
+      <Box flexDirection="column">
         {props.streamingText ? (
-          <Box flexDirection="column" paddingLeft={2} marginTop={1}>
-            <Markdown text={tailLines(props.streamingText, streamingRows)} width={width - 4} />
+          <Box marginTop={1}>
+            <Box width={2} flexShrink={0}>
+              <Text color="white">{symbols.assistant}</Text>
+            </Box>
+            <Box flexDirection="column" flexGrow={1}>
+              <Markdown text={tailLines(props.streamingText, streamingRows)} width={width - 4} />
+            </Box>
           </Box>
         ) : null}
         {props.todos.length > 0 ? <TodoDock todos={props.todos} todoFrame={props.todoFrame} width={width} /> : null}
@@ -129,6 +125,7 @@ export function Shell(props: ShellProps): React.ReactElement {
           streamProgress={props.streamProgress}
           ultramaxxRun={props.ultramaxxRun}
           approvalActive={approvalActive}
+          inputLocked={props.inputLocked}
           paletteOpen={props.paletteItems.length > 0}
           workState={props.workState}
           status={props.status}
@@ -307,6 +304,7 @@ function Composer(props: {
   streamProgress: StreamProgress | null;
   ultramaxxRun: boolean;
   approvalActive: boolean;
+  inputLocked?: string;
   paletteOpen: boolean;
   workState: AgentWorkState;
   status: string;
@@ -333,7 +331,7 @@ function Composer(props: {
     setCursor((current) => Math.min(current, props.input.length));
   }, [props.input]);
 
-  const typingActive = !props.isRunning && !props.approvalActive;
+  const typingActive = !props.isRunning && !props.approvalActive && !props.inputLocked;
   useInput(
     (value, key) => {
       const safeCursor = Math.max(0, Math.min(cursor, props.input.length));
@@ -452,7 +450,7 @@ function Composer(props: {
   if (!typingActive) {
     rows.push(
       <Text key="locked" color="gray" wrap="truncate">
-        {symbols.user} {props.approvalActive ? "Answer the prompt above to continue" : "Working — esc to interrupt"}
+        {symbols.user} {props.inputLocked ?? (props.approvalActive ? "Answer the prompt above to continue" : "Working — esc to interrupt")}
       </Text>
     );
   } else if (props.input.length === 0) {
@@ -608,7 +606,7 @@ function StatusBar(props: ShellProps & { width: number; hostLabel: string; branc
   // The CLI's --apply/--allow-shell flags grant more than the mode says; that
   // is worth the width, defaults are not.
   const overrides = props.agentMode === "bypass" ? [] : [props.allowWrite ? "write" : "", props.allowShell ? "shell" : ""].filter(Boolean);
-  const hint = props.isRunning ? "esc to interrupt" : props.approvalActive ? "" : "/ for commands";
+  const hint = props.isRunning ? "esc to interrupt" : props.approvalActive ? "" : props.clipboardImage ? clipboardImageHint() : "/ for commands";
   const separator = <Text color="gray"> │ </Text>;
 
   return (

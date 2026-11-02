@@ -1,5 +1,6 @@
 import type { AgentEvent } from "../core/types.js";
 import { formatTokens } from "./format.js";
+import { describeToolTarget } from "./toolDisplay.js";
 import type { LogLineInput } from "./types.js";
 
 /**
@@ -68,6 +69,22 @@ function formatDuration(elapsedMs: number): string {
   return `${Math.floor(seconds / 60)}m${String(Math.round(seconds % 60)).padStart(2, "0")}s`;
 }
 
+/**
+ * Status events (the capability probe, repair nudges, pruning) are the
+ * harness talking to itself. They drive the run line while they matter and
+ * stay out of scrollback unless PATCHPILOT_DEBUG is set. Todo updates already
+ * show in the plan dock, so their tool entry would say the same thing twice.
+ */
+export function belongsInTranscript(event: AgentEvent, debug = Boolean(process.env.PATCHPILOT_DEBUG && process.env.PATCHPILOT_DEBUG !== "0")): boolean {
+  if (debug) {
+    return true;
+  }
+  if (event.type === "status") {
+    return false;
+  }
+  return !(event.type === "tool" && event.name === "update_todo");
+}
+
 export function eventToLine(event: AgentEvent): LogLineInput {
   switch (event.type) {
     case "status":
@@ -124,7 +141,8 @@ export function eventToLine(event: AgentEvent): LogLineInput {
         tool: event.name === "subagent" ? undefined : event.name,
         toolCallId: event.toolCallId,
         category: event.category,
-        preview: event.preview
+        preview: event.preview,
+        target: describeToolTarget(event.arguments)
       };
     }
     case "todo":

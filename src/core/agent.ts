@@ -719,6 +719,7 @@ export class AgentRunner {
           toolCallId: toolResult.toolCallId,
           category: toolResult.category,
           preview: toolResult.preview,
+          arguments: workspaceCallById.get(toolResult.toolCallId)?.arguments,
           content: toolResult.ok ? undefined : toolResult.content,
           metadata: toolResult.metadata
         };

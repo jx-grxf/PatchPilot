@@ -60,11 +60,10 @@ const entryOptions = [
   }
 ];
 
-const stepFlow = ["workflow", "host", "auth", "model", "tune"] as const;
+const stepFlow = ["start", "runtime", "endpoint", "model", "defaults"] as const;
 
 export function OnboardingPanel(props: {
   state: OnboardingState;
-  height: number;
   selectedIndex: number;
   input: string;
   busyMessage?: string | null;
@@ -91,27 +90,26 @@ export function OnboardingPanel(props: {
   const formatModelLabel = props.formatModelLabel ?? ((model: string) => model);
   const formatModelDescription = props.formatModelDescription ?? (() => "");
   const visibleModels = props.state.step === "model" ? selectableModels(props.input, props.state.models, formatModelLabel) : [];
-  const selectedModel = props.state.step === "model" ? visibleModels[props.selectedIndex] ?? null : null;
 
   return (
-    <Box borderStyle="round" borderColor="cyan" flexDirection="column" paddingX={2} paddingY={1} height={props.height} overflowY="hidden">
+    // Sits in the live region under the transcript, like every other panel:
+    // replacing the whole shell remounted the static transcript and printed
+    // the session a second time.
+    <Box borderStyle="round" borderColor="gray" flexDirection="column" paddingX={1} marginTop={1}>
       <Box flexDirection="row">
-        <Text color="cyan" bold>
-          {symbols.assistant} PatchPilot
-        </Text>
-        <Text color="gray"> — first-run setup</Text>
+        <Text bold>Setup</Text>
+        <Text color="gray">  esc skips {symbols.bullet} /onboarding reopens it</Text>
       </Box>
-      <Text color="gray">A few quick choices, then you are ready to ship. {symbols.bullet} reopen anytime with /onboarding</Text>
-      <Box marginTop={1} flexDirection="row">
+      <Box flexDirection="row">
         {stepFlow.map((step, index) => {
           const done = index < currentStepIndex;
           const active = index === currentStepIndex;
-          const glyph = done ? symbols.todoDone : active ? symbols.todoActive : symbols.todoPending;
-          const color = done ? "green" : active ? "cyan" : "gray";
+          const color = done ? "green" : active ? "white" : "gray";
           return (
             <Text key={step} color={color} bold={active}>
-              {index > 0 ? "  " : ""}
-              {glyph} {step}
+              {index > 0 ? <Text color="gray"> {symbols.arrow} </Text> : ""}
+              {done ? `${symbols.todoDone} ` : ""}
+              {step}
             </Text>
           );
         })}
@@ -195,7 +193,7 @@ export function OnboardingPanel(props: {
             subtitle={`${visibleModels.length} matching model${visibleModels.length === 1 ? "" : "s"}`}
             rows={visibleModels.map((model) => ({
               label: formatModelLabel(model),
-              description: `${model === selectedModel ? "selected" : "available"}${formatModelDescription(model)}`
+              description: formatModelDescription(model).replace(/^[\s·,-]+/, "")
             }))}
             selectedIndex={props.selectedIndex}
           />
@@ -209,11 +207,6 @@ export function OnboardingPanel(props: {
           selectedIndex={props.selectedIndex}
         />
       ) : null}
-      <Box marginTop={1}>
-        <Text color="gray">
-          {symbols.info} Remote inference keeps file reads, writes, shell, Git, and tests on this device — only the model call moves.
-        </Text>
-      </Box>
     </Box>
   );
 }
@@ -358,12 +351,12 @@ function SelectionList(props: {
         const absoluteIndex = startIndex + index;
         const isSelected = absoluteIndex === props.selectedIndex;
         return (
-          <Box key={`${absoluteIndex}-${row.label}`} marginTop={1}>
-            <Box width={3}>
-              <Text color={isSelected ? "cyan" : "gray"}>{isSelected ? symbols.todoActive : " "}</Text>
+          <Box key={`${absoluteIndex}-${row.label}`}>
+            <Box width={2} flexShrink={0}>
+              <Text color={isSelected ? "cyan" : "gray"}>{isSelected ? symbols.user : " "}</Text>
             </Box>
-            <Box width={28}>
-              <Text color={isSelected ? "white" : "cyan"} bold={isSelected} wrap="truncate">
+            <Box width={44} flexShrink={0}>
+              <Text color={isSelected ? "cyan" : "white"} bold={isSelected} wrap="truncate">
                 {row.label}
               </Text>
             </Box>
