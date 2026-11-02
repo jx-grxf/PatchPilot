@@ -183,6 +183,10 @@ export type ApprovalRequest = {
   preview: string;
   arguments: Record<string, unknown>;
   bypassable?: boolean;
+  /** Which background agent asks; absent for the main agent. */
+  agent?: string;
+  /** The asking agent's own signal, so a stopped agent's prompt is denied instead of shown. */
+  signal?: AbortSignal;
 };
 
 export type AgentResponse =
@@ -258,7 +262,7 @@ export type AgentEvent =
       id: string;
       agentType: "explore" | "general";
       description: string;
-      state: "running" | "ok" | "failed" | "aborted";
+      state: "running" | "ok" | "failed" | "aborted" | "incomplete";
       toolCalls: number;
       /** The call the child is on, for a `Read(src/Main.java)` line. */
       activity?: { name: AgentEventToolName; arguments: Record<string, unknown> };
@@ -310,6 +314,8 @@ export type AgentEvent =
       type: "final";
       message: string;
       workState: AgentWorkState;
+      /** Set when the loop ended on its step cap rather than on an answer. */
+      stoppedBy?: "step_limit";
     }
   | {
       type: "error";

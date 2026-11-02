@@ -1,5 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
-import { AgentsDock, type SubagentProgress } from "./AgentsDock.js";
+import type { ChildAgentSnapshot } from "../../core/agentSupervisor.js";
+import { agentDisplayName, isAgentActive, maxVisibleAgentRows } from "../agentView.js";
+import { AgentList, AgentsDock, type MainAgentRow } from "./AgentsDock.js";
 import { Box, Text, useInput } from "ink";
 import type { AgentTodoItem, AgentToolName, AgentWorkState, ApprovalRequest, ModelProvider, SessionTelemetry } from "../../core/types.js";
 import { formatToolHeading, toolVerb } from "../toolDisplay.js";
@@ -48,7 +50,13 @@ export type ShellProps = {
   sessionTelemetry: SessionTelemetry;
   lines: LogLine[];
   todos: AgentTodoItem[];
-  agents: SubagentProgress[];
+  /** Every child of this session, for the list under the status bar. */
+  agents: ChildAgentSnapshot[];
+  /** The children of the current delegation, for the tree above the composer. */
+  agentTree: ChildAgentSnapshot[];
+  /** The child being viewed; null shows the main agent. */
+  viewedAgent: ChildAgentSnapshot | null;
+  mainAgent: MainAgentRow;
   todoFrame: number;
   /** An image is in the OS clipboard; the footer offers ctrl+v. */
   clipboardImage?: boolean;
@@ -92,36 +100,47 @@ export function Shell(props: ShellProps): React.ReactElement {
   const hostLabel = describeHost(props);
   const [branch] = useState(() => readGitBranch(props.workspace));
   const [banner] = useState<BannerInfo>(() => ({ version: props.version, model: props.model, host: hostLabel, workspace: props.workspace, columns: width }));
+  const viewed = props.viewedAgent;
+  const viewedRunning = viewed ? isAgentActive(viewed.state) : props.isRunning;
+  const streamingText = viewed ? (viewed.streaming?.content ?? "") : props.streamingText;
+  const streamProgress: StreamProgress | null = viewed
+    ? viewed.streaming
+      ? { phase: viewed.streaming.phase, elapsedMs: viewed.durationMs, tokens: viewed.streaming.tokens, tokensPerSecond: viewed.streaming.tokensPerSecond, writing: viewed.streaming.writing as StreamProgress["writing"] }
+      : null
+    : props.streamProgress;
+  const todos = viewed ? [] : props.todos;
+  const listRows = props.agents.length > 0 ? Math.min(props.agents.length, maxVisibleAgentRows) + 4 : 0;
+  const treeRows = props.agentTree.length > 0 ? props.agentTree.length * 2 + 2 : 0;
   // The streamed answer can outgrow the screen long before it is complete;
   // only its tail is shown live, the full text lands in scrollback at the end.
-  const streamingRows = Math.max(3, props.rows - 12 - (props.todos.length > 0 ? Math.min(props.todos.length, 7) + 2 : 0));
+  const streamingRows = Math.max(3, props.rows - 12 - (todos.length > 0 ? Math.min(todos.length, 7) + 2 : 0) - listRows - treeRows);
   // The composer stays on the bottom edge while the window is not full yet. The live region claims the rest of the window and stacks its
   // content at the bottom; a minimum height rather than a measured spacer, so
   // a growing run line can never push the frame past the window for a frame.
-  const liveMinRows = Math.max(0, props.rows - estimateTranscriptRows(props.lines, width, props.transcriptEpoch === 0) - 1);
+  const liveMinRows = Math.max(0, props.rows - estimateTranscriptRows(props.lines, width, !viewed) - 1);
 
   return (
     <>
       {/* Static must be the first child and outside any height-bounded box. */}
-      <FlowShell lines={props.lines} transcriptEpoch={props.transcriptEpoch} columns={width} banner={banner} />
+      <FlowShell lines={props.lines} transcriptEpoch={props.transcriptEpoch} view={viewed?.id ?? null} columns={width} banner={banner} />
       {/* The live region follows the transcript and fills the rest of the
           window, so the composer sits on the bottom edge (see liveMinRows). */}
       <Box flexDirection="column" minHeight={liveMinRows} justifyContent="flex-end">
-        {props.streamingText ? (
+        {streamingText ? (
           <Box marginTop={1}>
             <Box width={2} flexShrink={0}>
               <Text color="white">{symbols.assistant}</Text>
             </Box>
             <Box flexDirection="column" width={width - 4}>
-              <Markdown text={tailLines(props.streamingText, streamingRows)} width={width - 4} />
+              <Markdown text={tailLines(streamingText, streamingRows)} width={width - 4} />
             </Box>
           </Box>
         ) : null}
-        {props.streamProgress?.writing && (props.streamProgress.writing.path || props.streamProgress.writing.preview) ? (
-          <WritingPreview writing={props.streamProgress.writing} width={width} />
+        {streamProgress?.writing && (streamProgress.writing.path || streamProgress.writing.preview) ? (
+          <WritingPreview writing={streamProgress.writing} width={width} />
         ) : null}
-        {props.agents.length > 0 ? <AgentsDock agents={props.agents} width={width} /> : null}
-        {props.todos.length > 0 ? <TodoDock todos={props.todos} todoFrame={props.todoFrame} width={width} /> : null}
+        {props.agentTree.length > 0 ? <AgentsDock agents={props.agentTree} width={width} /> : null}
+        {todos.length > 0 ? <TodoDock todos={todos} todoFrame={props.todoFrame} width={width} /> : null}
         {props.updatePrompt || props.updateBusy ? (
           <UpdatePrompt prompt={props.updatePrompt} busy={props.updateBusy} />
         ) : approvalActive ? (
@@ -130,14 +149,16 @@ export function Shell(props: ShellProps): React.ReactElement {
         {props.panel}
         <Composer
           input={props.input}
-          isRunning={props.isRunning}
-          streamProgress={props.streamProgress}
-          ultramaxxRun={props.ultramaxxRun}
+          isRunning={viewedRunning}
+          runElapsedMs={viewed?.durationMs}
+          placeholder={composerPlaceholder(viewed, props.isRunning)}
+          streamProgress={streamProgress}
+          ultramaxxRun={viewed ? false : props.ultramaxxRun}
           approvalActive={approvalActive}
           inputLocked={props.inputLocked}
           paletteOpen={props.paletteItems.length > 0}
-          workState={props.workState}
-          status={props.status}
+          workState={viewed ? "inspecting" : props.workState}
+          status={viewed ? viewed.description : props.status}
           width={width}
           onAttach={props.onAttach}
           onChange={props.onChange}
@@ -150,9 +171,19 @@ export function Shell(props: ShellProps): React.ReactElement {
         ) : (
           <StatusBar {...props} width={width} hostLabel={hostLabel} branch={branch} approvalActive={approvalActive} />
         )}
+        {props.agents.length > 0 && props.paletteItems.length === 0 ? (
+          <AgentList agents={props.agents} selected={viewed?.id ?? null} main={props.mainAgent} width={width} />
+        ) : null}
       </Box>
     </>
   );
+}
+
+function composerPlaceholder(viewed: ChildAgentSnapshot | null, mainRunning: boolean): string {
+  if (viewed) {
+    return `Message ${agentDisplayName(viewed)}…`;
+  }
+  return mainRunning ? "Message the agent, it reads this after the current step" : "Describe a task, or type / for commands";
 }
 
 function describeHost(props: Pick<ShellProps, "provider" | "activeHost">): string {
@@ -254,7 +285,7 @@ function ApprovalPrompt(props: { request: ApprovalRequest | null; bypassConfirma
     <Box borderStyle="round" borderColor="yellow" flexDirection="column" paddingX={1} marginTop={1}>
       <Box justifyContent="space-between">
         <Text color="yellow" bold>
-          {symbols.approval} Allow {toolVerb(request.tool)}?
+          {symbols.approval} {request.agent ? `${request.agent}: ` : ""}Allow {toolVerb(request.tool)}?
         </Text>
         <Text color="gray">
           {request.permission} · {request.risk} risk
@@ -343,6 +374,9 @@ function useSpinnerFrame(active: boolean, intervalMs = spinnerFrameMs): number {
 function Composer(props: {
   input: string;
   isRunning: boolean;
+  /** Set when showing a child, whose time this component did not see start. */
+  runElapsedMs?: number;
+  placeholder: string;
   streamProgress: StreamProgress | null;
   ultramaxxRun: boolean;
   approvalActive: boolean;
@@ -373,7 +407,7 @@ function Composer(props: {
     setCursor((current) => Math.min(current, props.input.length));
   }, [props.input]);
 
-  const typingActive = !props.isRunning && !props.approvalActive && !props.inputLocked;
+  const typingActive = !props.approvalActive && !props.inputLocked;
   useInput(
     (value, key) => {
       const safeCursor = Math.max(0, Math.min(cursor, props.input.length));
@@ -492,15 +526,15 @@ function Composer(props: {
   if (!typingActive) {
     rows.push(
       <Text key="locked" color="gray" wrap="truncate">
-        {symbols.user} {props.inputLocked ?? (props.approvalActive ? "Answer the prompt above to continue" : "Working — esc to interrupt")}
+        {symbols.user} {props.inputLocked ?? "Answer the prompt above to continue"}
       </Text>
     );
   } else if (props.input.length === 0) {
     rows.push(
       <Box key="placeholder">
         <Text color="white">{symbols.user} </Text>
-        <Text inverse>D</Text>
-        <Text color="gray">escribe a task, or type / for commands</Text>
+        <Text inverse>{props.placeholder.charAt(0)}</Text>
+        <Text color="gray">{props.placeholder.slice(1)}</Text>
       </Box>
     );
   } else {
@@ -521,7 +555,7 @@ function Composer(props: {
       {props.isRunning ? (
         <RunLine
           frame={frame}
-          elapsedMs={runningSince ? Date.now() - runningSince : 0}
+          elapsedMs={props.runElapsedMs ?? (runningSince ? Date.now() - runningSince : 0)}
           workState={props.workState}
           status={props.status}
           progress={props.streamProgress}

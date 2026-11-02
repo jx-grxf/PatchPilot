@@ -24,15 +24,17 @@ import type { LogLine } from "../types.js";
  *
  *   1. Items are rendered once and never revisited, so a row must be complete
  *      before it is appended. Nothing here may depend on later state.
- *   2. Clearing the transcript cannot un-print what the terminal already has.
- *      `/clear` remounts this component with a new epoch key, which starts a
- *      fresh Static region rather than pretending the old rows are gone.
+ *   2. Static cannot un-print what the terminal already has. `/clear` and a
+ *      view switch erase the terminal first, then change the key, which starts
+ *      a fresh Static region.
  */
 
 export type FlowShellProps = {
   lines: LogLine[];
   /** Bumped by /clear and /new to start a fresh static region. */
   transcriptEpoch: number;
+  /** The agent whose history is shown. Changing it reprints the region, so the caller clears the terminal first. */
+  view?: string | null;
   columns: number;
   /** Printed once, ahead of the first entry. */
   banner?: BannerInfo;
@@ -50,10 +52,13 @@ export function FlowShell(props: FlowShellProps): React.ReactElement {
   // Captured on first render: Static never revisits an item, so the banner
   // shows the session as it was launched.
   const [bannerItem] = React.useState<BannerItem | null>(() => (props.banner ? { id: -1, banner: props.banner } : null));
-  const items: Array<LogLine | BannerItem> = bannerItem && props.transcriptEpoch === 0 ? [bannerItem, ...props.lines] : props.lines;
+  // Also after /clear: a static region with nothing new to print would leave the
+  // erased screen blank, because Ink skips a frame identical to the last one.
+  const showBanner = bannerItem && !props.view;
+  const items: Array<LogLine | BannerItem> = showBanner ? [bannerItem, ...props.lines] : props.lines;
 
   return (
-    <Static key={props.transcriptEpoch} items={items}>
+    <Static key={`${props.transcriptEpoch}:${props.view ?? "main"}`} items={items}>
       {(item) =>
         item.id === -1 ? (
           <Banner key="banner" {...(item as BannerItem).banner} />
@@ -122,7 +127,7 @@ function TranscriptEntry(props: { line: LogLine; columns: number }): React.React
 
     case "tool": {
       const failed = line.tone === "danger" || line.tone === "warning";
-      const failure = failed && line.detail ? firstLines(line.detail, 3, bodyWidth - 4) : null;
+      const failure = failed && line.detail && line.detail.trim() !== line.text.trim() ? firstLines(line.detail, 3, bodyWidth - 4) : null;
       const output = !failed && line.detail && (line.category === "shell" || line.category === "test") ? firstLines(line.detail, 4, bodyWidth - 5) : null;
       // A subagent's answer is what the user waited for; show its start.
       const agentAnswer = !failed && line.detail && line.agent ? firstLines(line.detail, 3, bodyWidth - 5) : null;

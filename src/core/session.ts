@@ -2,7 +2,26 @@ import { appendFile, mkdir, readFile, readdir, writeFile } from "node:fs/promise
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { getPatchPilotConfigDir } from "./env.js";
-import type { ModelProvider, SessionEvent } from "./types.js";
+import type { ChildAgentState, ChildEntry } from "./agentSupervisor.js";
+import type { SubagentType } from "./subagentRunner.js";
+import type { ChatMessage, ModelProvider, SessionEvent } from "./types.js";
+
+export type AgentSessionEvent =
+  | { type: "agent.started"; id: string; agentType: SubagentType; description: string; prompt: string; startedAt: number }
+  | { type: "agent.entry"; id: string; entry: ChildEntry }
+  | {
+      type: "agent.finished";
+      id: string;
+      state: ChildAgentState;
+      durationMs: number;
+      promptTokens: number;
+      outputTokens: number;
+      toolCalls: number;
+      transcript: string | null;
+      conversation: ChatMessage[];
+    };
+
+export type StoredSessionEvent = SessionEvent | AgentSessionEvent;
 
 export type SessionSummary = {
   sessionId: string;
@@ -22,6 +41,10 @@ export type SessionRecap = {
 type SessionIndex = {
   sessions: SessionSummary[];
 };
+
+// One chain for every store in the process: agents append concurrently, and
+// the shared index is read, patched and rewritten on each append.
+let appendChain: Promise<unknown> = Promise.resolve();
 
 export class SessionStore {
   readonly workspace: string;
@@ -51,23 +74,34 @@ export class SessionStore {
     });
   }
 
-  async append(event: SessionEvent): Promise<void> {
-    await mkdir(this.sessionDir, {
-      recursive: true
-    });
-    await appendFile(this.sessionPath, `${JSON.stringify(event)}\n`, "utf8");
-    await this.upsertIndex(event);
+  append(event: StoredSessionEvent): Promise<void> {
+    const run = appendChain.then(() => this.write(event));
+    appendChain = run.then(
+      () => undefined,
+      () => undefined
+    );
+    return run;
   }
 
   async loadEvents(): Promise<SessionEvent[]> {
     return await readSessionEvents(this.sessionPath);
   }
 
+  private async write(event: StoredSessionEvent): Promise<void> {
+    await mkdir(this.sessionDir, {
+      recursive: true
+    });
+    await appendFile(this.sessionPath, `${JSON.stringify(event)}\n`, "utf8");
+    if (event.type !== "agent.entry") {
+      await this.upsertIndex(event);
+    }
+  }
+
   async summary(): Promise<SessionSummary> {
     return summarizeEvents(await this.loadEvents(), this.sessionId, this.workspace);
   }
 
-  private async upsertIndex(event: SessionEvent): Promise<void> {
+  private async upsertIndex(event: StoredSessionEvent): Promise<void> {
     const index = await readIndex(this.indexPath);
     const currentSummary = await this.summary().catch(() => ({
       sessionId: this.sessionId,
@@ -89,13 +123,26 @@ export class SessionStore {
 }
 
 export async function readSessionEvents(sessionPath: string): Promise<SessionEvent[]> {
+  return (await readStoredEvents(sessionPath)).filter((event): event is SessionEvent => !isAgentSessionEvent(event));
+}
+
+export async function readAgentEvents(sessionPath: string): Promise<AgentSessionEvent[]> {
+  return (await readStoredEvents(sessionPath)).filter(isAgentSessionEvent);
+}
+
+function isAgentSessionEvent(event: StoredSessionEvent): event is AgentSessionEvent {
+  return event.type === "agent.started" || event.type === "agent.entry" || event.type === "agent.finished";
+}
+
+async function readStoredEvents(sessionPath: string): Promise<StoredSessionEvent[]> {
   const content = await readFile(sessionPath, "utf8").catch(() => "");
   return content
     .split(/\r?\n/)
     .filter(Boolean)
     .flatMap((line) => {
       try {
-        return [JSON.parse(line) as SessionEvent];
+        const parsed: unknown = JSON.parse(line);
+        return typeof parsed === "object" && parsed !== null && typeof (parsed as { type?: unknown }).type === "string" ? [parsed as StoredSessionEvent] : [];
       } catch {
         return [];
       }
@@ -287,7 +334,7 @@ async function readIndex(indexPath: string): Promise<SessionIndex> {
   }
 }
 
-function summaryPatchFromEvent(event: SessionEvent): Partial<SessionSummary> {
+function summaryPatchFromEvent(event: StoredSessionEvent): Partial<SessionSummary> {
   if (event.type === "run.started") {
     return {
       lastTask: event.task,
@@ -299,7 +346,11 @@ function summaryPatchFromEvent(event: SessionEvent): Partial<SessionSummary> {
   return {};
 }
 
-function eventTimestamp(event: SessionEvent): string {
+function eventTimestamp(event: StoredSessionEvent): string {
+  if (isAgentSessionEvent(event)) {
+    return new Date().toISOString();
+  }
+
   if ("createdAt" in event) {
     return event.createdAt;
   }
@@ -323,7 +374,7 @@ function eventTimestamp(event: SessionEvent): string {
   return new Date().toISOString();
 }
 
-function formatEventForResume(event: SessionEvent): string {
+function formatEventForResume(event: StoredSessionEvent): string {
   switch (event.type) {
     case "session.created":
       return `- session created at ${event.createdAt}`;
@@ -348,6 +399,9 @@ function formatEventForResume(event: SessionEvent): string {
     case "context.compacted":
       return `- context compacted into ${event.summaryId} from ${event.itemIds.length} items`;
     case "model.request":
+    case "agent.started":
+    case "agent.entry":
+    case "agent.finished":
       return "";
   }
 }

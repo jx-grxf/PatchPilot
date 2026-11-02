@@ -1,3 +1,4 @@
+import type { ChildAgentSnapshot } from "../src/core/agentSupervisor.js";
 import { render } from "ink-testing-library";
 import { describe, expect, it, vi } from "vitest";
 import { Shell, type ShellProps } from "../src/tui/shell/Shell.js";
@@ -29,6 +30,9 @@ function props(overrides: Partial<ShellProps> = {}): ShellProps {
     lines: [],
     todos: [],
     agents: [],
+    agentTree: [],
+    viewedAgent: null,
+    mainAgent: { activity: "Idle", active: false, durationMs: 0, promptTokens: 0, outputTokens: 0 },
     todoFrame: 0,
     pendingApproval: null,
     bypassConfirmation: false,
@@ -55,6 +59,24 @@ function frame(overrides: Partial<ShellProps> = {}): string {
     .split("\n")
     .map((row) => row.trimEnd())
     .join("\n");
+}
+
+function child(overrides: Partial<ChildAgentSnapshot> = {}): ChildAgentSnapshot {
+  return {
+    id: "agent-1",
+    agentType: "explore",
+    description: "look around",
+    state: "running",
+    startedAt: 0,
+    durationMs: 0,
+    promptTokens: 0,
+    outputTokens: 0,
+    toolCalls: 0,
+    streaming: null,
+    entries: [],
+    transcript: null,
+    ...overrides
+  };
 }
 
 describe("shell renders at rest", () => {
@@ -150,16 +172,62 @@ describe("shell renders live state", () => {
   });
 
   it("shows running subagents as a tree with the call each is on", () => {
-    const output = frame({
-      agents: [
-        { type: "subagent", id: "call_a", agentType: "explore", description: "find compile bug", state: "running", toolCalls: 3, activity: { name: "read_file", arguments: { path: "src/Main.java" } }, workState: "planning" },
-        { type: "subagent", id: "call_b", agentType: "explore", description: "check speed", state: "running", toolCalls: 0, workState: "planning" }
-      ]
-    });
+    const agents = [
+      child({ id: "agent-1", description: "find compile bug", toolCalls: 3, activity: { name: "read_file", arguments: { path: "src/Main.java" } } }),
+      child({ id: "agent-2", description: "check speed" })
+    ];
+    const output = frame({ agents, agentTree: agents });
     expect(output).toContain("2 agents running");
-    expect(output).toContain("Explore (find compile bug)");
+    expect(output).toContain("Explore 1 (find compile bug)");
     expect(output).toContain("Read(src/Main.java) · 3 tool calls");
     expect(output).toContain("Starting…");
+  });
+
+  it("lists main and every child with time and tokens under the status bar", () => {
+    const output = frame({
+      columns: 120,
+      agents: [child({ id: "agent-1", description: "find compile bug", durationMs: 72_000, promptTokens: 9_600, outputTokens: 1_000 })],
+      mainAgent: { activity: "Reading prompt", active: true, durationMs: 5_000, promptTokens: 100, outputTokens: 20 }
+    });
+    expect(output).toContain("↑/↓ to select");
+    expect(output).toContain("ctrl+x ctrl+k stops all agents");
+    expect(output).toMatch(/❯ ● main/);
+    expect(output).toMatch(/○ Explore 1\s+find compile bug/);
+    expect(output).toContain("1m 12s · ↑ 9.6k · ↓ 1.0k tokens");
+  });
+
+  it("shows no list without children", () => {
+    expect(frame({ agents: [] })).not.toContain("↑/↓ to select");
+  });
+
+  it("follows the viewed child: its stream, its name in the composer, esc stops it", () => {
+    const viewed = child({ id: "agent-2", agentType: "general", description: "fix parser", streaming: { phase: "generating", content: "child text so far", tokens: 12, tokensPerSecond: 40, writing: null } });
+    const output = frame({ agents: [viewed], viewedAgent: viewed, streamingText: "main text", todos: [{ title: "main todo", status: "in_progress" }] });
+    expect(output).toContain("child text so far");
+    expect(output).not.toContain("main text");
+    expect(output).not.toContain("main todo");
+    expect(output).toContain("essage Agent 2…");
+    expect(output).toContain("esc stops this agent");
+    expect(output).toMatch(/❯ ● Agent 2/);
+  });
+
+  it("marks a child that ran out of steps instead of calling it done", () => {
+    const output = frame({ agents: [child({ state: "incomplete", toolCalls: 25 })] });
+    expect(output).toContain("Step limit reached · 25 tool calls");
+    expect(output).not.toContain("Done");
+  });
+
+  it("keeps the composer open while the main agent runs", () => {
+    const output = frame({ isRunning: true });
+    expect(output).toContain("essage the agent");
+    expect(output).not.toContain("Working");
+  });
+
+  it("names the agent asking for approval", () => {
+    const output = frame({
+      pendingApproval: { tool: "write_file", permission: "write", risk: "medium", reason: "", preview: "src/a.ts", arguments: { path: "src/a.ts" }, agent: "agent-2" } as never
+    });
+    expect(output).toContain("agent-2: Allow");
   });
 
   it("renders a finished subagent with the start of its answer", () => {

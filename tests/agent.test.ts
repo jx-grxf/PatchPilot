@@ -167,6 +167,7 @@ describe("agent loop guards", () => {
   it("enables task delegation when the prompt explicitly asks for a subagent", () => {
     expect(shouldEnableSubagents("spawn a subagent and inspect the repo", false)).toBe(true);
     expect(shouldEnableSubagents("Delegate this audit to a child agent", false)).toBe(true);
+    expect(shouldEnableSubagents("Spawne 2 Subagenten für das Brain", false)).toBe(true);
     expect(shouldEnableSubagents("inspect the repo", false)).toBe(false);
     expect(shouldEnableSubagents("inspect the repo", true)).toBe(true);
   });

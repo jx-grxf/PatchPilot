@@ -1,5 +1,6 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useApp, useInput, useStdout } from "ink";
+import path from "node:path";
 import { AgentRunner, type AgentRunnerOptions } from "../core/agent.js";
 import { cleanupPatchPilot, readCleanupTarget } from "../core/cleanup.js";
 import { ContextStore } from "../core/contextStore.js";
@@ -46,7 +47,12 @@ import {
   eventToStatus,
   type StreamProgress
 } from "./transcriptEvents.js";
-import type { SubagentProgress } from "./shell/AgentsDock.js";
+import { AgentSupervisor } from "../core/agentSupervisor.js";
+import { createChildSpawner } from "../core/agent.js";
+import { readAgentEvents } from "../core/session.js";
+import { serializeApprovals, WriteCoordinator } from "../core/writeCoordinator.js";
+import { agentTranscriptLines, clearTerminalSequence, isAgentActive, moveSelection, orderAgents } from "./agentView.js";
+import { useAgents } from "./useAgents.js";
 import { ConfigPanel, visibleSettings } from "./components/ConfigPanel.js";
 import { ModelPicker, type ModelPickerState } from "./components/ModelPicker.js";
 import {
@@ -78,6 +84,9 @@ import {
 } from "./onboardingPreferences.js";
 import { toolVerb } from "./toolDisplay.js";
 import { type AgentMode, type LogLine, type LogLineInput, type ToolTelemetry } from "./types.js";
+
+const maxWakeRoundsPerPrompt = 3;
+const approvalKeyDelayMs = 800;
 
 export type PatchPilotAppProps = AgentRunnerOptions & {
   initialTask?: string;
@@ -118,7 +127,45 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   const conversationRef = useRef<ChatMessage[]>([]);
   const [lines, setLines] = useState<LogLine[]>([]);
   const [todos, setTodos] = useState<AgentTodoItem[]>([]);
-  const [agents, setAgents] = useState<SubagentProgress[]>([]);
+  const treeSinceRef = useRef(0);
+  const [supervisor] = useState(
+    () =>
+      new AgentSupervisor({
+        transcriptDir: path.join(props.workspace, ".patchpilot", "subagents"),
+        persist: (event) => void sessionStoreRef.current.append(event).catch(() => undefined)
+      })
+  );
+  const agents = useAgents(supervisor);
+  const [writeCoordinator] = useState(() => new WriteCoordinator());
+  const [viewAgentId, setViewAgentId] = useState<string | null>(null);
+  const viewedAgent = agents.find((agent) => agent.id === viewAgentId) ?? null;
+  const viewedEntryCount = viewedAgent?.entries.length ?? 0;
+  const viewedLines = useMemo(
+    () => (viewedAgent ? agentTranscriptLines(viewedAgent) : []),
+    // Only new entries change the lines; every other snapshot is live progress.
+    [viewedAgent?.id, viewedEntryCount]
+  );
+  const agentTree = agents.some((agent) => isAgentActive(agent.state))
+    ? orderAgents(agents.filter((agent) => isAgentActive(agent.state) || agent.startedAt >= treeSinceRef.current)).slice(0, 5)
+    : [];
+  const showAgent = (next: string | null): void => {
+    if (next === viewAgentId) {
+      return;
+    }
+    // Has to reach the terminal before Ink prints the other history.
+    stdout.write(clearTerminalSequence);
+    setViewAgentId(next);
+  };
+  // What the user typed to the main agent during a run; it reads this between steps.
+  const mainInboxRef = useRef<string[]>([]);
+  const approvalImplRef = useRef<NonNullable<AgentRunnerOptions["approvalHandler"]>>(() => Promise.resolve("deny"));
+  const [approvalQueue] = useState(() => serializeApprovals((request) => approvalImplRef.current(request)));
+  // Set when an automatic wake did not finish, so a failing runtime cannot restart itself forever.
+  const wakeBlockedRef = useRef(false);
+  const wakeRoundsRef = useRef(0);
+  const approvalShownAtRef = useRef(0);
+  const mainRunRef = useRef({ startedAt: 0, durationMs: 0 });
+  const stopChordAtRef = useRef(0);
   const [todoFrame, setTodoFrame] = useState(0);
   const [isRunning, setIsRunning] = useState(false);
   const [status, setStatus] = useState("idle");
@@ -368,14 +415,13 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       approvalResolverRef.current(decision);
       approvalResolverRef.current = null;
       const nextWorkState = decision === "deny" ? "error" : workStateForApprovalTool(pendingApproval.tool);
-      setInput("");
       setStatus(decision === "deny" ? `${toolVerb(pendingApproval.tool)} denied` : `Running ${toolVerb(pendingApproval.tool)}`);
       setWorkState(nextWorkState);
       appendLine({
         kind: "approval",
         tone: decision === "deny" ? "warning" : "success",
         label: "approval",
-        text: describeApproval(pendingApproval.tool, decision),
+        text: `${pendingApproval.agent ? `${pendingApproval.agent}: ` : ""}${describeApproval(pendingApproval.tool, decision)}`,
         detail: pendingApproval.preview,
         workState: nextWorkState,
         tool: pendingApproval.tool
@@ -1024,8 +1070,11 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   );
 
   const runTask = useCallback(
-    async (task: string, overrides: { mode?: AgentMode } = {}) => {
-      if (!task.trim() || isRunning) {
+    async (task: string, overrides: { mode?: AgentMode; wake?: boolean; alreadyShown?: boolean } = {}) => {
+      const wake = overrides.wake === true;
+      // Neither a wake nor text queued during the last run is a fresh prompt, and the user may be typing one.
+      const fresh = !wake && !overrides.alreadyShown;
+      if ((!wake && !task.trim()) || isRunning) {
         return;
       }
 
@@ -1073,19 +1122,26 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       const runStartedAt = Date.now();
       softStopRequestedRef.current = false;
       lastEscapeStopAtRef.current = 0;
-      setInput("");
-      setTodos([]);
-      setAgents([]);
+      mainRunRef.current = { startedAt: runStartedAt, durationMs: 0 };
+      if (fresh) {
+        setInput("");
+        setTodos([]);
+        wakeBlockedRef.current = false;
+        wakeRoundsRef.current = 0;
+        treeSinceRef.current = runStartedAt;
+      }
       setWorkState("idle");
       setStatus("starting");
       setUltramaxxRun(ultramaxx);
       setIsRunning(true);
-      appendLine({
-        kind: "user",
-        tone: "normal",
-        label: "you",
-        text: task
-      });
+      if (fresh) {
+        appendLine({
+          kind: "user",
+          tone: "normal",
+          label: "you",
+          text: task
+        });
+      }
       if (ultra.modes.length > 0) {
         const engagedDetail: string[] = [];
         if (ultramaxx) {
@@ -1167,22 +1223,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         ]
           .filter(Boolean)
           .join("\n\n");
-        const taskRunner = new AgentRunner({
-          ...runnableSettings,
-          maxSteps: runnableSettings.maxSteps,
-          thinking: ultramaxx ? "on" : ultraLean ? "off" : runnableSettings.thinking,
-          subagents: ultramaxx || ultraloop ? true : ultraLean ? false : runnableSettings.subagents,
-          ultramaxx,
-          allowExternalFileAnalysis: experimentalFlags.fileAnalysis,
-          allowShellMetacharacters: experimentalFlags.shellMetacharacters,
-          memoryEnabled: experimentalFlags.memory,
-          mode: effectiveMode,
-          signal: abortController.signal,
-          shouldStopAfterStep: () => softStopRequestedRef.current,
-          sessionStore: sessionStoreRef.current,
-          resumeContext: effectiveResumeContext,
-          conversation: conversationRef.current,
-          approvalHandler: (request) =>
+        approvalImplRef.current = (request) =>
             new Promise<PermissionDecision>((resolve) => {
               if (effectiveMode === "plan") {
                 appendLine({
@@ -1212,23 +1253,46 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
                 return;
               }
 
+              approvalShownAtRef.current = Date.now();
               setPendingApproval(request);
               setWorkState("waiting_approval");
               // The prompt box asks; scrollback only records the answer.
               setStatus(`approval needed for ${toolVerb(request.tool)}`);
               approvalResolverRef.current = resolve;
-            })
+            });
+        const taskRunner = new AgentRunner({
+          ...runnableSettings,
+          maxSteps: runnableSettings.maxSteps,
+          thinking: ultramaxx ? "on" : ultraLean ? "off" : runnableSettings.thinking,
+          subagents: ultramaxx || ultraloop ? true : ultraLean ? false : runnableSettings.subagents,
+          ultramaxx,
+          allowExternalFileAnalysis: experimentalFlags.fileAnalysis,
+          allowShellMetacharacters: experimentalFlags.shellMetacharacters,
+          memoryEnabled: experimentalFlags.memory,
+          mode: effectiveMode,
+          signal: abortController.signal,
+          shouldStopAfterStep: () => softStopRequestedRef.current,
+          sessionStore: sessionStoreRef.current,
+          resumeContext: effectiveResumeContext,
+          conversation: conversationRef.current,
+          supervisor,
+          writeCoordinator,
+          agentKey: "main",
+          inbox: () => mainInboxRef.current.splice(0),
+          approvalHandler: approvalQueue
         });
         // Hand any documents the user attached this turn to the agent so it
         // can read/analyse them with its file tools.
-        const pendingAttachments = pendingAttachmentsRef.current;
+        const pendingAttachments = wake ? [] : pendingAttachmentsRef.current;
         turnAttachmentPaths = pendingAttachments;
-        pendingAttachmentsRef.current = [];
+        if (!wake) {
+          pendingAttachmentsRef.current = [];
+        }
         const taskWithAttachments =
           pendingAttachments.length > 0
             ? `${effectiveTask}\n\n[Attached documents for this task — read or analyse them as needed with inspect_document. Paths are JSON-escaped and may contain spaces:\n${formatAttachedDocuments(pendingAttachments)}\n]`
             : effectiveTask;
-        for await (const event of taskRunner.run(taskWithAttachments)) {
+        for await (const event of taskRunner.run(wake ? "Background agent finished" : taskWithAttachments, wake ? { wake: true } : undefined)) {
           setWorkState(event.workState);
           if (event.type === "metrics") {
             if (runnableSettings.provider === "ollama") {
@@ -1247,13 +1311,11 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           }
 
           if (event.type === "subagent") {
-            setAgents((current) => [...current.filter((agent) => agent.id !== event.id), event].sort((a, b) => a.id.localeCompare(b.id)));
             continue;
           }
 
           if (event.type === "final") {
             finalMessage = event.message;
-            setAgents([]);
           }
 
           // Best-effort: list documents PatchPilot wrote in the artifacts bar.
@@ -1264,10 +1326,6 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
             if (created?.[1]) {
               registerCreatedArtifact(created[1]);
             }
-          }
-
-          if (event.type === "tool" && event.name === "subagent") {
-            setAgents((current) => current.filter((agent) => agent.id !== event.toolCallId));
           }
 
           if (event.type === "tool") {
@@ -1317,7 +1375,6 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         // screen would present a half-finished preamble as the answer.
         setStreamProgress(null);
         setStreamingText("");
-        setAgents([]);
         if (abortControllerRef.current?.signal.aborted) {
           outcome = "stopped";
           appendLine({
@@ -1341,25 +1398,31 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         });
       } finally {
         abortControllerRef.current = null;
+        mainRunRef.current = { startedAt: 0, durationMs: Date.now() - runStartedAt };
         setIsRunning(false);
         setUltramaxxRun(false);
-        void contextStoreRef.current.append({
-          kind: "turn",
-          source: "user",
-          label: task.replace(/\s+/g, " ").trim().slice(0, 120) || "PatchPilot turn",
-          text: [
-            `Asked: ${task.replace(/\s+/g, " ").trim()}`,
-            turnAttachmentPaths.length > 0 ? `Attachments: ${turnAttachmentPaths.join(", ")}` : "",
-            finalMessage ? `Outcome: ${finalMessage.replace(/\s+/g, " ").trim().slice(0, 500)}` : ""
-          ]
-            .filter(Boolean)
-            .join("\n"),
-          priority: turnAttachmentPaths.length > 0 ? 65 : 35
-        }).catch(() => undefined);
+        if (!wake) {
+          void contextStoreRef.current.append({
+            kind: "turn",
+            source: "user",
+            label: task.replace(/\s+/g, " ").trim().slice(0, 120) || "PatchPilot turn",
+            text: [
+              `Asked: ${task.replace(/\s+/g, " ").trim()}`,
+              turnAttachmentPaths.length > 0 ? `Attachments: ${turnAttachmentPaths.join(", ")}` : "",
+              finalMessage ? `Outcome: ${finalMessage.replace(/\s+/g, " ").trim().slice(0, 500)}` : ""
+            ]
+              .filter(Boolean)
+              .join("\n"),
+            priority: turnAttachmentPaths.length > 0 ? 65 : 35
+          }).catch(() => undefined);
+        }
         // The loop reports a stop as a normal end; the closing line should
         // still say the user stopped it, not that it finished.
         if (outcome === "done" && runSignal?.aborted) {
           outcome = "stopped";
+        }
+        if (wake && outcome !== "done") {
+          wakeBlockedRef.current = true;
         }
         appendLine({
           kind: "status",
@@ -1370,7 +1433,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         });
       }
     },
-    [agentMode, appendLine, experimentalFlags, isRunning, modelOptions, registerCreatedArtifact, resumeContext, settings]
+    [agentMode, appendLine, approvalQueue, experimentalFlags, isRunning, modelOptions, registerCreatedArtifact, resumeContext, settings, supervisor, writeCoordinator]
   );
 
   const handleSlashCommand = useCallback(
@@ -1786,9 +1849,16 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           return;
         }
         case "resume": {
+          if (isRunning) {
+            appendLine({ kind: "status", tone: "warning", label: "resume", text: "Wait for the current run to finish, then /resume." });
+            return;
+          }
           const sessionId = args[0] ?? "";
           const sessions = await listWorkspaceSessions(settings.workspace);
-          const selectedSession = sessionId ? await loadSessionSummary(settings.workspace, sessionId) : sessions[0] ?? null;
+          // The newest session is this launch's own, which has nothing to resume.
+          const selectedSession = sessionId
+            ? await loadSessionSummary(settings.workspace, sessionId)
+            : sessions.find((session) => session.sessionId !== sessionStoreRef.current.sessionId) ?? null;
           if (selectedSession) {
             sessionStoreRef.current = new SessionStore({
               workspace: settings.workspace,
@@ -1806,6 +1876,9 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
               resumedAt: new Date().toISOString()
             });
             setResumeContext(await buildSessionResumeContext(settings.workspace, selectedSession.sessionId));
+            supervisor.clear();
+            setViewAgentId(null);
+            supervisor.restore(await readAgentEvents(SessionStore.workspaceSessionPath(settings.workspace, selectedSession.sessionId)));
             setSessionTelemetry(emptySessionTelemetry());
             setTelemetry(null);
           }
@@ -1962,6 +2035,10 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           return;
         }
         case "cleanup": {
+          if (isRunning) {
+            appendLine({ kind: "status", tone: "warning", label: "cleanup", text: "Wait for the current run to finish, then /cleanup." });
+            return;
+          }
           const target = readCleanupTarget(args[0]);
           if (!target) {
             appendLine({
@@ -2054,27 +2131,19 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           return;
         }
         case "clear":
-          setTranscriptEpoch((epoch) => epoch + 1);
-          setLines([]);
-          setTodos([]);
-          setTelemetry(null);
-          setResumeContext("");
-          setSessionTelemetry(emptySessionTelemetry());
-          setToolTelemetry(emptyToolTelemetry());
-          conversationRef.current = [];
-          artifactsRef.current = [];
-          pendingAttachmentsRef.current = [];
-          return;
         case "new":
           if (isRunning) {
             appendLine({
+              kind: "status",
               tone: "warning",
-              label: "new",
-              text: "Cannot start a new session while a run is active.",
-              detail: "Stop the current run first, then use /new again."
+              label: command,
+              text: `Wait for the current run to finish, then /${command}.`
             });
             return;
           }
+          // A new session, not only a new transcript: the context store feeds
+          // every opening turn, so keeping it would hand the old chat back to
+          // the model. The old session stays on disk for /resume.
           sessionStoreRef.current = new SessionStore({
             workspace: settings.workspace
           });
@@ -2083,14 +2152,23 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
             sessionId: sessionStoreRef.current.sessionId
           });
           await sessionStoreRef.current.create();
+          supervisor.clear();
+          setViewAgentId(null);
+          mainInboxRef.current = [];
+          mainRunRef.current = { startedAt: 0, durationMs: 0 };
+          stdout.write(clearTerminalSequence);
           setTranscriptEpoch((epoch) => epoch + 1);
           setLines([]);
           setTodos([]);
           setTelemetry(null);
+          setContextUsage(null);
+          setResumeContext("");
           setSessionTelemetry(emptySessionTelemetry());
           setToolTelemetry(emptyToolTelemetry());
-          setPendingApproval(null);
+          // A stopped child's prompt must be answered, or the approval queue waits on it forever.
+          approvalResolverRef.current?.("deny");
           approvalResolverRef.current = null;
+          setPendingApproval(null);
           setBypassConfirmation(false);
           setInput("");
           setStatus("idle");
@@ -2098,8 +2176,6 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           conversationRef.current = [];
           artifactsRef.current = [];
           pendingAttachmentsRef.current = [];
-          // Leave the transcript empty so the startup banner shows again,
-          // exactly like a fresh launch.
           return;
         case "exit":
         case "quit":
@@ -2149,12 +2225,22 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       // least as common as re-running a prompt.
       promptHistoryRef.current = rememberPrompt(promptHistoryRef.current, nextValue);
 
-      if (isRunning && nextValue.startsWith("/")) {
-        await handleSlashCommand(nextValue);
+      if (viewAgentId && !nextValue.startsWith("/")) {
+        setInput("");
+        wakeBlockedRef.current = false;
+        const runnable = await resolveRunnableSettings(settings, modelOptions, appendLine, setModelOptions, () => undefined);
+        if (runnable) {
+          // A child restored from an earlier session has nothing to run on until a spawner exists.
+          supervisor.setSpawner(createChildSpawner({ ...runnable, mode: agentMode, writeCoordinator, approvalHandler: approvalQueue }));
+          supervisor.send(viewAgentId, nextValue, "user");
+        }
         return;
       }
 
-      if (isRunning) {
+      if (isRunning && !nextValue.startsWith("/")) {
+        setInput("");
+        mainInboxRef.current.push(nextValue);
+        appendLine({ kind: "user", tone: "normal", label: "you", text: nextValue });
         return;
       }
 
@@ -2177,7 +2263,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
 
       await runTask(nextValue);
     },
-    [handleOnboardingSubmit, handleSlashCommand, isRunning, onboarding, paletteIndex, paletteItems, runTask]
+    [agentMode, appendLine, approvalQueue, handleOnboardingSubmit, handleSlashCommand, isRunning, modelOptions, onboarding, paletteIndex, paletteItems, runTask, settings, supervisor, viewAgentId, writeCoordinator]
   );
 
   useEffect(() => {
@@ -2219,6 +2305,29 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
     runtimeStateRef.current.isRunning = isRunning;
     runtimeStateRef.current.hasPendingApproval = Boolean(pendingApproval || bypassConfirmation || updatePrompt || updateBusy);
   }, [bypassConfirmation, isRunning, pendingApproval, updateBusy, updatePrompt]);
+
+  useEffect(() => {
+    if (isRunning || onboarding) {
+      return;
+    }
+    // Text that arrived after the run's last look at its inbox would otherwise wait for the next prompt.
+    if (mainInboxRef.current.length > 0) {
+      void runTask(mainInboxRef.current.splice(0).join("\n\n"), { alreadyShown: true });
+      return;
+    }
+    if (!wakeBlockedRef.current && supervisor.hasWakeableResult()) {
+      // A model that answers each result by starting more agents would otherwise run unattended for hours.
+      if (wakeRoundsRef.current >= maxWakeRoundsPerPrompt) {
+        wakeBlockedRef.current = true;
+        appendLine({ kind: "status", tone: "warning", label: "agents", text: "Agent results are waiting. They reach the main agent with your next message." });
+        return;
+      }
+      wakeRoundsRef.current += 1;
+      void runTask("", { wake: true });
+    }
+  }, [agents, appendLine, isRunning, onboarding, runTask, supervisor]);
+
+  useEffect(() => () => supervisor.stopAll(), [supervisor]);
 
   useEffect(() => {
     if (!props.initialTask || didRunInitialTask.current || onboarding || process.env.PATCHPILOT_ONBOARDING_COMPLETE !== "1") {
@@ -2507,6 +2616,11 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
     }
 
     if (pendingApproval) {
+      // A background agent can raise this while the user is typing, and the next
+      // letter of a sentence must not count as an answer.
+      if (Date.now() - approvalShownAtRef.current < approvalKeyDelayMs) {
+        return;
+      }
       const normalizedInput = inputValue.toLowerCase();
       if (normalizedInput === "y") {
         resolveApproval("allow_once");
@@ -2524,7 +2638,31 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       }
     }
 
-    if (isRunning && key.escape) {
+    if (key.ctrl && inputValue === "x") {
+      stopChordAtRef.current = Date.now();
+      return;
+    }
+
+    if (key.ctrl && inputValue === "k" && Date.now() - stopChordAtRef.current <= 1500) {
+      stopChordAtRef.current = 0;
+      if (supervisor.hasActive()) {
+        supervisor.stopAll();
+        setStatus("stopping all agents");
+      }
+      return;
+    }
+
+    if (viewAgentId && key.escape && paletteItems.length === 0) {
+      const viewed = supervisor.get(viewAgentId);
+      if (viewed && isAgentActive(viewed.state)) {
+        supervisor.stop(viewAgentId);
+      } else {
+        showAgent(null);
+      }
+      return;
+    }
+
+    if (isRunning && key.escape && paletteItems.length === 0) {
       const now = Date.now();
       const isDoubleEscape = now - lastEscapeStopAtRef.current <= 700;
       lastEscapeStopAtRef.current = now;
@@ -2652,6 +2790,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       if ((state.isRunning || state.hasPendingApproval) && now - state.lastSigintAt > 1500) {
         state.lastSigintAt = now;
         abortControllerRef.current?.abort();
+        supervisor.stopAll();
         approvalResolverRef.current?.("deny");
         approvalResolverRef.current = null;
         setPendingApproval(null);
@@ -2691,6 +2830,10 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   return (
     <Shell
       onHistoryPrevious={(currentInput) => {
+        if (viewAgentId) {
+          showAgent(moveSelection(agents, viewAgentId, -1));
+          return null;
+        }
         const step = recallPrevious(promptHistoryRef.current, currentInput);
         promptHistoryRef.current = step.history;
         return step.input;
@@ -2698,6 +2841,9 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       onHistoryNext={() => {
         const step = recallNext(promptHistoryRef.current);
         promptHistoryRef.current = step.history;
+        if (step.input === null) {
+          showAgent(moveSelection(agents, viewAgentId, 1));
+        }
         return step.input;
       }}
       provider={settings.provider}
@@ -2716,9 +2862,18 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       transcriptEpoch={transcriptEpoch}
       ultramaxxRun={ultramaxxRun}
       sessionTelemetry={sessionTelemetry}
-      lines={lines}
+      lines={viewedAgent ? viewedLines : lines}
       todos={todos}
       agents={agents}
+      agentTree={agentTree}
+      viewedAgent={viewedAgent}
+      mainAgent={{
+        activity: isRunning ? status : "Idle",
+        active: isRunning,
+        durationMs: mainRunRef.current.startedAt > 0 ? Date.now() - mainRunRef.current.startedAt : mainRunRef.current.durationMs,
+        promptTokens: sessionTelemetry.promptTokens,
+        outputTokens: sessionTelemetry.responseTokens
+      }}
       todoFrame={todoFrame}
       clipboardImage={clipboardImage}
       pendingApproval={pendingApproval}

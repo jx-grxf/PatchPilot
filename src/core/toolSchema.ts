@@ -203,19 +203,25 @@ export const toolDefinitions: Record<ToolName, ToolDefinition> = {
   task: {
     name: "task",
     description:
-      "Delegate a self-contained piece of work to a subagent with its own context. Use this when a task needs a lot of exploration whose detail you do not need to keep — the subagent reads widely and returns only its conclusion, which keeps your own context small. Several explore tasks in one reply run in parallel, two at a time. Example: task({\"description\": \"find auth entry points\", \"prompt\": \"Locate every place a request is authenticated and report each file and function.\", \"subagent_type\": \"explore\"}).",
+      "Run work in a subagent with its own context. Start one only for work the user asked for; a question, including one about what you can do, gets an answer and no agent. action start creates one: it reads widely and returns only its conclusion, which keeps your own context small. Use explore unless the work must change files; general is only for edits. Where background agents are enabled, start answers at once, the result arrives in this conversation by itself, and you must not poll for it; agents started in one reply report together. action message sends prompt to a running or finished agent by id, stop ends one, and status shows one agent (with id) or lists all of them. Example: task({\"action\": \"start\", \"description\": \"find auth entry points\", \"prompt\": \"Locate every place a request is authenticated and report each file and function.\", \"subagent_type\": \"explore\"}).",
     inputSchema: {
       type: "object",
       properties: {
-        description: { type: "string", description: "Short description of the task, 3-6 words." },
-        prompt: { type: "string", description: "The full instruction for the subagent. It cannot see this conversation, so include everything it needs." },
+        action: {
+          type: "string",
+          description: "start creates an agent; message, stop and status act on one that exists.",
+          enum: ["start", "message", "stop", "status"]
+        },
+        description: { type: "string", description: "start only: short description of the task, 3-6 words." },
+        prompt: { type: "string", description: "start: the full instruction for the subagent, which cannot see this conversation. message: the text to send." },
         subagent_type: {
           type: "string",
-          description: "explore reads and reports without changing anything; general can also edit files.",
+          description: "start only: explore reads and reports without changing anything; general can also edit files. Prefer explore.",
           enum: ["explore", "general"]
-        }
+        },
+        id: { type: "string", description: "message, stop and status: the agent's id, e.g. agent-2. status without id lists every agent." }
       },
-      required: ["description", "prompt", "subagent_type"],
+      required: ["action"],
       additionalProperties: false
     },
     risk: "medium",

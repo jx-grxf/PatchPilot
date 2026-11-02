@@ -108,9 +108,10 @@ export async function startMlxServer(options: {
       "--prefill-step-size", "512",
       "--prompt-cache-size", "3",
       "--prompt-cache-bytes", String(3 * 1024 ** 3),
-      // Two subagents decode as one batch; their prompts are read one after
-      // the other, which keeps the GPU from stalling the desktop.
-      "--decode-concurrency", "2",
+      // The main agent and two background agents decode as one batch; their
+      // prompts are read one after the other, which keeps the GPU from
+      // stalling the desktop.
+      "--decode-concurrency", "3",
       "--prompt-concurrency", "1",
       "--log-level", "WARNING"
     ],

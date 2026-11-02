@@ -305,3 +305,47 @@ describe("extractTaggedToolCalls without the opening tag", () => {
     expect(extractTaggedToolCalls(content)).toEqual([{ name: "edit", arguments: { path: "greet.js", old_string: "a", new_string: "b" } }]);
   });
 });
+
+describe("task actions", () => {
+  it("treats a call without an action as start when a prompt is present", () => {
+    const call = repaired("task", { description: "find auth", prompt: "locate auth", subagent_type: "explore" });
+    expect(call.arguments).toMatchObject({ action: "start", prompt: "locate auth" });
+    expect(call.repairs).toContain("action defaulted to start");
+  });
+
+  it("maps action synonyms and agent_id", () => {
+    const call = repaired("task", { action: "kill", agent_id: "agent-2" });
+    expect(call.arguments).toEqual({ action: "stop", id: "agent-2" });
+  });
+
+  it("names what start is missing and shows a start call", () => {
+    const message = problem("task", { action: "start", prompt: "p" });
+    expect(message).toContain('"description"');
+    expect(message).toContain('task({"action":"start"');
+  });
+
+  it("needs an id for message and stop, and lists the ways to find one", () => {
+    expect(problem("task", { action: "message", prompt: "hi" })).toContain('"id"');
+    expect(problem("task", { action: "stop" })).toContain('action "status"');
+  });
+
+  it("lists the valid actions for a wrong one", () => {
+    expect(problem("task", { action: "explode", id: "agent-1" })).toContain("start, message, stop, status");
+  });
+
+  it("asks for an action when there is neither an action nor a prompt", () => {
+    expect(problem("task", { id: "agent-1" })).toContain('needs "action"');
+  });
+
+  it("allows status with and without an id", () => {
+    expect(repaired("task", { action: "status" }).arguments).toEqual({ action: "status" });
+    expect(repaired("task", { action: "status", id: "agent-1" }).arguments).toEqual({ action: "status", id: "agent-1" });
+  });
+
+  it("tells the model to prefer explore", () => {
+    const task = toolsForMode("build").find((tool) => tool.name === "task");
+    expect(task?.description).toContain("Use explore unless the work must change files");
+    expect(task?.description).toMatch(/Example: task\(\{[^]*\}\)\.$/);
+    expect(task?.inputSchema.required).toEqual(["action"]);
+  });
+});

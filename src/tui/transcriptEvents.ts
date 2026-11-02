@@ -146,16 +146,21 @@ export function eventToLine(event: AgentEvent): LogLineInput {
         workState: event.workState
       };
     case "tool": {
+      if (event.metadata?.background === true) {
+        return backgroundTaskLine(event);
+      }
       const subagentType = typeof event.metadata?.subagent === "string" ? event.metadata.subagent : null;
       if (subagentType) {
         const calls = Number(event.metadata?.toolCalls ?? 0);
         const seconds = Math.round(Number(event.metadata?.durationMs ?? 0) / 1000);
+        const incomplete = event.metadata?.status === "incomplete";
+        const stopped = event.metadata?.status === "aborted";
         return {
           kind: "tool",
-          tone: event.ok ? "success" : "warning",
+          tone: event.ok && !incomplete ? "success" : "warning",
           label: subagentType === "explore" ? "Explore" : "Agent",
-          text: `${event.ok ? "Done" : "Failed"} · ${calls === 1 ? "1 tool call" : `${calls} tool calls`} · ${seconds}s`,
-          detail: typeof event.metadata?.summary === "string" ? event.metadata.summary : event.content,
+          text: `${stopped ? "Stopped" : incomplete ? "Step limit reached" : event.ok ? "Done" : "Failed"} · ${calls === 1 ? "1 tool call" : `${calls} tool calls`} · ${seconds}s`,
+          detail: stopped ? undefined : typeof event.metadata?.summary === "string" ? event.metadata.summary : event.content,
           workState: event.workState,
           toolCallId: event.toolCallId,
           category: "state",
@@ -221,6 +226,26 @@ export function eventToLine(event: AgentEvent): LogLineInput {
         text: formatTokens(event.metrics),
         workState: event.workState
       };
+  }
+}
+
+function backgroundTaskLine(event: Extract<AgentEvent, { type: "tool" }>): LogLineInput {
+  const agent = typeof event.metadata?.agent === "string" ? event.metadata.agent : undefined;
+  const shared = { kind: "tool" as const, tone: event.ok ? ("success" as const) : ("warning" as const), workState: event.workState, toolCallId: event.toolCallId, category: "state" as const, detail: event.ok ? undefined : event.content };
+  switch (event.metadata?.action) {
+    case "start":
+      return {
+        ...shared,
+        label: event.arguments?.subagent_type === "general" ? "Agent" : "Explore",
+        target: describeToolTarget(event.arguments),
+        text: event.ok ? `Running in the background · ${agent ?? ""}` : event.summary
+      };
+    case "message":
+      return { ...shared, label: "Message", target: agent, text: event.summary };
+    case "stop":
+      return { ...shared, label: "Stop", target: agent, text: event.summary };
+    default:
+      return { ...shared, label: "Status", target: agent, text: event.summary };
   }
 }
 

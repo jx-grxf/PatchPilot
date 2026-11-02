@@ -1,8 +1,8 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { appendFile, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { buildSessionRecap, buildSessionResumeContext, listIndexedSessions, listWorkspaceSessions, readSessionEvents, SessionStore } from "../src/core/session.js";
+import { buildSessionRecap, buildSessionResumeContext, listIndexedSessions, listWorkspaceSessions, readAgentEvents, readSessionEvents, SessionStore, type AgentSessionEvent } from "../src/core/session.js";
 
 let tempRoot = "";
 let previousConfigDir: string | undefined;
@@ -160,5 +160,91 @@ describe("SessionStore", () => {
     const indexPath = path.join(process.env.PATCHPILOT_CONFIG_DIR ?? "", "session-index.json");
     await expect(readFile(indexPath, "utf8")).resolves.toContain("indexed");
     await expect(listIndexedSessions()).resolves.toEqual(expect.arrayContaining([expect.objectContaining({ sessionId: "indexed" })]));
+  });
+
+  it("lands concurrent appends as whole lines and keeps the index consistent", async () => {
+    const store = new SessionStore({ workspace: tempRoot, sessionId: "busy" });
+    await store.create();
+    const sessionPath = SessionStore.workspaceSessionPath(tempRoot, "busy");
+    const payload = "x".repeat(20_000);
+
+    await Promise.all(
+      Array.from({ length: 40 }, (_, index) =>
+        store.append(
+          index % 2 === 0
+            ? { type: "agent.entry", id: `agent-${index}`, entry: { type: "user", text: payload } }
+            : { type: "run.started", runId: `run-${index}`, task: `task ${index}`, provider: "ollama", model: "m", startedAt: "2026-05-14T10:00:00.000Z" }
+        )
+      )
+    );
+
+    const lines = (await readFile(sessionPath, "utf8")).split("\n").filter(Boolean);
+    expect(lines).toHaveLength(41);
+    for (const line of lines) {
+      expect(() => JSON.parse(line)).not.toThrow();
+    }
+    const indexed = await listIndexedSessions();
+    expect(indexed.filter((session) => session.sessionId === "busy")).toHaveLength(1);
+    expect(indexed[0]?.lastTask).toMatch(/^task \d+$/);
+  });
+
+  it("keeps appending after a failed append", async () => {
+    const store = new SessionStore({ workspace: tempRoot, sessionId: "recovers" });
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
+
+    const broken = store.append({ type: "todo.updated", runId: "r", items: circular as never, summary: "", createdAt: "2026-05-14T10:00:00.000Z" });
+    const fine = store.append({ type: "session.created", sessionId: "recovers", workspace: tempRoot, createdAt: "2026-05-14T10:00:01.000Z" });
+
+    await expect(broken).rejects.toThrow();
+    await expect(fine).resolves.toBeUndefined();
+    await expect(store.loadEvents()).resolves.toHaveLength(1);
+  });
+
+  it("keeps agent events out of resume context, summaries and the session list", async () => {
+    const store = new SessionStore({ workspace: tempRoot, sessionId: "with-agents" });
+    await store.create();
+    await store.append({ type: "run.started", runId: "run-1", task: "review the repo", provider: "ollama", model: "m", startedAt: "2026-05-14T10:00:00.000Z" });
+    const started: AgentSessionEvent = { type: "agent.started", id: "agent-1", agentType: "explore", description: "look around", prompt: "go", startedAt: 1_700_000_000_000 };
+    await store.append(started);
+    for (let index = 0; index < 30; index += 1) {
+      await store.append({ type: "agent.entry", id: "agent-1", entry: { type: "user", text: `note ${index}` } });
+    }
+    await store.append({
+      type: "agent.finished",
+      id: "agent-1",
+      state: "ok",
+      durationMs: 5,
+      promptTokens: 1,
+      outputTokens: 2,
+      toolCalls: 3,
+      transcript: null,
+      conversation: []
+    });
+
+    const context = await buildSessionResumeContext(tempRoot, "with-agents");
+    expect(context).toContain("review the repo");
+    expect(context).not.toContain("agent-1");
+    await expect(store.summary()).resolves.toMatchObject({ lastTask: "review the repo" });
+    expect((await listWorkspaceSessions(tempRoot)).map((session) => session.sessionId)).toContain("with-agents");
+    expect((await listIndexedSessions())[0]?.updatedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    await expect(store.loadEvents()).resolves.toHaveLength(2);
+  });
+});
+
+describe("readAgentEvents", () => {
+  it("returns agent events in order, skips unrelated ones and a truncated last line", async () => {
+    const store = new SessionStore({ workspace: tempRoot, sessionId: "agents" });
+    await store.create();
+    await store.append({ type: "agent.started", id: "agent-1", agentType: "general", description: "d", prompt: "p", startedAt: 1 });
+    await store.append({ type: "run.completed", runId: "run-1", message: "done", completedAt: "2026-05-14T10:00:01.000Z" });
+    await store.append({ type: "agent.entry", id: "agent-1", entry: { type: "user", text: "hello" } });
+
+    const sessionPath = SessionStore.workspaceSessionPath(tempRoot, "agents");
+    await appendFile(sessionPath, '{"type":"agent.finished","id":"agent-1","state":"o', "utf8");
+
+    const events = await readAgentEvents(sessionPath);
+    expect(events.map((event) => event.type)).toEqual(["agent.started", "agent.entry"]);
+    await expect(readAgentEvents(path.join(tempRoot, "missing.jsonl"))).resolves.toEqual([]);
   });
 });

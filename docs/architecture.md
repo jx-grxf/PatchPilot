@@ -56,7 +56,7 @@ The primary model can issue a `task` call when child agents are enabled or when 
 | `explore` | `read`, `glob`, `grep` |
 | `general` | `read`, `glob`, `grep`, `write`, `edit` |
 
-Children receive a fresh context, cannot run shell commands, cannot spawn grandchildren, and are capped at eight steps. They run serially to preserve the local runtime's prefix cache. The compact result returns to the parent; the detailed trace is stored under `.patchpilot/subagents/`. Cancellation propagates from the primary run.
+Children receive a fresh context, cannot run shell commands, cannot spawn grandchildren, and are capped at 25 steps per run. In the TUI they run in the background under `AgentSupervisor`, two at a time, each with its own cancellation, while the main agent keeps working. The compact result returns to the parent; the detailed trace is stored under `.patchpilot/subagents/`.
 
 ## Safety model
 
