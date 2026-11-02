@@ -5,7 +5,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { deflateRawSync } from "node:zlib";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { fileQueryMatcher, WorkspaceTools } from "../src/core/workspace.js";
+import { fileQueryMatcher, grepPatternIndexes, looksLikeText, WorkspaceTools } from "../src/core/workspace.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -414,6 +414,49 @@ describe("WorkspaceTools", () => {
 
     expect(result.ok).toBe(true);
     expect(result.content).toContain("hello");
+  });
+
+  it("reads a docx through read instead of naming a tool the model cannot call", async () => {
+    await writeFile(path.join(tempRoot, "notes.docx"), createMinimalDocx("Konstruktoren in Java"));
+    const tools = new WorkspaceTools({ root: tempRoot, allowWrite: false, allowShell: false });
+
+    const whole = await tools.execute({ name: "read_file", arguments: { path: "notes.docx" } });
+    expect(whole.ok).toBe(true);
+    expect(whole.tool).toBe("read_file");
+    expect(whole.content).toContain("Konstruktoren in Java");
+    expect(whole.content).not.toContain("inspect_document");
+
+    const range = await tools.execute({ name: "read_range", arguments: { path: "notes.docx", start: 1, end: 5 } });
+    expect(range.ok).toBe(true);
+    expect(range.content).toContain("1: ");
+    expect(range.content).toContain("Konstruktoren in Java");
+  });
+
+  it("reads a text file without an extension", async () => {
+    await writeFile(path.join(tempRoot, "string_data"), "Maier;Hans;1990\nHuber;Eva;1985");
+    const tools = new WorkspaceTools({ root: tempRoot, allowWrite: false, allowShell: false });
+
+    const result = await tools.execute({ name: "read_file", arguments: { path: "string_data" } });
+    expect(result.ok).toBe(true);
+    expect(result.content).toContain("Huber;Eva");
+  });
+
+  it("refuses a binary file with a reason and no internal tool names", async () => {
+    await writeFile(path.join(tempRoot, "blob.bin"), Buffer.from([0, 1, 2, 3, 0, 255]));
+    const tools = new WorkspaceTools({ root: tempRoot, allowWrite: false, allowShell: false });
+
+    const result = await tools.execute({ name: "read_file", arguments: { path: "blob.bin" } });
+    expect(result.ok).toBe(false);
+    expect(result.content).toContain("binary file (.bin)");
+    expect(result.content).not.toContain("inspect_document");
+  });
+
+  it("sniffs text by NUL bytes and UTF-8 validity", () => {
+    expect(looksLikeText(Buffer.from("plain ascii"), false)).toBe(true);
+    expect(looksLikeText(Buffer.from("äöü"), false)).toBe(true);
+    expect(looksLikeText(Buffer.from("ä").subarray(0, 1), true)).toBe(true);
+    expect(looksLikeText(Buffer.from("ä").subarray(0, 1), false)).toBe(false);
+    expect(looksLikeText(Buffer.from([0x41, 0x00, 0x42]), false)).toBe(false);
   });
 
   it("extracts text from docx files without external unzip tools", async () => {
@@ -1238,6 +1281,36 @@ describe("WorkspaceTools", () => {
     });
     expect(gitResult.ok).toBe(false);
     expect(gitResult.summary).toContain("git clean");
+  });
+
+  it("does not check a grep pattern as a path", async () => {
+    await mkdir(path.join(tempRoot, ".patchpilot"));
+    await writeFile(path.join(tempRoot, "a.pdf"), "x");
+    const tools = new WorkspaceTools({
+      root: tempRoot,
+      allowWrite: false,
+      allowShell: false,
+      approvalHandler: async () => "allow_once"
+    });
+
+    const excluded = await tools.execute({
+      name: "run_shell",
+      arguments: { command: 'find . -maxdepth 2 -name "*.pdf" | grep -v ".patchpilot"' }
+    });
+    expect(excluded.summary).not.toContain("sensitive workspace path");
+    expect(excluded.content).toContain("a.pdf");
+
+    const listed = await tools.execute({ name: "run_shell", arguments: { command: "ls .patchpilot" } });
+    expect(listed.ok).toBe(false);
+    expect(listed.summary).toContain("sensitive workspace path");
+  });
+
+  it("finds the pattern argument of grep-like commands", () => {
+    expect([...grepPatternIndexes(["grep", "-v", ".patchpilot"])]).toEqual([2]);
+    expect([...grepPatternIndexes(["rg", "-n", "secret", ".env"])]).toEqual([2]);
+    expect([...grepPatternIndexes(["grep", "-e", "x", ".env"])]).toEqual([2]);
+    expect([...grepPatternIndexes(["grep", "-f", "pats", ".env"])]).toEqual([]);
+    expect([...grepPatternIndexes(["cat", ".env"])]).toEqual([]);
   });
 
   it("asks before destructive shell commands in bypass instead of blocking them", async () => {

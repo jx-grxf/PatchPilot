@@ -2,7 +2,7 @@ import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { lookup } from "node:dns/promises";
 import { constants, realpathSync } from "node:fs";
-import { access, lstat, mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { access, lstat, mkdir, mkdtemp, open, readdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { isIP } from "node:net";
 import { homedir, platform, tmpdir } from "node:os";
 import path from "node:path";
@@ -597,8 +597,8 @@ export class WorkspaceTools {
     if (directory) {
       return directory;
     }
-    if (!isLikelyTextFile(absolutePath)) {
-      return denied(`read_file supports text/code files. Use inspect_document for ${path.extname(absolutePath) || "this file"} files.`);
+    if (!(await isReadableAsText(absolutePath))) {
+      return await this.readNonTextFile(requestedPath, absolutePath, "read_file");
     }
 
     const content = await this.readSeenText(absolutePath).catch((error: unknown) => {
@@ -660,8 +660,8 @@ export class WorkspaceTools {
     if (directory) {
       return directory;
     }
-    if (!isLikelyTextFile(absolutePath)) {
-      return denied(`read_range supports text/code files. Use inspect_document for ${path.extname(absolutePath) || "this file"} files.`, "read_range");
+    if (!(await isReadableAsText(absolutePath))) {
+      return await this.readNonTextFile(requestedPath, absolutePath, "read_range", { startLine, endLine });
     }
 
     const lines = (await this.readSeenText(absolutePath)).split(/\r?\n/);
@@ -678,6 +678,60 @@ export class WorkspaceTools {
         startLine,
         endLine: Math.min(endLine, lines.length)
       }
+    };
+  }
+
+  /**
+   * The model only sees `read`, so documents and images go through it too.
+   * Pointing it at inspect_document, which it cannot call, sent it round in
+   * circles through bash, grep on zipped XML and fetch_url.
+   */
+  private async readNonTextFile(
+    requestedPath: string,
+    absolutePath: string,
+    tool: "read_file" | "read_range",
+    range?: { startLine: number; endLine: number }
+  ): Promise<ToolResult> {
+    const relative = normalizeRelative(this.root, absolutePath);
+    const extension = path.extname(absolutePath).toLowerCase();
+    if (!isDocumentFile(absolutePath) && !isImageFile(absolutePath)) {
+      return denied(
+        `${relative} is a binary file${extension ? ` (${extension})` : ""}. read shows text, code, PDF, DOCX, DOC and images; anything else needs a tool that understands the format.`,
+        tool
+      );
+    }
+
+    if (!range || isImageFile(absolutePath)) {
+      const result = await this.inspectDocument(requestedPath, "auto");
+      const clipped = result.ok && result.content.includes("...[clipped ");
+      return {
+        ...result,
+        tool,
+        category: toolSpecs[tool].category,
+        content: clipped ? `${result.content}\nThe extracted text is longer than this. Read further with offset and limit, which count lines of the extracted text.` : result.content
+      };
+    }
+
+    const extracted = await extractDocumentText(absolutePath, this.timeoutMs, this.signal, Number.POSITIVE_INFINITY);
+    if (!extracted.ok || !hasUsefulExtractedText(extracted)) {
+      return { ...extracted, tool, category: toolSpecs[tool].category };
+    }
+    const lines = extracted.content.split(/\r?\n/);
+    if (range.startLine > lines.length) {
+      return denied(`${relative} has ${lines.length} lines of extracted text; start at or before line ${lines.length}.`, tool);
+    }
+    const endLine = Math.min(range.endLine, lines.length);
+    const numberedLines = lines
+      .slice(range.startLine - 1, range.endLine)
+      .map((line, index) => `${range.startLine + index}: ${line}`)
+      .join("\n");
+    return {
+      ok: true,
+      summary: `read ${relative}:${range.startLine}-${endLine} (extracted text, ${lines.length} lines)`,
+      content: clip(numberedLines, 20_000),
+      tool,
+      category: toolSpecs[tool].category,
+      metadata: { path: relative, startLine: range.startLine, endLine }
     };
   }
 
@@ -740,7 +794,7 @@ export class WorkspaceTools {
       }
     }
     const extension = path.extname(absolutePath).toLowerCase();
-    if (isLikelyTextFile(absolutePath)) {
+    if (await isReadableAsText(absolutePath)) {
       return await this.readTextDocument(absolutePath);
     }
 
@@ -1205,8 +1259,8 @@ export class WorkspaceTools {
     }
 
     const absolutePath = await this.resolveWritePath(requestedPath);
-    if (!isLikelyTextFile(absolutePath)) {
-      return denied(`edit_file supports text/code files. Use write_file only when replacing the full ${path.extname(absolutePath) || "file"} file is intentional.`, "edit_file");
+    if (!(await isReadableAsText(absolutePath))) {
+      return denied(`edit only changes text files, and ${normalizeRelative(this.root, absolutePath)} is not one. Use write only if replacing the whole file is intentional.`, "edit_file");
     }
 
     const originalBytes = await readFile(absolutePath).catch((error: unknown) => {
@@ -1865,7 +1919,11 @@ export class WorkspaceTools {
   private async validateShellPathArguments(command: string): Promise<string | null> {
     const tokens = tokenizeShellCommand(command);
     for (const segment of splitPipeline(tokens)) {
-      for (const token of segment.slice(1)) {
+      const patterns = grepPatternIndexes(segment);
+      for (const [index, token] of segment.entries()) {
+        if (index === 0 || patterns.has(index)) {
+          continue;
+        }
         const normalizedToken = stripQuotes(token);
         if (!normalizedToken || shellOperatorTokens.has(normalizedToken) || normalizedToken.startsWith("-")) {
           continue;
@@ -2577,6 +2635,64 @@ function isLikelyTextFile(filePath: string): boolean {
   return textFileExtensions.has(path.extname(filePath).toLowerCase());
 }
 
+function isDocumentFile(filePath: string): boolean {
+  return [".pdf", ".docx", ".doc"].includes(path.extname(filePath).toLowerCase());
+}
+
+/**
+ * The extension list misses files like `string_data` or `Makefile`, so
+ * anything that is not a known document or image is sniffed: no NUL byte in
+ * the first 8 KiB and valid UTF-8 means text.
+ */
+async function isReadableAsText(filePath: string): Promise<boolean> {
+  if (isLikelyTextFile(filePath)) {
+    return true;
+  }
+  if (isDocumentFile(filePath) || isImageFile(filePath)) {
+    return false;
+  }
+  const handle = await open(filePath, "r").catch(() => null);
+  if (!handle) {
+    // Let the normal read path report the missing or unreadable file.
+    return true;
+  }
+  try {
+    const buffer = Buffer.alloc(8192);
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+    return looksLikeText(buffer.subarray(0, bytesRead), bytesRead === buffer.length);
+  } finally {
+    await handle.close();
+  }
+}
+
+export function looksLikeText(sample: Buffer, truncated: boolean): boolean {
+  if (sample.includes(0)) {
+    return false;
+  }
+  const decoder = new TextDecoder("utf-8", { fatal: true });
+  // A sample cut mid-file may end inside a multi-byte character.
+  const trims = truncated ? [0, 1, 2, 3] : [0];
+  return trims.some((trim) => {
+    try {
+      decoder.decode(sample.subarray(0, sample.length - trim));
+      return true;
+    } catch {
+      return false;
+    }
+  });
+}
+
+async function extractDocumentText(filePath: string, timeoutMs: number, signal: AbortSignal | undefined, maxChars: number): Promise<ToolResult> {
+  const extension = path.extname(filePath).toLowerCase();
+  if (extension === ".pdf") {
+    return await extractPdfText(filePath, timeoutMs, signal, maxChars);
+  }
+  if (extension === ".docx") {
+    return await extractDocxText(filePath, maxChars);
+  }
+  return await extractLegacyDocText(filePath, timeoutMs, signal, maxChars);
+}
+
 function isImageFile(filePath: string): boolean {
   return [".png", ".jpg", ".jpeg", ".webp", ".gif", ".heic", ".heif"].includes(path.extname(filePath).toLowerCase());
 }
@@ -2752,18 +2868,18 @@ function readImageDimensions(buffer: Buffer, extension: string): { width: number
   return null;
 }
 
-async function extractPdfText(filePath: string, timeoutMs: number, signal?: AbortSignal): Promise<ToolResult> {
+async function extractPdfText(filePath: string, timeoutMs: number, signal?: AbortSignal, maxChars = 20_000): Promise<ToolResult> {
   try {
     const { stdout } = await execFileAsync("pdftotext", ["-layout", filePath, "-"], {
       timeout: timeoutMs,
-      maxBuffer: 2_000_000,
+      maxBuffer: 32_000_000,
       signal,
       windowsHide: true
     });
     return {
       ok: true,
       summary: `extracted text from ${path.basename(filePath)}`,
-      content: clip(stdout.trim() || "No extractable PDF text found.", 20_000)
+      content: clip(stdout.trim() || "No extractable PDF text found.", maxChars)
     };
   } catch (error) {
     return denied(`PDF text extraction needs pdftotext on PATH or a text-based PDF. ${error instanceof Error ? error.message : String(error)}`);
@@ -2802,7 +2918,7 @@ async function extractImageTextWithTesseract(filePath: string, signal?: AbortSig
   }
 }
 
-async function extractDocxText(filePath: string): Promise<ToolResult> {
+async function extractDocxText(filePath: string, maxChars = 20_000): Promise<ToolResult> {
   try {
     const archive = await readFile(filePath);
     const xml = readZipEntryText(archive, "word/document.xml");
@@ -2810,24 +2926,24 @@ async function extractDocxText(filePath: string): Promise<ToolResult> {
     return {
       ok: true,
       summary: `extracted text from ${path.basename(filePath)}`,
-      content: clip(text || "No extractable DOCX text found.", 20_000)
+      content: clip(text || "No extractable DOCX text found.", maxChars)
     };
   } catch (error) {
     return denied(`DOCX text extraction needs unzip on PATH and a valid .docx file. ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 
-async function extractLegacyDocText(filePath: string, timeoutMs: number, signal?: AbortSignal): Promise<ToolResult> {
+async function extractLegacyDocText(filePath: string, timeoutMs: number, signal?: AbortSignal, maxChars = 20_000): Promise<ToolResult> {
   try {
     const { stdout } = await execFileAsync("textutil", ["-convert", "txt", "-stdout", filePath], {
       timeout: timeoutMs,
       signal,
-      maxBuffer: 2_000_000
+      maxBuffer: 32_000_000
     });
     return {
       ok: true,
       summary: `extracted text from ${path.basename(filePath)}`,
-      content: clip(stdout || "No extractable DOC text found.", 20_000)
+      content: clip(stdout || "No extractable DOC text found.", maxChars)
     };
   } catch (error) {
     return denied(`DOC text extraction needs macOS textutil and a valid .doc file. ${error instanceof Error ? error.message : String(error)}`);
@@ -3497,6 +3613,45 @@ function splitShellCommandSegments(tokens: string[]): string[][] {
   }
 
   return segments;
+}
+
+const grepLikeCommands = new Set(["grep", "egrep", "fgrep", "rg"]);
+
+/**
+ * A grep pattern is text, not a path: `grep -v ".patchpilot"` excludes the
+ * folder, and checking it as a path refused exactly that.
+ */
+export function grepPatternIndexes(segment: string[]): Set<number> {
+  const indexes = new Set<number>();
+  const executable = path.basename(stripQuotes(segment[0] ?? ""));
+  if (!grepLikeCommands.has(executable)) {
+    return indexes;
+  }
+  let explicitPattern = false;
+  for (let index = 1; index < segment.length; index += 1) {
+    const token = stripQuotes(segment[index] ?? "");
+    if (token === "-e" || token === "--regexp") {
+      indexes.add(index + 1);
+      explicitPattern = true;
+    } else if (token === "-f" || token === "--file") {
+      explicitPattern = true;
+    }
+  }
+  if (explicitPattern) {
+    return indexes;
+  }
+  for (let index = 1; index < segment.length; index += 1) {
+    const token = stripQuotes(segment[index] ?? "");
+    if (token === "--") {
+      indexes.add(index + 1);
+      break;
+    }
+    if (token && !token.startsWith("-") && !shellOperatorTokens.has(token)) {
+      indexes.add(index);
+      break;
+    }
+  }
+  return indexes;
 }
 
 function splitPipeline(tokens: string[]): string[][] {
