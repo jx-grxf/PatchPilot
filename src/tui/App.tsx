@@ -7,7 +7,12 @@ import { ContextStore } from "../core/contextStore.js";
 import { runDoctor } from "../core/doctor.js";
 import { savePatchPilotEnvValues } from "../core/env.js";
 import { defaultLocalOpenAIModel, resolveLocalOpenAIBaseUrl } from "../core/localOpenAI.js";
-import { resolveRuntimeAlias } from "../core/localRuntimes.js";
+import { supportsMlx } from "../core/localRuntimes.js";
+import { defaultOllamaModel } from "../core/ollama.js";
+import { defaultMlxModel, findMlxServerBinary, startMlxServer } from "../core/autostart.js";
+import { probeModelCapabilities } from "../core/capability.js";
+import { discoverModels } from "../core/modelCatalog.js";
+import { createModelClient } from "../core/modelClient.js";
 import { ensurePatchPilotGitignore, patchPilotInitPrompt } from "../core/projectInit.js";
 import { buildSessionRecap, buildSessionResumeContext, listWorkspaceSessions, loadSessionSummary, SessionStore } from "../core/session.js";
 import { addTelemetryToSession, emptySessionTelemetry, estimateTokens } from "../core/tokenAccounting.js";
@@ -82,6 +87,7 @@ import {
   preferencesEnvValues,
   readOnboardingPreferences
 } from "./onboardingPreferences.js";
+import { installGuide, runtimeChoices } from "./onboardingSetup.js";
 import { toolVerb } from "./toolDisplay.js";
 import { type AgentMode, type LogLine, type LogLineInput, type ToolTelemetry } from "./types.js";
 
@@ -723,9 +729,9 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
             tone: "warning",
             text:
               provider === "ollama"
-                ? "No Ollama models found on that host."
-                : "No models served by that local endpoint. Load one in your local server, then retry.",
-            detail: "Use the back key to choose another provider or retry after fixing the provider setup."
+                ? `No models on this Ollama yet. Run: ollama pull ${defaultOllamaModel}`
+                : "This server has no model loaded. Load one in the server, then retry.",
+            detail: "Press enter to check again, or esc to pick another runtime."
           });
           return;
         }
@@ -758,6 +764,24 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
     setOnboardingNotice(null);
   }, []);
 
+  const detectRuntimes = useCallback(async (): Promise<void> => {
+    setOnboarding({ step: "entry", choices: null });
+    setOnboardingIndex(0);
+    setOnboardingInput("");
+    setOnboardingBusyMessage("Looking for model runtimes on this machine...");
+    try {
+      const [catalog, mlxBinary] = await Promise.all([
+        discoverModels(),
+        supportsMlx() ? findMlxServerBinary() : Promise.resolve(null)
+      ]);
+      setOnboarding((current) =>
+        current?.step === "entry" ? { step: "entry", choices: runtimeChoices(catalog, { mlxInstalled: Boolean(mlxBinary) }) } : current
+      );
+    } finally {
+      setOnboardingBusyMessage(null);
+    }
+  }, []);
+
   const goBackOnboarding = useCallback(() => {
     if (!onboarding) {
       return;
@@ -778,13 +802,13 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         });
         return;
       case "entry":
+      case "ready":
         setOnboarding(null);
         return;
       case "host":
       case "local-url":
-        setOnboarding({
-          step: "entry"
-        });
+      case "install":
+        void detectRuntimes();
         return;
       case "host-input":
         setOnboarding({
@@ -804,18 +828,9 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           return;
         }
 
-        if (onboarding.provider === "local-openai") {
-          setOnboarding({
-            step: "local-url"
-          });
-          return;
-        }
-
-        setOnboarding({
-          step: "entry"
-        });
+        void detectRuntimes();
     }
-  }, [activeHost?.host.kind, hostOptions, onboarding, openModelSelection]);
+  }, [activeHost?.host.kind, detectRuntimes, hostOptions, onboarding, openModelSelection]);
 
   const handleOnboardingSubmit = useCallback(
     async (value: string): Promise<void> => {
@@ -852,48 +867,33 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           PATCHPILOT_DISCLAIMER_ACCEPTED: "2026-05-22"
         });
         process.env.PATCHPILOT_DISCLAIMER_ACCEPTED = "2026-05-22";
-        setOnboarding({
-          step: "entry"
-        });
-        setOnboardingIndex(0);
+        await detectRuntimes();
+        return;
+      }
+
+      if (onboarding.step === "install") {
+        await detectRuntimes();
+        return;
+      }
+
+      if (onboarding.step === "ready") {
+        closeOnboarding();
         return;
       }
 
       if (onboarding.step === "entry") {
-        const selection = readEntrySelection(value, onboardingIndex);
-        if (!selection) {
+        const selectionIndex = readIndexedSelection(value, onboardingIndex);
+        const choice = selectionIndex === null ? undefined : onboarding.choices?.[selectionIndex];
+        if (!choice) {
           return;
         }
 
-        if (selection === "local") {
-          setOnboardingBusyMessage("Checking local Ollama...");
-          let details = await connectToHost("local", {
-            announce: false
-          });
-          if (!details && process.platform === "darwin") {
-            setOnboardingBusyMessage("Starting Ollama.app and waiting for the local server...");
-            const startedHost = await startLocalOllamaAppAndWait();
-            details = startedHost ? await connectToHost(startedHost, { announce: false }) : null;
-          }
-
-          if (!details) {
-            setOnboardingBusyMessage(null);
-            setOnboardingNotice({
-              tone: "warning",
-              text: "Local Ollama is not reachable.",
-              detail: "Start Ollama.app or run `ollama serve`, then press Enter to retry."
-            });
-            return;
-          }
-
-          await openModelSelection("ollama", {
-            deviceName: details.host.deviceName,
-            ollamaUrl: details.host.url
-          });
+        if (choice.kind === "install") {
+          setOnboarding({ step: "install", guide: installGuide() });
           return;
         }
 
-        if (selection === "host") {
+        if (choice.kind === "remote-ollama") {
           setOnboardingBusyMessage("Scanning LAN and Tailscale for Ollama hosts...");
           try {
             const hosts = await loadHostSuggestions(true, false);
@@ -908,8 +908,79 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           return;
         }
 
-        setOnboarding({
-          step: "local-url"
+        if (choice.kind === "custom-url") {
+          setOnboarding({
+            step: "local-url"
+          });
+          return;
+        }
+
+        if (choice.kind === "openai-local") {
+          selectLocalServer(choice.baseUrl);
+          await openModelSelection("local-openai", { currentModel: defaultLocalOpenAIModel });
+          return;
+        }
+
+        if (choice.kind === "mlx-autostart") {
+          const binary = await findMlxServerBinary();
+          if (!binary) {
+            setOnboardingNotice({ tone: "warning", text: "mlx_lm.server is no longer on the PATH.", detail: "Install it with: pip install mlx-lm" });
+            return;
+          }
+
+          setOnboardingBusyMessage(`Starting MLX with ${defaultMlxModel}...`);
+          try {
+            const server = await startMlxServer({
+              binary,
+              model: defaultMlxModel,
+              onProgress: (line) => setOnboardingBusyMessage(`Starting MLX: ${line.slice(0, 120)}`)
+            });
+            // Not saved: the next launch starts its own server on whatever port is free.
+            process.env.PATCHPILOT_PROVIDER = "local-openai";
+            process.env.PATCHPILOT_LOCAL_URL = server.baseUrl;
+            process.env.PATCHPILOT_RUNTIME_LABEL = "MLX";
+            setOnboarding({
+              step: "preferences",
+              provider: "local-openai",
+              model: defaultMlxModel,
+              preferences: readOnboardingPreferences()
+            });
+            setOnboardingIndex(preferenceRows.length);
+          } catch (error) {
+            setOnboardingNotice({
+              tone: "danger",
+              text: "MLX did not start.",
+              detail: error instanceof Error ? error.message : String(error)
+            });
+          } finally {
+            setOnboardingBusyMessage(null);
+          }
+          return;
+        }
+
+        setOnboardingBusyMessage("Checking local Ollama...");
+        let details = await connectToHost("local", {
+          announce: false
+        });
+        if (!details && process.platform === "darwin") {
+          setOnboardingBusyMessage("Starting Ollama.app and waiting for the local server...");
+          const startedHost = await startLocalOllamaAppAndWait();
+          details = startedHost ? await connectToHost(startedHost, { announce: false }) : null;
+        }
+
+        if (!details) {
+          setOnboardingBusyMessage(null);
+          setOnboardingNotice({
+            tone: "warning",
+            text: "Ollama is not reachable on this device.",
+            detail: "Start it (Ollama app or `ollama serve`) and press enter to retry, or pick Install a runtime."
+          });
+          return;
+        }
+
+        await openModelSelection("ollama", {
+          deviceName: details.host.deviceName,
+          ollamaUrl: details.host.url
         });
         return;
       }
@@ -991,12 +1062,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
 
       if (onboarding.step === "local-url") {
         const url = value.trim() || resolveLocalOpenAIBaseUrl();
-        process.env.PATCHPILOT_PROVIDER = "local-openai";
-        process.env.PATCHPILOT_LOCAL_URL = url;
-        savePatchPilotEnvValues({
-          PATCHPILOT_PROVIDER: "local-openai",
-          PATCHPILOT_LOCAL_URL: url
-        });
+        selectLocalServer(url);
         setOnboardingNotice({
           tone: "success",
           text: `Using the local model server at ${url}.`,
@@ -1041,7 +1107,16 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           text: `ready: ${onboarding.provider} using ${onboarding.model}`,
           detail: `mode ${prefs.mode} · subagents ${prefs.subagents ? "on" : "off"}`
         });
-        closeOnboarding();
+        setOnboarding({ step: "ready", provider: onboarding.provider, model: onboarding.model, probe: null });
+        setOnboardingIndex(0);
+        const client = createModelClient({
+          provider: onboarding.provider,
+          ollamaUrl: activeHost?.host.url ?? settings.ollamaUrl,
+          localUrl: resolveLocalOpenAIBaseUrl()
+        });
+        void probeModelCapabilities({ client, provider: onboarding.provider, model: onboarding.model }).then((probe) =>
+          setOnboarding((current) => (current?.step === "ready" && current.model === onboarding.model ? { ...current, probe } : current))
+        );
         return;
       }
 
@@ -1066,7 +1141,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       setOnboardingInput("");
       setOnboardingIndex(preferenceRows.length);
     },
-    [activeHost?.host.url, appendLine, closeOnboarding, connectToHost, loadHostSuggestions, onboarding, onboardingBusyMessage, onboardingIndex, openModelSelection, settings.ollamaUrl]
+    [activeHost?.host.url, appendLine, closeOnboarding, connectToHost, detectRuntimes, loadHostSuggestions, onboarding, onboardingBusyMessage, onboardingIndex, openModelSelection, settings.ollamaUrl]
   );
 
   const runTask = useCallback(
@@ -3018,7 +3093,10 @@ function getOnboardingOptionCount(onboarding: OnboardingState): number {
     case "disclaimer":
       return 0;
     case "entry":
-      return 3;
+      return onboarding.choices?.length ?? 0;
+    case "install":
+    case "ready":
+      return 1;
     case "host":
       return onboarding.hosts.length + 1;
     case "local-url":
@@ -3030,37 +3108,6 @@ function getOnboardingOptionCount(onboarding: OnboardingState): number {
     default:
       return 0;
   }
-}
-
-function readEntrySelection(value: string, selectedIndex: number): "local" | "host" | "local-openai" | null {
-  const normalizedValue = value.trim().toLowerCase();
-  if (!normalizedValue) {
-    return ["local", "host", "local-openai"][selectedIndex] as "local" | "host" | "local-openai";
-  }
-
-  if (normalizedValue === "1" || normalizedValue === "local" || normalizedValue === "this device") {
-    return "local";
-  }
-
-  if (normalizedValue === "2" || normalizedValue === "host" || normalizedValue === "remote host" || normalizedValue === "remote") {
-    return "host";
-  }
-
-  const runtime = resolveRuntimeAlias(value);
-  if (runtime?.provider === "ollama") {
-    return "local";
-  }
-
-  if (
-    normalizedValue === "3" ||
-    normalizedValue === "local-openai" ||
-    normalizedValue === "local server" ||
-    runtime?.provider === "local-openai"
-  ) {
-    return "local-openai";
-  }
-
-  return null;
 }
 
 function readBooleanEnv(value: string | undefined, fallback: boolean): boolean {
@@ -3170,4 +3217,13 @@ function formatHostOptions(hosts: OllamaHost[]): string {
       return `${index + 1}. ${host.deviceName}  ${host.kind}  ${host.url}${version}`;
     })
     .join("\n");
+}
+
+function selectLocalServer(url: string): void {
+  process.env.PATCHPILOT_PROVIDER = "local-openai";
+  process.env.PATCHPILOT_LOCAL_URL = url;
+  savePatchPilotEnvValues({
+    PATCHPILOT_PROVIDER: "local-openai",
+    PATCHPILOT_LOCAL_URL: url
+  });
 }

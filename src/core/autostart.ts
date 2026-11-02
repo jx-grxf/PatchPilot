@@ -196,7 +196,7 @@ async function answersChat(baseUrl: string, model: string): Promise<boolean> {
   }
 }
 
-async function findMlxServerBinary(): Promise<string | null> {
+export async function findMlxServerBinary(): Promise<string | null> {
   const candidates = [
     ...(process.env.PATH ?? "").split(path.delimiter).map((dir) => path.join(dir, "mlx_lm.server")),
     path.join(homedir(), ".local", "bin", "mlx_lm.server")

@@ -1,6 +1,7 @@
 import React from "react";
 import { Box, Text } from "ink";
 import TextInput from "ink-text-input";
+import type { ModelCapabilities } from "../../core/capability.js";
 import type { ModelProvider } from "../../core/types.js";
 import type { OllamaHost } from "../hosts.js";
 import { selectableModels } from "../modelSelection.js";
@@ -11,6 +12,7 @@ import {
   preferenceValueString,
   type OnboardingPreferences,
 } from "../onboardingPreferences.js";
+import { starterKeys, starterPrompts, type InstallGuide, type RuntimeChoice } from "../onboardingSetup.js";
 
 export type OnboardingState =
   | {
@@ -21,6 +23,12 @@ export type OnboardingState =
     }
   | {
       step: "entry";
+      /** Null while the runtimes are being probed. */
+      choices: RuntimeChoice[] | null;
+    }
+  | {
+      step: "install";
+      guide: InstallGuide;
     }
   | {
       step: "host";
@@ -43,24 +51,16 @@ export type OnboardingState =
       provider: ModelProvider;
       model: string;
       preferences: OnboardingPreferences;
+    }
+  | {
+      step: "ready";
+      provider: ModelProvider;
+      model: string;
+      /** Null while the tool-call check is still running. */
+      probe: ModelCapabilities | null;
     };
 
-const entryOptions = [
-  {
-    label: "This Device",
-    description: "Run Ollama locally — fully offline, nothing leaves the machine"
-  },
-  {
-    label: "Remote Host",
-    description: "Reach Ollama on another LAN or Tailscale machine"
-  },
-  {
-    label: "Local Server",
-    description: "LM Studio, llama.cpp or vLLM over an OpenAI-compatible endpoint"
-  }
-];
-
-const stepFlow = ["start", "runtime", "endpoint", "model", "defaults"] as const;
+const stepFlow = ["start", "runtime", "model", "defaults", "check"] as const;
 
 export function OnboardingPanel(props: {
   state: OnboardingState;
@@ -77,16 +77,7 @@ export function OnboardingPanel(props: {
   onInputChange: (value: string) => void;
   onInputSubmit: (value: string) => void;
 }): React.ReactElement {
-  const currentStepIndex =
-    props.state.step === "welcome" || props.state.step === "disclaimer" || props.state.step === "entry"
-      ? 0
-      : props.state.step === "host" || props.state.step === "host-input"
-        ? 1
-        : props.state.step === "local-url"
-          ? 2
-          : props.state.step === "model"
-            ? 3
-            : 4;
+  const currentStepIndex = stepIndex(props.state.step);
   const formatModelLabel = props.formatModelLabel ?? ((model: string) => model);
   const formatModelDescription = props.formatModelDescription ?? (() => "");
   const visibleModels = props.state.step === "model" ? selectableModels(props.input, props.state.models, formatModelLabel) : [];
@@ -133,14 +124,16 @@ export function OnboardingPanel(props: {
       {props.state.step === "disclaimer" ? (
         <DisclaimerStep />
       ) : null}
-      {props.state.step === "entry" ? (
+      {props.state.step === "entry" && props.state.choices ? (
         <SelectionList
           title="Where should the model run?"
           subtitle={`${symbols.arrow} up/down to move  ${symbols.bullet}  enter to pick  ${symbols.bullet}  esc skips setup`}
-          rows={entryOptions}
+          rows={props.state.choices}
           selectedIndex={props.selectedIndex}
+          labelWidth={28}
         />
       ) : null}
+      {props.state.step === "install" ? <InstallStepView guide={props.state.guide} /> : null}
       {props.state.step === "host" ? (
         <SelectionList
           title="Choose a host"
@@ -170,8 +163,8 @@ export function OnboardingPanel(props: {
       ) : null}
       {props.state.step === "local-url" ? (
         <InputStep
-          title="Connect a local model server"
-          description="LM Studio (including Bionic), llama.cpp or vLLM. Paste the OpenAI-compatible base URL."
+          title="Connect a model server"
+          description="LM Studio, llama.cpp, vLLM or any OpenAI-compatible server. Paste its base URL, or press enter for the default."
           prompt="url  > "
           value={props.input}
           onChange={props.onInputChange}
@@ -207,6 +200,101 @@ export function OnboardingPanel(props: {
           selectedIndex={props.selectedIndex}
         />
       ) : null}
+      {props.state.step === "ready" ? (
+        <ReadyStep provider={props.state.provider} model={props.state.model} probe={props.state.probe} />
+      ) : null}
+    </Box>
+  );
+}
+
+function stepIndex(step: OnboardingState["step"]): number {
+  switch (step) {
+    case "welcome":
+    case "disclaimer":
+      return 0;
+    case "entry":
+    case "install":
+    case "host":
+    case "host-input":
+    case "local-url":
+      return 1;
+    case "model":
+      return 2;
+    case "preferences":
+      return 3;
+    case "ready":
+      return 4;
+  }
+}
+
+function InstallStepView(props: { guide: InstallGuide }): React.ReactElement {
+  return (
+    <Box marginTop={1} flexDirection="column">
+      <Text color="white" bold>Install a model runtime</Text>
+      <Text color="gray">PatchPilot runs the model on your own machine. On {props.guide.system}, Ollama is the quickest start:</Text>
+      {props.guide.steps.map((step, index) => (
+        <Box key={step.text} marginTop={1} flexDirection="column">
+          <Text color="white">{index + 1}. {step.text}</Text>
+          {step.command ? <Text color="cyan">   {step.command}</Text> : null}
+        </Box>
+      ))}
+      <Box marginTop={1} flexDirection="column">
+        <Text color="gray">Other options:</Text>
+        {props.guide.alternatives.map((step) => (
+          <Box key={step.text} flexDirection="column">
+            <Text color="gray">{symbols.bullet} {step.text}</Text>
+            {step.command ? <Text color="cyan">   {step.command}</Text> : null}
+          </Box>
+        ))}
+      </Box>
+      <Box marginTop={1}>
+        <Text color="cyan" bold>enter checks again</Text>
+        <Text color="gray">  {symbols.bullet}  esc goes back</Text>
+      </Box>
+    </Box>
+  );
+}
+
+function ReadyStep(props: { provider: ModelProvider; model: string; probe: ModelCapabilities | null }): React.ReactElement {
+  const failed = props.probe?.detail.startsWith("probe failed") ?? false;
+  return (
+    <Box marginTop={1} flexDirection="column">
+      <Text color="white" bold>{props.model}</Text>
+      {props.probe === null ? (
+        <Text color="yellow">{symbols.status} Checking that the model can call tools. The first answer loads it into memory, which can take a minute.</Text>
+      ) : props.probe.nativeToolCalls ? (
+        <Text color="green">{symbols.final} Tool calling works.</Text>
+      ) : failed ? (
+        <Box flexDirection="column">
+          <Text color="red">{symbols.error} The model server did not answer.</Text>
+          <Text color="gray">  {props.probe.detail.replace(/^probe failed:\s*/, "")}</Text>
+          <Text color="gray">  Check that the server is still running. /onboarding runs this setup again.</Text>
+        </Box>
+      ) : (
+        <Box flexDirection="column">
+          <Text color="yellow">{symbols.approval} This model answered without calling a tool.</Text>
+          <Text color="gray">  PatchPilot falls back to a JSON protocol, which works but is slower. A model with tool support works better.</Text>
+        </Box>
+      )}
+      <Box marginTop={1} flexDirection="column">
+        <Text color="white">Things to try:</Text>
+        {starterPrompts.map((prompt) => (
+          <Text key={prompt} color="cyan">  "{prompt}"</Text>
+        ))}
+      </Box>
+      <Box marginTop={1} flexDirection="column">
+        {starterKeys.map((entry) => (
+          <Box key={entry.key}>
+            <Box width={10}>
+              <Text color="white">  {entry.key}</Text>
+            </Box>
+            <Text color="gray">{entry.text}</Text>
+          </Box>
+        ))}
+      </Box>
+      <Box marginTop={1}>
+        <Text color="green" bold>{symbols.final} enter starts the session</Text>
+      </Box>
     </Box>
   );
 }
@@ -215,14 +303,13 @@ function WelcomeStep(): React.ReactElement {
   return (
     <Box marginTop={1} flexDirection="column">
       <Text color="cyan" bold>{symbols.assistant} A coding agent you can watch work</Text>
-      <Text color="gray">Local-only inference. Every read, write, command, and model route stays visible and inspectable.</Text>
+      <Text color="gray">The model runs on your machine or one you own. Every read, edit and command shows up in the transcript.</Text>
       <Box marginTop={1} flexDirection="column">
         <Text color="white">{symbols.todoActive} Plan {symbols.bullet} read files, map the architecture, keep a live todo list</Text>
         <Text color="white">{symbols.todoActive} Build {symbols.bullet} scoped approvals for edits, scripts, tests, and shell</Text>
         <Text color="white">{symbols.todoActive} Review {symbols.bullet} show diffs, run checks, leave Git history ready for you</Text>
       </Box>
-      <Box marginTop={1} flexDirection="column">
-        <Text color="yellow">First task to try: "summarize this repo and list the safest next fixes"</Text>
+      <Box marginTop={1}>
         <Text color="gray">{symbols.arrow} enter continues {symbols.bullet} esc skips {symbols.bullet} reopen later with /onboarding</Text>
       </Box>
     </Box>
@@ -332,6 +419,7 @@ function SelectionList(props: {
   subtitle: string;
   rows: Array<{ label: string; description: string }>;
   selectedIndex: number;
+  labelWidth?: number;
 }): React.ReactElement {
   const startIndex = Math.max(0, Math.min(props.selectedIndex - 4, Math.max(0, props.rows.length - 8)));
   const visibleRows = props.rows.slice(startIndex, startIndex + 8);
@@ -355,7 +443,7 @@ function SelectionList(props: {
             <Box width={2} flexShrink={0}>
               <Text color={isSelected ? "cyan" : "gray"}>{isSelected ? symbols.user : " "}</Text>
             </Box>
-            <Box width={44} flexShrink={0}>
+            <Box width={props.labelWidth ?? 44} flexShrink={0}>
               <Text color={isSelected ? "cyan" : "white"} bold={isSelected} wrap="truncate">
                 {row.label}
               </Text>

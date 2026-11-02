@@ -41,7 +41,7 @@ const slashCommands: SlashCommand[] = [
   {
     name: "onboarding",
     usage: "/onboarding",
-    description: "Choose a local runtime, endpoint, and model.",
+    description: "Run setup again: runtime, model, defaults and a tool-call check.",
     category: "model"
   },
   {
