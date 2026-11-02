@@ -4,6 +4,8 @@ import { samplingFor, type Sampling } from "./samplingProfiles.js";
 import { fetchWithTimeout, postToModel } from "./http.js";
 import { defaultStreamIdleTimeoutMs, readServerSentJson, StreamIdleError, StreamTimer, toolCallIdleTimeoutMs } from "./stream.js";
 import { attachTokenCost } from "./tokenAccounting.js";
+import { defaultMlxModel } from "./autostart.js";
+import { supportsMlx } from "./localRuntimes.js";
 
 /**
  * Generic OpenAI-compatible client for local inference servers.
@@ -14,7 +16,9 @@ import { attachTokenCost } from "./tokenAccounting.js";
  * per-vendor file — the differences live in configuration, not code.
  */
 
-export const defaultLocalOpenAIModel = "qwen2.5-coder-7b-instruct";
+// On Apple Silicon the default names an MLX repo, so autostart can serve it
+// when nothing else is running. Elsewhere it is LM Studio's id for the same model.
+export const defaultLocalOpenAIModel = supportsMlx() ? defaultMlxModel : "qwen/qwen3.5-9b";
 const defaultLocalOpenAIUrl = "http://127.0.0.1:1234/v1";
 const defaultLocalOpenAIPort = 1234;
 

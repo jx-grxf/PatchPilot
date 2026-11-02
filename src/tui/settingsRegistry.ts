@@ -58,7 +58,7 @@ export const settingsRegistry: SettingDefinition[] = [
     name: "Model",
     description: "The model id to run. Use /models to see what each runtime serves.",
     group: "provider",
-    kind: { type: "text", placeholder: "qwen2.5-coder:7b" },
+    kind: { type: "text", placeholder: "qwen3.5:9b" },
     defaultValue: ""
   },
   {

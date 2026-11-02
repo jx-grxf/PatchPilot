@@ -1,4 +1,5 @@
 import type { ModelTelemetry, SessionTelemetry } from "../core/types.js";
+import { defaultOllamaModel } from "../core/ollama.js";
 
 export function getModelHint(model: string): { text: string; color: "green" | "yellow" } {
   const normalizedModel = model.toLowerCase();
@@ -112,7 +113,7 @@ export function normalizeModelAlias(value: string): string {
   }
 
   if (value === "default" || value === "official") {
-    return "qwen2.5-coder:7b";
+    return defaultOllamaModel;
   }
 
   return value;

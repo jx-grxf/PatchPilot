@@ -7,7 +7,7 @@ import { defaultStreamIdleTimeoutMs, readNewlineDelimitedJson, StreamTimer, tool
 import { getOllamaThinkValue } from "./reasoning.js";
 import { attachTokenCost } from "./tokenAccounting.js";
 
-export const defaultOllamaModel = "qwen2.5-coder:7b";
+export const defaultOllamaModel = "qwen3.5:9b";
 export const defaultOllamaUrl = "http://127.0.0.1:11434";
 export const defaultOllamaPort = 11434;
 
