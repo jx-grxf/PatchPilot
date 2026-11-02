@@ -1,8 +1,5 @@
 import type { ModelTelemetry, SessionTelemetry } from "../core/types.js";
 
-export type InkColor = "gray" | "white" | "green" | "yellow" | "red" | "cyan" | "blue" | "magenta";
-export type StatusColor = "gray" | "green" | "yellow" | "red" | "cyan" | "blue" | "magenta";
-
 export function getModelHint(model: string): { text: string; color: "green" | "yellow" } {
   const normalizedModel = model.toLowerCase();
   if (/\bcoder\b|qwen.*coder|deepseek-coder|codestral|starcoder|dracarys/i.test(normalizedModel)) {

@@ -2,9 +2,9 @@ import { estimateTokens } from "./tokenAccounting.js";
 
 export type ContextItemKind = "turn" | "attachment" | "artifact" | "tool_result" | "pinned_file" | "summary";
 
-export type ContextItemSource = "user" | "assistant" | "tool" | "system" | "session";
+type ContextItemSource = "user" | "assistant" | "tool" | "system" | "session";
 
-export type ContextItemMeta = Record<string, boolean | number | string | string[] | null>;
+type ContextItemMeta = Record<string, boolean | number | string | string[] | null>;
 
 export type ContextItem = {
   id: string;

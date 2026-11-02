@@ -40,7 +40,7 @@ export type JsonSchemaProperty = {
   default?: string | number | boolean;
 };
 
-export const TOOL_NAMES = ["read", "write", "edit", "glob", "grep", "bash", "fetch_url", "task", "todo"] as const;
+const TOOL_NAMES = ["read", "write", "edit", "glob", "grep", "bash", "fetch_url", "task", "todo"] as const;
 
 export type ToolName = (typeof TOOL_NAMES)[number];
 

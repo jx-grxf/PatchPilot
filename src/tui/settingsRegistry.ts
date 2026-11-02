@@ -13,7 +13,7 @@ import type { ModelProvider } from "../core/types.js";
 
 export type SettingGroup = "provider" | "generation" | "agent" | "interface" | "experimental";
 
-export type SettingKind =
+type SettingKind =
   | { type: "boolean" }
   | { type: "choice"; values: string[] }
   | { type: "number"; min: number; max: number }

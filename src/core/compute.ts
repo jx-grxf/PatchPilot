@@ -1,6 +1,6 @@
 import { normalizeOllamaBaseUrl } from "./ollama.js";
 
-export type ComputeTargetKind = "local" | "remote";
+type ComputeTargetKind = "local" | "remote";
 
 export type ComputeTarget = {
   kind: ComputeTargetKind;

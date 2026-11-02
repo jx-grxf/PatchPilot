@@ -29,7 +29,7 @@ export type CatalogModel = {
   sizeBytes: number | null;
 };
 
-export type RuntimeStatus = {
+type RuntimeStatus = {
   runtime: LocalRuntime;
   reachable: boolean;
   models: CatalogModel[];

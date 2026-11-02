@@ -1,7 +1,7 @@
 import type { ContextItem } from "./contextItem.js";
 import { isSensitivePath } from "./workspace.js";
 
-export type CompactionPressure = "ok" | "compact" | "critical";
+type CompactionPressure = "ok" | "compact" | "critical";
 
 export type CompactionPlanOptions = {
   targetTokens: number;
@@ -10,7 +10,7 @@ export type CompactionPlanOptions = {
   now?: string;
 };
 
-export type PlannedCompactionItem = {
+type PlannedCompactionItem = {
   item: ContextItem;
   reason: string;
 };

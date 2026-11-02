@@ -1,7 +1,7 @@
-export type ChatRole = "system" | "user" | "assistant" | "tool";
+type ChatRole = "system" | "user" | "assistant" | "tool";
 
 /** A call the assistant made, kept in history in the shape the chat template expects. */
-export type ChatToolCall = {
+type ChatToolCall = {
   id: string;
   name: string;
   arguments: Record<string, unknown>;
@@ -66,7 +66,7 @@ export type ModelChatOptions = {
   onDelta?: (delta: ModelStreamDelta) => void;
 };
 
-export type ModelFileAnalysisOptions = {
+type ModelFileAnalysisOptions = {
   model: string;
   path: string;
   prompt: string;
@@ -201,7 +201,7 @@ export type AgentResponse =
     };
 
 
-export type AgentTodoStatus = "pending" | "in_progress" | "completed";
+type AgentTodoStatus = "pending" | "in_progress" | "completed";
 
 export type AgentTodoItem = {
   id: string;

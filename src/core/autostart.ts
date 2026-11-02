@@ -20,8 +20,6 @@ export type AutostartPlan =
   | { kind: "start-mlx"; model: string; binary: string }
   | { kind: "skip"; reason: string };
 
-export type AutostartResult = { baseUrl: string; model: string; server: ManagedServer | null };
-
 export type ManagedServer = {
   baseUrl: string;
   stop(): void;
