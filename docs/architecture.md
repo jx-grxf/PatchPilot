@@ -1,10 +1,10 @@
 # Architecture
 
-PatchPilot is a Node.js 22+ TypeScript ESM application. `src/cli.tsx` owns command-line parsing and launches the Ink UI. The runtime is split into a local-model layer, an agent loop, bounded workspace tools, persistent context/session stores, and multiple terminal renderers.
+PatchPilot is a Node.js 22+ TypeScript ESM application. `src/cli.tsx` owns command-line parsing and launches the Ink UI. The runtime is split into a local-model layer, an agent loop, bounded workspace tools, persistent context/session stores, and one Ink shell that writes the transcript to the terminal's scrollback.
 
 ## Runtime flow
 
-1. CLI and onboarding resolve the workspace, provider, endpoint, model, permissions, and generation limits.
+1. CLI and onboarding resolve the workspace, provider, endpoint, model, permissions, and generation limits. On Apple Silicon, `autostart` starts `mlx_lm.server` when the configured OpenAI-compatible endpoint does not serve the model.
 2. `modelClient` creates either an `OllamaClient` or `LocalOpenAIClient`.
 3. Capability probing determines native tool-call, JSON-schema, streaming, and context behavior.
 4. `AgentRunner` builds the bounded prompt and advertises only the tools allowed in the current mode.
@@ -26,7 +26,13 @@ PatchPilot is a Node.js 22+ TypeScript ESM application. `src/cli.tsx` owns comma
 | `subagentRunner` | Run bounded `explore` and `general` child loops with isolated context and narrow tool allowlists. |
 | `contextStore` / `compaction` | Persist, pin, export, clear, and compact session context. |
 | `session` | Append JSONL events and maintain the global session index. |
+| `agentSupervisor` / `writeCoordinator` | Keep background children for the session, deliver their results, and refuse writes to files that changed since an agent last read them. |
+| `autostart` | Start and stop an MLX server for the configured model when nothing else serves it. |
 | `src/tui` | Own commands, state, onboarding, model/host selection, telemetry, and terminal rendering. |
+
+## Onboarding
+
+First launch probes every known runtime in parallel (`discoverModels`) and lists the running ones first (`onboardingSetup.ts`). An installed but stopped MLX can be started from that list. With nothing running, setup shows per-OS install commands and probes again on enter. After the model and defaults are chosen, it runs the capability probe once and shows whether native tool calls work; the result is cached, so the first task does not probe again.
 
 ## Local model boundary
 
