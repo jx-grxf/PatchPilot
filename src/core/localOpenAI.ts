@@ -1,7 +1,11 @@
 import type { ModelChatOptions, ModelChatResult, ModelDescriptor, ModelStreamDelta, ModelTelemetry, RawToolCall } from "./types.js";
+import { toOpenAIMessages } from "./wireMessages.js";
+import { samplingFor, type Sampling } from "./samplingProfiles.js";
 import { fetchWithTimeout, postToModel } from "./http.js";
 import { defaultStreamIdleTimeoutMs, readServerSentJson, StreamIdleError, StreamTimer, toolCallIdleTimeoutMs } from "./stream.js";
 import { attachTokenCost } from "./tokenAccounting.js";
+import { defaultMlxModel } from "./autostart.js";
+import { supportsMlx } from "./localRuntimes.js";
 
 /**
  * Generic OpenAI-compatible client for local inference servers.
@@ -12,7 +16,9 @@ import { attachTokenCost } from "./tokenAccounting.js";
  * per-vendor file — the differences live in configuration, not code.
  */
 
-export const defaultLocalOpenAIModel = "qwen2.5-coder-7b-instruct";
+// On Apple Silicon the default names an MLX repo, so autostart can serve it
+// when nothing else is running. Elsewhere it is LM Studio's id for the same model.
+export const defaultLocalOpenAIModel = supportsMlx() ? defaultMlxModel : "qwen/qwen3.5-9b";
 const defaultLocalOpenAIUrl = "http://127.0.0.1:1234/v1";
 const defaultLocalOpenAIPort = 1234;
 
@@ -72,7 +78,7 @@ export type LocalModelInstance = {
 type LocalOpenAIRuntimeOptions = {
   apiKey: string;
   maxTokens: number;
-  temperature: number;
+  env: NodeJS.ProcessEnv;
 };
 
 export class LocalOpenAIClient {
@@ -112,13 +118,18 @@ export class LocalOpenAIClient {
       headers: this.buildHeaders(),
       body: JSON.stringify({
         model: options.model,
-        messages: options.messages,
+        messages: toOpenAIMessages(options.messages),
         stream: streaming,
         tools: options.tools,
         // Without this, most servers omit usage entirely from a stream.
         ...(streaming ? { stream_options: { include_usage: true } } : {}),
         max_tokens: this.runtimeOptions.maxTokens,
-        temperature: this.runtimeOptions.temperature,
+        ...toSamplingFields(samplingFor(options.model, this.runtimeOptions.env)),
+        // Qwen, vLLM, llama.cpp and mlx_lm read the template switch from here;
+        // "auto" leaves the server's own default alone.
+        ...(options.thinking && options.thinking !== "auto"
+          ? { chat_template_kwargs: { enable_thinking: options.thinking === "on" } }
+          : {}),
         // Requesting a JSON object alongside tools makes most servers describe
         // a call in prose instead of emitting one.
         response_format: options.tools || !options.formatJson || !allowJsonFormat ? undefined : { type: "json_object" }
@@ -142,13 +153,11 @@ export class LocalOpenAIClient {
       throw new Error(serverError.trim());
     }
 
-    if (isTruncatedFinishReason(finishReason)) {
-      throw new Error(
-        `Local model response for "${options.model}" was truncated by max_tokens (${this.runtimeOptions.maxTokens}).`
-      );
-    }
+    // A cut-off reply goes back to the loop, which can ask for smaller steps;
+    // throwing here ended the whole run.
+    const truncated = isTruncatedFinishReason(finishReason);
     // A tool call with no prose is a complete, valid response.
-    if (!content.trim() && toolCalls.length === 0) {
+    if (!truncated && !content.trim() && toolCalls.length === 0) {
       throw new Error(`Local model server returned an empty response for "${options.model}".`);
     }
 
@@ -157,6 +166,7 @@ export class LocalOpenAIClient {
       content: stripTemplateTokens(content).trim(),
       ...(toolCalls.length > 0 ? { toolCalls } : {}),
       ...(substitution ? { warning: substitution } : {}),
+      ...(truncated ? { truncated } : {}),
       telemetry: toTelemetry(payload, options.model, timer.elapsedMs, streaming ? timer.timeToFirstTokenMs : null)
     };
   }
@@ -206,7 +216,7 @@ export class LocalOpenAIClient {
           };
           partialCalls.set(index, merged);
           if (merged.name) {
-            delta.toolCall = { name: merged.name, argumentChars: merged.arguments.length };
+            delta.toolCall = { name: merged.name, argumentChars: merged.arguments.length, argumentsText: merged.arguments };
           }
         }
 
@@ -554,7 +564,7 @@ export function readLocalOpenAIRuntimeOptions(env: NodeJS.ProcessEnv = process.e
   return {
     apiKey: readLocalOpenAIApiKey(env),
     maxTokens: readPositiveInteger(env.PATCHPILOT_NUM_PREDICT, 16_384),
-    temperature: readTemperature(env.PATCHPILOT_TEMPERATURE, 0.2)
+    env
   };
 }
 
@@ -579,9 +589,14 @@ function readPositiveInteger(value: string | undefined, fallback: number): numbe
   return Number.isFinite(parsedValue) && parsedValue > 0 ? parsedValue : fallback;
 }
 
-function readTemperature(value: string | undefined, fallback: number): number {
-  const parsedValue = Number.parseFloat(value ?? "");
-  return Number.isFinite(parsedValue) && parsedValue >= 0 ? parsedValue : fallback;
+function toSamplingFields(sampling: Sampling): Record<string, number> {
+  return {
+    temperature: sampling.temperature,
+    top_p: sampling.topP,
+    ...(sampling.topK > 0 ? { top_k: sampling.topK } : {}),
+    ...(sampling.presencePenalty > 0 ? { presence_penalty: sampling.presencePenalty } : {}),
+    ...(sampling.repetitionPenalty && sampling.repetitionPenalty !== 1 ? { repetition_penalty: sampling.repetitionPenalty } : {})
+  };
 }
 
 function readTokensPerSecond(responseTokens: number, elapsedMs: number, timeToFirstTokenMs: number | null): number | null {

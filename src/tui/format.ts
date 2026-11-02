@@ -1,7 +1,5 @@
 import type { ModelTelemetry, SessionTelemetry } from "../core/types.js";
-
-export type InkColor = "gray" | "white" | "green" | "yellow" | "red" | "cyan" | "blue" | "magenta";
-export type StatusColor = "gray" | "green" | "yellow" | "red" | "cyan" | "blue" | "magenta";
+import { defaultOllamaModel } from "../core/ollama.js";
 
 export function getModelHint(model: string): { text: string; color: "green" | "yellow" } {
   const normalizedModel = model.toLowerCase();
@@ -115,7 +113,7 @@ export function normalizeModelAlias(value: string): string {
   }
 
   if (value === "default" || value === "official") {
-    return "qwen2.5-coder:7b";
+    return defaultOllamaModel;
   }
 
   return value;

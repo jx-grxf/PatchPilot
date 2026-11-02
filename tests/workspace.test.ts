@@ -5,7 +5,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { deflateRawSync } from "node:zlib";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { WorkspaceTools } from "../src/core/workspace.js";
+import { fileQueryMatcher, WorkspaceTools } from "../src/core/workspace.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -1775,3 +1775,122 @@ function createMinimalDocx(text: string): Buffer {
 
   return Buffer.concat([localRecord, centralRecord, endRecord]);
 }
+
+describe("file queries", () => {
+  const files = ["src/Calculator.java", "src/core/agent.ts", "src/core/agent.test.ts", "README.md", "a/b/c/deep.java"];
+  const find = (query: string) => files.filter((file) => fileQueryMatcher(query.toLowerCase())(file.toLowerCase()));
+
+  it("matches glob patterns the tool description promises", () => {
+    expect(find("**/*.java")).toEqual(["src/Calculator.java", "a/b/c/deep.java"]);
+    expect(find("*.java")).toEqual(["src/Calculator.java", "a/b/c/deep.java"]);
+    expect(find("src/*.java")).toEqual(["src/Calculator.java"]);
+    expect(find("src/**/*.test.ts")).toEqual(["src/core/agent.test.ts"]);
+    expect(find("**/*.{md,java}")).toEqual(["src/Calculator.java", "README.md", "a/b/c/deep.java"]);
+    expect(find("./src/core/agent.?s")).toEqual(["src/core/agent.ts"]);
+  });
+
+  it("still matches a plain name as a substring", () => {
+    expect(find("calculator")).toEqual(["src/Calculator.java"]);
+  });
+});
+
+describe("reading a folder", () => {
+  it("lists the folder instead of pointing at inspect_document", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "pp-dir-"));
+    await mkdir(path.join(root, "src", "util"), { recursive: true });
+    await writeFile(path.join(root, "src", "Main.java"), "class Main {}");
+    const result = await new WorkspaceTools({ root }).execute({ name: "read_file", arguments: { path: "src" } });
+    expect(result.ok).toBe(true);
+    expect(result.content).toContain("Main.java");
+    expect(result.content).toContain("util/");
+  });
+});
+
+describe("find_files on a workspace with a large hidden folder", () => {
+  async function makeWorkspace(): Promise<string> {
+    const root = await mkdtemp(path.join(tmpdir(), "pp-walk-"));
+    await mkdir(path.join(root, ".claude", "cache"), { recursive: true });
+    for (let index = 0; index < 30; index += 1) {
+      await writeFile(path.join(root, ".claude", "cache", `blob-${index}.md`), "x");
+    }
+    await mkdir(path.join(root, "Brain", "notes"), { recursive: true });
+    await writeFile(path.join(root, "Brain", "notes", "idea.md"), "idea");
+    await mkdir(path.join(root, "src"), { recursive: true });
+    await writeFile(path.join(root, "src", "main.ts"), "main");
+    await writeFile(path.join(root, "readme.md"), "readme");
+    return root;
+  }
+
+  const find = async (root: string, query: string, findFilesBudget = 10) =>
+    await new WorkspaceTools({ root, allowWrite: false, allowShell: false, findFilesBudget }).execute({ name: "find_files", arguments: { query } });
+
+  it("visits visible folders before dot folders so they get the budget first", async () => {
+    const root = await makeWorkspace();
+    const result = await find(root, "**/*.ts");
+    expect(result.content).toContain("src/main.ts");
+  });
+
+  it("starts at the literal folder prefix and matches its real casing", async () => {
+    const root = await makeWorkspace();
+    const result = await find(root, "Brain/**/*.md", 2);
+    expect(result.content).toBe("Brain/notes/idea.md");
+    expect(result.metadata?.walkTruncated).toBe(false);
+  });
+
+  it("lets the parent read a subagent transcript and nothing else under .patchpilot", async () => {
+    const root = await makeWorkspace();
+    await mkdir(path.join(root, ".patchpilot", "subagents"), { recursive: true });
+    await mkdir(path.join(root, ".patchpilot", "sessions"), { recursive: true });
+    await writeFile(path.join(root, ".patchpilot", "subagents", "trace.md"), "the trace");
+    await writeFile(path.join(root, ".patchpilot", "subagents", "other.json"), "{}");
+    await writeFile(path.join(root, ".patchpilot", "sessions", "s.md"), "session");
+    await symlink(path.join(root, ".patchpilot", "sessions", "s.md"), path.join(root, ".patchpilot", "subagents", "link.md"));
+    const tools = new WorkspaceTools({ root, allowWrite: true, allowShell: false });
+    const read = (target: string) => tools.execute({ name: "read_file", arguments: { path: target } });
+
+    expect((await read(".patchpilot/subagents/trace.md")).content).toContain("the trace");
+    expect((await read(".patchpilot/subagents/other.json")).ok).toBe(false);
+    expect((await read(".patchpilot/sessions/s.md")).ok).toBe(false);
+    expect((await read(".patchpilot/subagents/link.md")).ok).toBe(false);
+    expect((await tools.execute({ name: "write_file", arguments: { path: ".patchpilot/subagents/trace.md", content: "x" } })).ok).toBe(false);
+  });
+
+  it("names the real folders when a pattern's folder does not exist, without walking anything", async () => {
+    const root = await makeWorkspace();
+    const result = await find(root, "Brain/nope/*.md", 1);
+    expect(result.summary).toBe("no folder Brain/nope");
+    expect(result.content).toContain("Folders in Brain: notes");
+    expect(result.metadata?.walkTruncated).toBe(false);
+  });
+
+  it("walks a dot folder named in the pattern", async () => {
+    const root = await makeWorkspace();
+    const result = await find(root, ".claude/**/blob-1?.md", 40);
+    expect(result.content.split("\n")).toHaveLength(10);
+  });
+
+  it("lists the root's folders when the first folder does not exist", async () => {
+    const root = await makeWorkspace();
+    const result = await find(root, "missing/**/*.md", 1);
+    expect(result.summary).toBe("no folder missing");
+    expect(result.content).toContain("Folders in the workspace root: .claude, Brain, src");
+  });
+
+  it("never reports a bare zero when the budget ran out", async () => {
+    const root = await makeWorkspace();
+    const result = await find(root, "**/*.nothing", 5);
+    expect(result.metadata?.walkTruncated).toBe(true);
+    expect(result.summary).toContain("cut off after 5 files");
+    expect(result.content).toContain("Narrow the pattern");
+    expect(result.content).not.toContain("No matching files.");
+  });
+
+  it("lists visible entries before dot folders", async () => {
+    const root = await makeWorkspace();
+    const tools = new WorkspaceTools({ root, allowWrite: false, allowShell: false });
+    const result = await tools.execute({ name: "list_files", arguments: { path: "." } });
+    const lines = result.content.split("\n");
+    expect(lines.indexOf("src/main.ts")).toBeLessThan(lines.findIndex((line) => line.startsWith(".claude/")));
+    expect(result.metadata?.walkTruncated).toBe(false);
+  });
+});

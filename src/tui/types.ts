@@ -3,7 +3,7 @@ import type { AgentWorkState, AgentToolName, ToolCategory } from "../core/types.
 
 export type AgentMode = "plan" | "build" | "bypass";
 
-export type LogTone = "muted" | "normal" | "success" | "warning" | "danger" | "accent";
+type LogTone = "muted" | "normal" | "success" | "warning" | "danger" | "accent";
 
 export type TranscriptBlockKind = "user" | "assistant" | "thinking" | "tool" | "diff" | "approval" | "error" | "final" | "status";
 
@@ -21,13 +21,15 @@ export type LogLine = {
   preview?: string;
   /** For tool entries: the file, command or pattern the call acted on. */
   target?: string;
+  /** A finished subagent; its answer is shown under the entry. */
+  agent?: boolean;
+  /** For write and edit entries: what changed, as +/- lines. */
+  diff?: string;
 };
 
 export type LogLineInput = Omit<LogLine, "id" | "kind"> & {
   kind?: TranscriptBlockKind;
 };
-
-export type AppendLine = (line: LogLineInput) => void;
 
 export type ToolTelemetry = {
   total: number;

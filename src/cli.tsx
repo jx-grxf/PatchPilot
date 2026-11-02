@@ -9,6 +9,8 @@ import { defaultLocalOpenAIModel, resolveLocalOpenAIBaseUrl } from "./core/local
 import { describeModel, discoverModels, isUsableForChat, rankForAgentUse } from "./core/modelCatalog.js";
 import { normalizeModelProvider, readModelProvider } from "./core/modelClient.js";
 import { runDoctor } from "./core/doctor.js";
+import { planAutostart, startMlxServer } from "./core/autostart.js";
+import { runBench } from "./core/bench.js";
 import { ensurePatchPilotInstructions } from "./core/projectInit.js";
 import { defaultOllamaModel, resolveOllamaBaseUrl } from "./core/ollama.js";
 import { listIndexedSessions, listWorkspaceSessions, loadSessionSummary } from "./core/session.js";
@@ -55,6 +57,31 @@ program
 
     const removed = await cleanupPatchPilot(path.resolve(options.workspace), cleanupTarget);
     console.log(`cleaned ${removed.join(", ") || cleanupTarget}`);
+  });
+
+program
+  .command("bench")
+  .description("Run a few fixed coding tasks against the configured model and report pass rate and speed.")
+  .option("--provider <name>", "Model provider", defaultProvider)
+  .option("--model <name>", "Model name", defaultModel)
+  .action(async (options: Record<string, unknown>) => {
+    const provider = readModelProvider({ PATCHPILOT_PROVIDER: String(options.provider) });
+    const model = provider === "local-openai" ? await ensureLocalServer(String(options.model)) : String(options.model);
+    console.log(`bench: ${model}`);
+    const results = await runBench({
+      provider,
+      model,
+      ollamaUrl: defaultOllamaUrl,
+      onResult: (result) =>
+        console.log(
+          `${result.ok ? "pass" : "FAIL"}  ${result.name.padEnd(10)} ${result.seconds.toFixed(0).padStart(4)}s  ` +
+            `${result.modelCalls} calls  ${result.toolCalls} tools (${result.failedToolCalls} failed)  ` +
+            `${result.tokensPerSecond ? `${result.tokensPerSecond.toFixed(0)} tok/s` : "-"}${result.ok ? "" : `  ${result.detail}`}`
+        )
+    });
+    const passed = results.filter((result) => result.ok).length;
+    console.log(`${passed}/${results.length} passed`);
+    process.exit(passed === results.length ? 0 : 1);
   });
 
 program
@@ -163,7 +190,7 @@ program
   .option("--provider <name>", "Model provider: ollama, or local-openai for any OpenAI-compatible local server (LM Studio, MLX, llama.cpp, vLLM).", defaultProvider)
   .option("--model <name>", "Model name", defaultModel)
   .option("--ollama-url <url>", "Ollama base URL", defaultOllamaUrl)
-  .option("--steps <count>", "Maximum agent steps", "8")
+  .option("--steps <count>", "Safety limit on model calls per request", "200")
   .option("--apply", "Allow file writes inside the workspace.", false)
   .option("--allow-shell", "Allow shell commands inside the workspace.", false)
   .option("--subagents", "Enable isolated explore/general child agents.", readBooleanEnv(process.env.PATCHPILOT_SUBAGENTS, false))
@@ -181,21 +208,28 @@ program
       "First-run setup opens automatically. Reopen it anytime with /onboarding."
     ].join("\n")
   )
-  .action((taskParts: string[], options: Record<string, unknown>) => {
+  .action(async (taskParts: string[], options: Record<string, unknown>) => {
     const workspace = path.resolve(String(options.workspace));
     const maxSteps = Number.parseInt(String(options.steps), 10);
+    const provider = readModelProvider({ PATCHPILOT_PROVIDER: String(options.provider) });
+    const model = provider === "local-openai" ? await ensureLocalServer(String(options.model)) : String(options.model);
+    // Start on a clean screen with the header at the top.
+    // Only the visible screen is cleared; earlier output stays in scrollback.
+    if (process.stdout.isTTY) {
+      process.stdout.write("\x1b[2J\x1b[H");
+    }
 
     render(
       <App
         initialTask={taskParts.join(" ").trim() || undefined}
-        provider={readModelProvider({ PATCHPILOT_PROVIDER: String(options.provider) })}
-        model={String(options.model)}
+        provider={provider}
+        model={model}
         ollamaUrl={String(options.ollamaUrl)}
         workspace={workspace}
         packageVersion={readPackageVersion()}
         allowWrite={Boolean(options.apply)}
         allowShell={Boolean(options.allowShell)}
-        maxSteps={Number.isFinite(maxSteps) ? maxSteps : 8}
+        maxSteps={Number.isFinite(maxSteps) ? maxSteps : 200}
         subagents={Boolean(options.subagents)}
       />,
       // Only changed rows are rewritten, so a ticking spinner no longer
@@ -205,6 +239,39 @@ program
   });
 
 await program.parseAsync(process.argv);
+
+/**
+ * Brings up a model server when none serves the configured model, so
+ * `patchpilot` alone is enough to start working. Returns the model to use.
+ */
+async function ensureLocalServer(model: string): Promise<string> {
+  const plan = await planAutostart({ baseUrl: resolveLocalOpenAIBaseUrl(), model });
+  if (plan.kind !== "start-mlx") {
+    return model;
+  }
+
+  process.stdout.write(`Starting MLX with ${plan.model}\n`);
+  let lastProgress = "";
+  try {
+    const server = await startMlxServer({
+      binary: plan.binary,
+      model: plan.model,
+      onProgress: (line) => {
+        if (line !== lastProgress && process.stdout.isTTY) {
+          lastProgress = line;
+          process.stdout.write(`\r\x1b[2K${line.slice(0, (process.stdout.columns || 80) - 1)}`);
+        }
+      }
+    });
+    process.stdout.write(`\r\x1b[2KMLX ready at ${server.baseUrl}\n`);
+    process.env.PATCHPILOT_LOCAL_URL = server.baseUrl;
+    process.env.PATCHPILOT_RUNTIME_LABEL = "MLX";
+    return plan.model;
+  } catch (error) {
+    process.stdout.write(`\r\x1b[2KCould not start MLX: ${error instanceof Error ? error.message : String(error)}\n`);
+    return model;
+  }
+}
 
 function readBooleanEnv(value: string | undefined, fallback: boolean): boolean {
   if (!value) {

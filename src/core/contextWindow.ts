@@ -36,8 +36,20 @@ const protectedToolResultTokens = 4000;
 /** Below this there is nothing worth pruning, so the pass is skipped. */
 const minimumPrunableTokens = 1500;
 
-export function measureContext(messages: ChatMessage[], budget: ContextBudget): ContextUsage {
-  const usedTokens = totalTokens(messages);
+/**
+ * `measured` is what the runtime counted for the first `messageCount`
+ * messages on the last request. That part is exact, so only messages added
+ * since are estimated.
+ */
+export function measureContext(
+  messages: ChatMessage[],
+  budget: ContextBudget,
+  measured: { tokens: number; messageCount: number } | null = null
+): ContextUsage {
+  const usedTokens =
+    measured && measured.tokens > 0 && measured.messageCount <= messages.length
+      ? measured.tokens + totalTokens(messages.slice(measured.messageCount))
+      : totalTokens(messages);
   const usable = Math.max(1, budget.limitTokens - budget.reserveTokens);
   const ratio = usedTokens / usable;
 
@@ -50,7 +62,10 @@ export function measureContext(messages: ChatMessage[], budget: ContextBudget): 
 }
 
 export function totalTokens(messages: ChatMessage[]): number {
-  return messages.reduce((total, message) => total + estimateTokens(message.content), 0);
+  return messages.reduce(
+    (total, message) => total + estimateTokens(message.content) + (message.toolCalls ? estimateTokens(JSON.stringify(message.toolCalls)) : 0),
+    0
+  );
 }
 
 /**
@@ -61,6 +76,58 @@ export function totalTokens(messages: ChatMessage[]): number {
 export function pruneToolResults(
   messages: ChatMessage[],
   options: { protectTokens?: number; minimumPrunable?: number } = {}
+): { messages: ChatMessage[]; prunedTokens: number; prunedCount: number } {
+  const results = pruneResultBodies(messages, options);
+  const calls = pruneWrittenContent(results.messages);
+  return {
+    messages: calls.messages,
+    prunedTokens: results.prunedTokens + calls.prunedTokens,
+    prunedCount: results.prunedCount + calls.prunedCount
+  };
+}
+
+/** Arguments longer than this are file bodies, not something to reason over. */
+const largeArgumentChars = 1500;
+
+/**
+ * A write call carries the whole file in its arguments, which makes it the
+ * largest item in a coding conversation. Once the call is a few turns old the
+ * file is on disk and can be read again, so the body becomes a placeholder.
+ * The two most recent assistant turns keep theirs.
+ */
+function pruneWrittenContent(messages: ChatMessage[]): { messages: ChatMessage[]; prunedTokens: number; prunedCount: number } {
+  const assistantTurns = messages.flatMap((message, index) => (message.role === "assistant" && message.toolCalls?.length ? [index] : []));
+  const protectedTurns = new Set(assistantTurns.slice(-2));
+  let prunedTokens = 0;
+  let prunedCount = 0;
+  const next = messages.map((message, index) => {
+    if (!message.toolCalls?.length || protectedTurns.has(index)) {
+      return message;
+    }
+    let changed = false;
+    const toolCalls = message.toolCalls.map((call) => {
+      const args = { ...call.arguments };
+      for (const key of ["content", "new_string"]) {
+        const value = args[key];
+        if (typeof value === "string" && value.length > largeArgumentChars) {
+          prunedTokens += estimateTokens(value);
+          args[key] = `[${value.length} characters, saved to disk; read the file to see it]`;
+          changed = true;
+        }
+      }
+      return changed ? { ...call, arguments: args } : call;
+    });
+    if (changed) {
+      prunedCount += 1;
+    }
+    return changed ? { ...message, toolCalls } : message;
+  });
+  return { messages: prunedCount > 0 ? next : messages, prunedTokens, prunedCount };
+}
+
+function pruneResultBodies(
+  messages: ChatMessage[],
+  options: { protectTokens?: number; minimumPrunable?: number }
 ): { messages: ChatMessage[]; prunedTokens: number; prunedCount: number } {
   const protectTokens = options.protectTokens ?? protectedToolResultTokens;
   const minimumPrunable = options.minimumPrunable ?? minimumPrunableTokens;
@@ -101,7 +168,7 @@ export function pruneToolResults(
 
   const pruneSet = new Set(prunable);
   const next = messages.map((message, index) =>
-    pruneSet.has(index) ? { ...message, content: summariseToolResult(message.content) } : message
+    pruneSet.has(index) ? { ...message, content: summariseToolResult(message) } : message
   );
 
   return {
@@ -140,49 +207,111 @@ export function planCompaction(messages: ChatMessage[], options: { keepTailToken
       continue;
     }
 
-    if (keptTokens >= options.keepTailTokens && kept.length > 0) {
+    // A tail that opens on tool results would orphan them from the call that
+    // produced them, which chat templates reject.
+    if (keptTokens >= options.keepTailTokens && kept.length > 0 && kept[0]?.role !== "tool") {
       return { stale: rest.slice(0, index + 1), kept: [...systemMessages, ...kept] };
     }
 
-    keptTokens += estimateTokens(message.content);
+    keptTokens += totalTokens([message]);
     kept.unshift(message);
   }
 
   return { stale: [], kept: messages };
 }
 
-/** Builds the instruction used to summarise a stale conversation segment. */
-export function buildCompactionPrompt(stale: ChatMessage[]): ChatMessage[] {
+/**
+ * What a summary has to carry for work to continue, as fixed sections. A
+ * small model summarises far more reliably against a fixed
+ * outline than against "summarise this".
+ */
+export function buildCompactionPrompt(stale: ChatMessage[], focus = ""): ChatMessage[] {
   return [
     {
       role: "system",
-      content:
-        "Summarise the following agent transcript so work can continue without it. Record: what was accomplished, what is still in progress, which files were touched, concrete next steps, and any constraint the user stated. Keep every file path and identifier verbatim. Omit tool output that no longer matters. Write prose, not JSON."
+      content: [
+        "You condense the earlier part of a coding session so the work can continue without it.",
+        "The user's own messages are kept verbatim elsewhere; summarise what the assistant did and what the tools showed.",
+        "Write these sections, each a few short lines, and keep every file path, identifier and command exactly as written:",
+        "1. Goal: what the user is trying to achieve.",
+        "2. Files: each file read or changed, and what changed in it.",
+        "3. Errors and fixes: problems hit and how they were solved.",
+        "4. Decisions: choices made and constraints to respect.",
+        "5. Open: what is unfinished or still failing.",
+        "6. Next step: the immediate next action.",
+        "Plain text, no JSON, no preamble.",
+        focus.trim() ? `Pay particular attention to: ${focus.trim()}` : ""
+      ]
+        .filter(Boolean)
+        .join("\n")
     },
     {
       role: "user",
-      content: stale.map((message) => `[${message.role}] ${message.content}`).join("\n\n")
+      content: stale.map(formatForSummary).join("\n\n")
     }
   ];
 }
 
-/** Splices a summary back in where the stale segment was. */
-export function applyCompaction(request: CompactionRequest, summary: string): ChatMessage[] {
+function formatForSummary(message: ChatMessage): string {
+  const calls = message.toolCalls?.map((call) => `${call.name}(${clip(JSON.stringify(call.arguments), 200)})`).join(", ");
+  const label = message.role === "tool" ? `tool ${message.toolName ?? ""}`.trim() : message.role;
+  return `[${label}] ${clip(message.content, 4000)}${calls ? `\ncalled: ${calls}` : ""}`;
+}
+
+/** The user's requests survive compaction verbatim, newest first within a budget. */
+const keptUserMessageTokens = 6000;
+
+/**
+ * Splices the summary in where the stale segment was. The user's own
+ * messages stay word for word: a weak summary must never be
+ * able to lose what was asked. `state` re-attaches what the next step needs
+ * straight away, such as the todo list and the files changed so far.
+ */
+export function applyCompaction(request: CompactionRequest, summary: string, state = ""): ChatMessage[] {
   if (request.stale.length === 0) {
     return request.kept;
   }
 
   const systemMessages = request.kept.filter((message) => message.role === "system");
   const tail = request.kept.filter((message) => message.role !== "system");
+  const requests: ChatMessage[] = [];
+  let budget = keptUserMessageTokens;
+  for (const message of [...request.stale].reverse()) {
+    // An earlier summary is not a request; it is folded into the new one.
+    if (message.role !== "user" || isToolResultMessage(message) || message.content.startsWith(summaryHeading)) {
+      continue;
+    }
+    budget -= estimateTokens(message.content);
+    if (budget < 0) {
+      break;
+    }
+    requests.unshift(message);
+  }
 
   return [
     ...systemMessages,
+    ...requests,
     {
       role: "user",
-      content: `Summary of earlier work in this session:\n\n${summary.trim()}`
+      content: [`${summaryHeading}\n\n${summary.trim()}`, state.trim()].filter(Boolean).join("\n\n")
     },
     ...tail
   ];
+}
+
+const summaryHeading = "Summary of earlier work in this session (your earlier replies and tool results were condensed):";
+
+/** Files the stale part changed, so they can be named after compaction. */
+export function changedFiles(messages: ChatMessage[]): string[] {
+  const paths = new Set<string>();
+  for (const message of messages) {
+    for (const call of message.toolCalls ?? []) {
+      if ((call.name === "write" || call.name === "edit" || call.name === "write_file" || call.name === "edit_file") && typeof call.arguments.path === "string") {
+        paths.add(call.arguments.path);
+      }
+    }
+  }
+  return [...paths];
 }
 
 /**
@@ -191,7 +320,7 @@ export function applyCompaction(request: CompactionRequest, summary: string): Ch
  * than anchored to the first character.
  */
 function isToolResultMessage(message: ChatMessage | undefined): boolean {
-  return message?.role === "user" && message.content.slice(0, 400).includes('"tool_results"');
+  return message?.role === "tool" || (message?.role === "user" && message.content.slice(0, 400).includes('"tool_results"'));
 }
 
 /**
@@ -199,7 +328,12 @@ function isToolResultMessage(message: ChatMessage | undefined): boolean {
  * dropping the body. A model that sees "read_file ok" knows it already read
  * the file; it does not need the contents again.
  */
-function summariseToolResult(content: string): string {
+function summariseToolResult(message: ChatMessage): string {
+  const content = message.content;
+  if (message.role === "tool") {
+    // Native results lead with their summary line.
+    return `[pruned earlier output] ${clip(content.split("\n", 1)[0] ?? "", 160)}`;
+  }
   const summaries: string[] = [];
   try {
     const jsonStart = content.indexOf('{"tool_results"');

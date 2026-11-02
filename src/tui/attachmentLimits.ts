@@ -84,6 +84,3 @@ function attachmentBasename(filePath: string): string {
   return filePath.split(/[\\/]/).filter(Boolean).at(-1) ?? filePath;
 }
 
-export function formatAttachmentDigestPath(filePath: string): string {
-  return JSON.stringify(filePath.split(/[\\/]/).filter(Boolean).at(-1) ?? filePath);
-}

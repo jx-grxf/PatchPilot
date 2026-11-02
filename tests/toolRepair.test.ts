@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   extractFencedToolCalls,
   extractStringifiedToolCalls,
+  extractTaggedToolCalls,
   looksLikePermissionRequest,
   parseLooseJson,
   repairToolCall,
@@ -279,5 +280,72 @@ describe("tool descriptions carry a worked example", () => {
       // The example must name the tool it belongs to.
       expect(tool.description.split("Example:")[1]).toContain(`${tool.name}(`);
     }
+  });
+});
+
+describe("extractTaggedToolCalls", () => {
+  it("reads Qwen3-Coder XML calls", () => {
+    const content = "On it.\n<tool_call>\n<function=write>\n<parameter=path>\nhello.txt\n</parameter>\n<parameter=content>\nline 1\nline 2\n</parameter>\n</function>\n</tool_call>";
+    expect(extractTaggedToolCalls(content)).toEqual([{ name: "write", arguments: { path: "hello.txt", content: "line 1\nline 2" } }]);
+  });
+
+  it("reads Hermes JSON calls and several in a row", () => {
+    const content = '<tool_call>\n{"name": "read", "arguments": {"path": "a"}}\n</tool_call>\n<tool_call>\n{"name": "read", "arguments": {"path": "b"}}\n</tool_call>';
+    expect(extractTaggedToolCalls(content).map((call) => call.arguments)).toEqual([{ path: "a" }, { path: "b" }]);
+  });
+
+  it("ignores an unfinished call", () => {
+    expect(extractTaggedToolCalls("<tool_call>\n<function=write>\n<parameter=path>\na")).toEqual([]);
+  });
+});
+
+describe("extractTaggedToolCalls without the opening tag", () => {
+  it("reads a call whose <tool_call> token the runtime dropped", () => {
+    const content = "I'll add it.\n\n<function=edit>\n<parameter=path>\ngreet.js\n</parameter>\n<parameter=old_string>\na\n</parameter>\n<parameter=new_string>\nb\n</parameter>\n</function>\n</tool_call>";
+    expect(extractTaggedToolCalls(content)).toEqual([{ name: "edit", arguments: { path: "greet.js", old_string: "a", new_string: "b" } }]);
+  });
+});
+
+describe("task actions", () => {
+  it("treats a call without an action as start when a prompt is present", () => {
+    const call = repaired("task", { description: "find auth", prompt: "locate auth", subagent_type: "explore" });
+    expect(call.arguments).toMatchObject({ action: "start", prompt: "locate auth" });
+    expect(call.repairs).toContain("action defaulted to start");
+  });
+
+  it("maps action synonyms and agent_id", () => {
+    const call = repaired("task", { action: "kill", agent_id: "agent-2" });
+    expect(call.arguments).toEqual({ action: "stop", id: "agent-2" });
+  });
+
+  it("names what start is missing and shows a start call", () => {
+    const message = problem("task", { action: "start", prompt: "p" });
+    expect(message).toContain('"description"');
+    expect(message).toContain('task({"action":"start"');
+  });
+
+  it("needs an id for message and stop, and lists the ways to find one", () => {
+    expect(problem("task", { action: "message", prompt: "hi" })).toContain('"id"');
+    expect(problem("task", { action: "stop" })).toContain('action "status"');
+  });
+
+  it("lists the valid actions for a wrong one", () => {
+    expect(problem("task", { action: "explode", id: "agent-1" })).toContain("start, message, stop, status");
+  });
+
+  it("asks for an action when there is neither an action nor a prompt", () => {
+    expect(problem("task", { id: "agent-1" })).toContain('needs "action"');
+  });
+
+  it("allows status with and without an id", () => {
+    expect(repaired("task", { action: "status" }).arguments).toEqual({ action: "status" });
+    expect(repaired("task", { action: "status", id: "agent-1" }).arguments).toEqual({ action: "status", id: "agent-1" });
+  });
+
+  it("tells the model to prefer explore", () => {
+    const task = toolsForMode("build").find((tool) => tool.name === "task");
+    expect(task?.description).toContain("Use explore unless the work must change files");
+    expect(task?.description).toMatch(/Example: task\(\{[^]*\}\)\.$/);
+    expect(task?.inputSchema.required).toEqual(["action"]);
   });
 });

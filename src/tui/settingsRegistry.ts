@@ -13,7 +13,7 @@ import type { ModelProvider } from "../core/types.js";
 
 export type SettingGroup = "provider" | "generation" | "agent" | "interface" | "experimental";
 
-export type SettingKind =
+type SettingKind =
   | { type: "boolean" }
   | { type: "choice"; values: string[] }
   | { type: "number"; min: number; max: number }
@@ -58,7 +58,7 @@ export const settingsRegistry: SettingDefinition[] = [
     name: "Model",
     description: "The model id to run. Use /models to see what each runtime serves.",
     group: "provider",
-    kind: { type: "text", placeholder: "qwen2.5-coder:7b" },
+    kind: { type: "text", placeholder: "qwen3.5:9b" },
     defaultValue: ""
   },
   {
@@ -122,30 +122,28 @@ export const settingsRegistry: SettingDefinition[] = [
   {
     key: "PATCHPILOT_TEMPERATURE",
     name: "Temperature",
-    description: "Lower is steadier. Tool calling wants steady far more than it wants creative.",
+    description: "Empty uses the value the model family recommends (Qwen 0.7, gpt-oss 1.0, Devstral 0.15).",
     group: "generation",
     kind: { type: "number", min: 0, max: 2 },
-    defaultValue: "0.2",
+    defaultValue: "",
     appliesNextRun: true
   },
   {
     key: "PATCHPILOT_TOP_P",
     name: "Top-p",
-    description: "Nucleus sampling cutoff.",
+    description: "Nucleus sampling cutoff. Empty uses the model family's value.",
     group: "generation",
     kind: { type: "number", min: 0, max: 1 },
-    defaultValue: "0.9",
-    appliesTo: "ollama",
+    defaultValue: "",
     appliesNextRun: true
   },
   {
     key: "PATCHPILOT_TOP_K",
     name: "Top-k",
-    description: "Candidate cutoff. 0 disables it.",
+    description: "Candidate cutoff. 0 disables it; empty uses the model family's value.",
     group: "generation",
     kind: { type: "number", min: 0, max: 200 },
-    defaultValue: "20",
-    appliesTo: "ollama",
+    defaultValue: "",
     appliesNextRun: true
   },
   {

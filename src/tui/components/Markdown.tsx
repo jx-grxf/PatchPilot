@@ -189,7 +189,7 @@ export function DiffBlock(props: { lines: string[]; width: number; language?: st
         }
 
         const marker = kind === "added" ? "+" : kind === "removed" ? "-" : " ";
-        const body = kind === "context" ? line : line.slice(1);
+        const body = kind === "context" && !line.startsWith(" ") ? line : line.slice(1);
         const [highlightedBody] = highlightBlock(body, language);
 
         return (

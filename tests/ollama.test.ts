@@ -154,7 +154,10 @@ describe("OllamaClient", () => {
       options: {
         num_ctx: 32_768,
         num_predict: 16_384,
-        temperature: 0.2
+        // qwen2.5-coder: the Qwen family profile.
+        temperature: 0.7,
+        top_p: 0.8,
+        top_k: 20
       }
     });
     expect(result.content).toBe("{\"action\":\"final\",\"message\":\"ok\"}");
@@ -196,7 +199,8 @@ describe("OllamaClient", () => {
       keepAlive: "5m",
       numCtx: 4096,
       numPredict: 512,
-      temperature: 0.2
+      env: {},
+      repeatPenalty: 1
     });
 
     await client.chat({
@@ -247,7 +251,7 @@ describe("OllamaClient", () => {
     ).rejects.toThrow('Ollama returned an empty response for model "qwen2.5-coder:7b"');
   });
 
-  it("surfaces truncated responses before protocol parsing", async () => {
+  it("flags a truncated response instead of failing the run", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(
         JSON.stringify({
@@ -265,17 +269,16 @@ describe("OllamaClient", () => {
       )
     );
 
-    await expect(
-      new OllamaClient().chat({
-        model: "qwen2.5-coder:7b",
-        messages: [
-          {
-            role: "user",
-            content: "hello"
-          }
-        ]
-      })
-    ).rejects.toThrow("truncated by num_predict");
+    const result = await new OllamaClient().chat({
+      model: "qwen2.5-coder:7b",
+      messages: [
+        {
+          role: "user",
+          content: "hello"
+        }
+      ]
+    });
+    expect(result).toMatchObject({ truncated: true });
   });
 
   it("lists running models from the Ollama ps endpoint", async () => {
@@ -406,9 +409,7 @@ describe("Ollama URL config", () => {
       keepAlive: "30m",
       numCtx: 4096,
       numPredict: 768,
-      temperature: 0,
-      topP: 0.9,
-      topK: 20,
+      env: expect.objectContaining({ PATCHPILOT_TEMPERATURE: "0" }),
       repeatPenalty: 1
     });
   });

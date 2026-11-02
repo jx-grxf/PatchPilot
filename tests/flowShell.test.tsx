@@ -28,6 +28,39 @@ describe("FlowShell", () => {
     expect(output([lastFrame() ?? ""])).toContain("entry 39");
   });
 
+  it("reprints the whole history when the viewed agent changes", () => {
+    const main = [line("status", "main entry")];
+    const child = [line("status", "child entry")];
+    const { lastFrame, rerender } = render(<FlowShell lines={main} transcriptEpoch={0} view={null} columns={80} />);
+    expect(output([lastFrame() ?? ""])).toContain("main entry");
+
+    rerender(<FlowShell lines={child} transcriptEpoch={0} view="agent-1" columns={80} />);
+    expect(output([lastFrame() ?? ""])).toContain("child entry");
+
+    rerender(<FlowShell lines={main} transcriptEpoch={0} view={null} columns={80} />);
+    expect(output([lastFrame() ?? ""])).toContain("main entry");
+  });
+
+  it("does not print a failure twice when its detail repeats the summary", () => {
+    const denied = 'run_shell denied. executable "bash" is blocked.';
+    const { lastFrame } = render(<FlowShell lines={[line("tool", denied, { tone: "warning", detail: denied, label: "Bash" })]} transcriptEpoch={0} columns={100} />);
+    expect(output([lastFrame() ?? ""]).split(denied)).toHaveLength(2);
+  });
+
+  it("prints the banner into a fresh region after /clear, so the erased screen is not blank", () => {
+    const banner = { version: "1.0.0", model: "banner-model", host: "local", workspace: "/tmp/w", columns: 80 };
+    const { lastFrame, rerender } = render(<FlowShell lines={[line("status", "old entry")]} transcriptEpoch={0} banner={banner} columns={80} />);
+    rerender(<FlowShell lines={[]} transcriptEpoch={1} banner={banner} columns={80} />);
+    expect(output([lastFrame() ?? ""])).toContain("banner-model");
+    expect(output([lastFrame() ?? ""])).not.toContain("old entry");
+  });
+
+  it("keeps the banner out of a child's history", () => {
+    const banner = { version: "1.0.0", model: "banner-model", host: "local", workspace: "/tmp/w", columns: 80 };
+    const { lastFrame } = render(<FlowShell lines={[line("status", "child entry")]} transcriptEpoch={0} view="agent-1" banner={banner} columns={80} />);
+    expect(output([lastFrame() ?? ""])).not.toContain("banner-model");
+  });
+
   it("renders nothing for an empty transcript rather than a frame of chrome", () => {
     const { lastFrame } = render(<FlowShell lines={[]} transcriptEpoch={0} columns={80} />);
     expect(output([lastFrame() ?? ""]).trim()).toBe("");

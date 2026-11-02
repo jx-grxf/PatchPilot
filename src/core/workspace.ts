@@ -11,6 +11,8 @@ import { deflateRawSync, inflateRawSync } from "node:zlib";
 import { fetchWithTimeout } from "./http.js";
 import { readTextLimited } from "./stream.js";
 import { MemoryStore } from "./memory.js";
+import { hashBytes, hashFile, MISSING_FILE_HASH, type ApprovalHandler, type WriteCoordinator } from "./writeCoordinator.js";
+import { compactDiff } from "./lineDiff.js";
 import type { AgentToolCall, AgentToolName, ApprovalRequest, PermissionDecision, ToolPermission, ToolResult, ToolSpec } from "./types.js";
 
 const execFileAsync = promisify(execFile);
@@ -88,6 +90,8 @@ const blockedPathNames = new Set([
   "known_hosts"
 ]);
 
+const findFilesBudget = 20_000;
+
 const blockedPathPatterns = [
   /(^|\/)(cookies|network\/cookies|login data|web data)$/i,
   /(^|\/)(chrome|chromium|brave-browser|brave|microsoft edge|edge|arc|firefox|safari)(\/|$)/i,
@@ -104,7 +108,10 @@ export type WorkspaceToolsOptions = {
   memoryEnabled?: boolean;
   timeoutMs?: number;
   signal?: AbortSignal;
-  approvalHandler?: (request: ApprovalRequest) => Promise<PermissionDecision>;
+  approvalHandler?: ApprovalHandler;
+  coordinator?: WriteCoordinator;
+  agentKey?: string;
+  findFilesBudget?: number;
 };
 
 export const toolSpecs: Record<AgentToolName, ToolSpec> = {
@@ -349,7 +356,10 @@ export class WorkspaceTools {
   private readonly documentAnalyzer?: DocumentAnalyzer;
   private readonly timeoutMs: number;
   private readonly signal?: AbortSignal;
-  private readonly approvalHandler?: (request: ApprovalRequest) => Promise<PermissionDecision>;
+  private readonly approvalHandler?: ApprovalHandler;
+  private readonly coordinator?: WriteCoordinator;
+  private readonly agentKey: string;
+  private readonly findFilesBudget: number;
   private readonly sessionApprovals = new Set<string>();
 
   constructor(options: WorkspaceToolsOptions) {
@@ -364,6 +374,9 @@ export class WorkspaceTools {
     this.timeoutMs = options.timeoutMs ?? 60_000;
     this.signal = options.signal;
     this.approvalHandler = options.approvalHandler;
+    this.coordinator = options.coordinator;
+    this.agentKey = options.agentKey ?? "main";
+    this.findFilesBudget = options.findFilesBudget ?? findFilesBudget;
   }
 
   async execute(call: AgentToolCall): Promise<ToolResult> {
@@ -504,13 +517,16 @@ export class WorkspaceTools {
 
   private async listFiles(requestedPath: string): Promise<ToolResult> {
     const rootPath = await this.resolveReadPath(requestedPath);
-    const entries = await walkFiles(rootPath, this.root, await this.rootRealPath, 3, 160);
+    const walk = await walkFiles(rootPath, this.root, await this.rootRealPath, 3, 160);
     return {
       ok: true,
-      summary: `listed ${entries.length} files`,
-      content: entries.join("\n"),
+      summary: walk.truncated ? `listed ${walk.files.length} files (cut off)` : `listed ${walk.files.length} files`,
+      content: walk.truncated
+        ? `${walk.files.join("\n")}\nThe list stopped after ${walk.files.length} files. List a subfolder to see the rest.`
+        : walk.files.join("\n"),
       tool: "list_files",
-      category: toolSpecs.list_files.category
+      category: toolSpecs.list_files.category,
+      metadata: { walkTruncated: walk.truncated }
     };
   }
 
@@ -529,21 +545,36 @@ export class WorkspaceTools {
     }
 
     const normalizedLimit = Math.max(1, Math.min(200, Math.floor(limit || 80)));
-    const files = await walkFiles(this.root, this.root, await this.rootRealPath, 10, 1200);
-    const matches = files
-      .filter((filePath) => filePath.toLowerCase().includes(normalizedQuery))
-      .slice(0, normalizedLimit);
+    const rootRealPath = await this.rootRealPath;
+    const prefix = await resolveLiteralPrefix(this.root, normalizedQuery);
+    if (prefix.kind === "missing") {
+      const { folder, parent, siblings } = prefix;
+      return {
+        ok: true,
+        summary: `no folder ${folder}`,
+        content: `There is no folder ${folder}. ${siblings.length > 0 ? `Folders in ${parent}: ${siblings.slice(0, 40).join(", ")}.` : `${parent} has no folders.`} Use one of those in the pattern.`,
+        tool: "find_files",
+        category: toolSpecs.find_files.category,
+        metadata: { query: normalizedQuery, limit: normalizedLimit, truncated: false, walkTruncated: false }
+      };
+    }
+    const walk = await walkFiles(prefix.kind === "folder" ? prefix.path : this.root, this.root, rootRealPath, 10, this.findFilesBudget);
+    const matchesQuery = fileQueryMatcher(normalizedQuery);
+    const matches = walk.files.filter((filePath) => matchesQuery(filePath.toLowerCase())).slice(0, normalizedLimit);
+    const count = `${matches.length} file match${matches.length === 1 ? "" : "es"}`;
+    const cutOff = `The search stopped after ${walk.files.length} files, so later files were not checked. Narrow the pattern with a folder prefix, for example src/**/*.ts.`;
 
     return {
       ok: true,
-      summary: `found ${matches.length} file match${matches.length === 1 ? "" : "es"}`,
-      content: matches.join("\n") || "No matching files.",
+      summary: walk.truncated ? `found ${count}, search cut off after ${walk.files.length} files` : `found ${count}`,
+      content: [matches.join("\n") || (walk.truncated ? "" : "No matching files."), walk.truncated ? cutOff : ""].filter(Boolean).join("\n"),
       tool: "find_files",
       category: toolSpecs.find_files.category,
       metadata: {
         query: normalizedQuery,
         limit: normalizedLimit,
-        truncated: matches.length >= normalizedLimit
+        truncated: matches.length >= normalizedLimit,
+        walkTruncated: walk.truncated
       }
     };
   }
@@ -561,12 +592,16 @@ export class WorkspaceTools {
       return denied(`read_file denied sensitive path: ${requestedPath}`);
     }
 
-    const absolutePath = await this.resolveReadPath(requestedPath);
+    const absolutePath = await this.resolveTrackedReadPath(requestedPath);
+    const directory = await this.listDirectoryForRead(absolutePath, "read_file");
+    if (directory) {
+      return directory;
+    }
     if (!isLikelyTextFile(absolutePath)) {
       return denied(`read_file supports text/code files. Use inspect_document for ${path.extname(absolutePath) || "this file"} files.`);
     }
 
-    const content = await readFile(absolutePath, "utf8").catch((error: unknown) => {
+    const content = await this.readSeenText(absolutePath).catch((error: unknown) => {
       throw new Error(`file not found or unreadable: ${requestedPath} (${error instanceof Error ? error.message : String(error)})`);
     });
     const clippedContent = clip(content, 20_000);
@@ -577,6 +612,29 @@ export class WorkspaceTools {
       tool: "read_file",
       category: toolSpecs.read_file.category,
       metadata: textContentMetadata(content)
+    };
+  }
+
+  /**
+   * Reading a folder is how a model asks what is in it. Told to use
+   * inspect_document instead, it went to the shell.
+   */
+  private async listDirectoryForRead(absolutePath: string, tool: "read_file" | "read_range"): Promise<ToolResult | null> {
+    const info = await stat(absolutePath).catch(() => null);
+    if (!info?.isDirectory()) {
+      return null;
+    }
+    const entries = (await readdir(absolutePath, { withFileTypes: true }))
+      .filter((entry) => !entry.name.startsWith("."))
+      .map((entry) => (entry.isDirectory() ? `${entry.name}/` : entry.name))
+      .sort();
+    const relative = normalizeRelative(this.root, absolutePath) || ".";
+    return {
+      ok: true,
+      summary: `${relative} is a folder with ${entries.length} entr${entries.length === 1 ? "y" : "ies"}`,
+      content: `${relative} is a folder, not a file. It contains:\n${entries.join("\n") || "(nothing)"}\nRead one of these files, or use glob to search deeper.`,
+      tool,
+      category: toolSpecs[tool].category
     };
   }
 
@@ -597,12 +655,16 @@ export class WorkspaceTools {
       return denied(`read_range denied sensitive path: ${requestedPath}`, "read_range");
     }
 
-    const absolutePath = await this.resolveReadPath(requestedPath);
+    const absolutePath = await this.resolveTrackedReadPath(requestedPath);
+    const directory = await this.listDirectoryForRead(absolutePath, "read_range");
+    if (directory) {
+      return directory;
+    }
     if (!isLikelyTextFile(absolutePath)) {
       return denied(`read_range supports text/code files. Use inspect_document for ${path.extname(absolutePath) || "this file"} files.`, "read_range");
     }
 
-    const lines = (await readFile(absolutePath, "utf8")).split(/\r?\n/);
+    const lines = (await this.readSeenText(absolutePath)).split(/\r?\n/);
     const selectedLines = lines.slice(startLine - 1, endLine);
     const numberedLines = selectedLines.map((line, index) => `${startLine + index}: ${line}`).join("\n");
     return {
@@ -732,7 +794,7 @@ export class WorkspaceTools {
   }
 
   private async readTextDocument(absolutePath: string): Promise<ToolResult> {
-    const content = await readFile(absolutePath, "utf8");
+    const content = await this.readSeenText(absolutePath);
     const rawRelativePath = path.relative(this.root, absolutePath);
     const relativePath = normalizeRelative(this.root, absolutePath);
     return {
@@ -836,10 +898,10 @@ export class WorkspaceTools {
     }
 
     const rootRealPath = await this.rootRealPath;
-    const files = await walkFiles(this.root, this.root, rootRealPath, 8, 800);
+    const walk = await walkFiles(this.root, this.root, rootRealPath, 8, 800);
     const matches: string[] = [];
 
-    for (const filePath of files) {
+    for (const filePath of walk.files) {
       const absolutePath = this.resolveInsideWorkspace(filePath);
       if (!isLikelyTextFile(absolutePath)) {
         continue;
@@ -858,12 +920,14 @@ export class WorkspaceTools {
       }
     }
 
+    const cutOff = `Only the first ${walk.files.length} files were searched. Search a narrower folder or query to cover the rest.`;
     return {
       ok: true,
-      summary: `found ${matches.length} matches`,
-      content: matches.join("\n") || "No matches.",
+      summary: walk.truncated ? `found ${matches.length} matches, search cut off after ${walk.files.length} files` : `found ${matches.length} matches`,
+      content: [matches.join("\n") || (walk.truncated ? "" : "No matches."), walk.truncated ? cutOff : ""].filter(Boolean).join("\n"),
       tool: "search_text",
-      category: toolSpecs.search_text.category
+      category: toolSpecs.search_text.category,
+      metadata: { walkTruncated: walk.truncated }
     };
   }
 
@@ -1014,20 +1078,31 @@ export class WorkspaceTools {
       }
     }
 
-    await mkdir(path.dirname(absolutePath), { recursive: true });
-    await writeFile(absolutePath, normalized.content, "utf8");
+    return await this.coordinated([absolutePath], "write_file", async () => {
+      const previous = await readFile(absolutePath, "utf8").catch(() => "");
+      await mkdir(path.dirname(absolutePath), { recursive: true });
+      await writeFile(absolutePath, normalized.content, "utf8");
+      const lineCount = normalized.content.split(/\r?\n/).length;
 
-    return {
-      ok: true,
-      summary: `wrote ${normalizeRelative(this.root, absolutePath)}`,
-      content: `Wrote ${normalized.content.length} characters.${normalized.normalized ? " Normalized escaped newlines before writing." : ""}`,
-      tool: "write_file",
-      category: toolSpecs.write_file.category,
-      preview: `Write ${normalizeRelative(this.root, absolutePath)}`,
-      metadata: {
-        normalizedEscapedContent: normalized.normalized
-      }
-    };
+      return {
+        ok: true,
+        summary: previous
+          ? `rewrote ${normalizeRelative(this.root, absolutePath)} (${lineCount} lines)`
+          : `created ${normalizeRelative(this.root, absolutePath)} (${lineCount} lines)`,
+        content: [
+          `Wrote ${normalized.content.length} characters.`,
+          normalized.normalized ? "Normalized escaped newlines before writing." : "",
+          previous ? describeRewrite(previous, normalized.content) : ""
+        ].filter(Boolean).join(" "),
+        tool: "write_file",
+        category: toolSpecs.write_file.category,
+        preview: `Write ${normalizeRelative(this.root, absolutePath)}`,
+        metadata: {
+          normalizedEscapedContent: normalized.normalized,
+          diff: compactDiff(previous, normalized.content, { maxLines: previous ? 24 : 12 })
+        }
+      };
+    });
   }
 
   private async createPdf(requestedPath: string, content: string, title: string): Promise<ToolResult> {
@@ -1134,9 +1209,10 @@ export class WorkspaceTools {
       return denied(`edit_file supports text/code files. Use write_file only when replacing the full ${path.extname(absolutePath) || "file"} file is intentional.`, "edit_file");
     }
 
-    const originalContent = await readFile(absolutePath, "utf8").catch((error: unknown) => {
+    const originalBytes = await readFile(absolutePath).catch((error: unknown) => {
       throw new Error(`file not found or unreadable: ${requestedPath} (${error instanceof Error ? error.message : String(error)})`);
     });
+    const originalContent = originalBytes.toString("utf8");
     const normalizedReplaceText = normalizePossiblyEscapedFileContent(replaceText, absolutePath).content;
     const normalizedReplacementText = normalizePossiblyEscapedFileContent(replacementText, absolutePath).content;
     const normalizedExpectedText = expectedText === undefined ? undefined : normalizePossiblyEscapedFileContent(expectedText, absolutePath).content;
@@ -1188,16 +1264,25 @@ export class WorkspaceTools {
       }
     }
 
-    await writeFile(absolutePath, nextContent, "utf8");
+    const originalHash = this.coordinator ? hashBytes(originalBytes) : undefined;
+    return await this.coordinated([absolutePath], "edit_file", async () => {
+      // The edit was computed from the bytes read above. If they changed while
+      // the approval prompt was open, writing would silently drop that change.
+      if (originalHash !== undefined && (await hashFile(absolutePath)) !== originalHash) {
+        return denied(`${normalizeRelative(this.root, absolutePath)} changed while the edit waited for approval. Read it again, then retry.`, "edit_file");
+      }
+      await writeFile(absolutePath, nextContent, "utf8");
 
-    return {
-      ok: true,
-      summary: editSummary,
-      content: `Edited ${normalizeRelative(this.root, absolutePath)}.`,
-      tool: "edit_file",
-      category: toolSpecs.edit_file.category,
-      preview: `Edit ${normalizeRelative(this.root, absolutePath)}`
-    };
+      return {
+        ok: true,
+        summary: editSummary,
+        content: `Edited ${normalizeRelative(this.root, absolutePath)}.`,
+        tool: "edit_file",
+        category: toolSpecs.edit_file.category,
+        preview: `Edit ${normalizeRelative(this.root, absolutePath)}`,
+        metadata: { diff: compactDiff(originalContent, nextContent) }
+      };
+    });
   }
 
   private async gitStatus(): Promise<ToolResult> {
@@ -1332,7 +1417,7 @@ export class WorkspaceTools {
   private async repoOverview(): Promise<ToolResult> {
     const packageJson: Record<string, unknown> = await this.readPackageJsonObject().catch(() => ({}));
     const rootRealPath = await this.rootRealPath;
-    const files = await walkFiles(this.root, this.root, rootRealPath, 1, 80).catch(() => []);
+    const walk = await walkFiles(this.root, this.root, rootRealPath, 1, 80).catch((): WalkResult => ({ files: [], truncated: false }));
     const gitStatus = await execFileAsync("git", ["status", "--short", "--branch"], {
       cwd: this.root,
       timeout: Math.min(this.timeoutMs, 5000),
@@ -1358,7 +1443,8 @@ export class WorkspaceTools {
         gitStatus || "clean",
         "",
         "top-level files:",
-        files.join("\n") || "No files found."
+        walk.files.join("\n") || "No files found.",
+        ...(walk.truncated ? [`The list stopped after ${walk.files.length} files.`] : [])
       ].join("\n"),
       tool: "repo_overview",
       category: toolSpecs.repo_overview.category
@@ -1370,8 +1456,8 @@ export class WorkspaceTools {
     const scripts = Object.entries(readStringRecord(packageJson.scripts))
       .filter(([name, command]) => /test|spec|vitest|jest|playwright|check/i.test(`${name} ${command}`))
       .sort(([left], [right]) => left.localeCompare(right));
-    const files = await walkFiles(this.root, this.root, await this.rootRealPath, 8, 500).catch(() => []);
-    const testFiles = files.filter((filePath) => /(^|\/)(__tests__|tests?|specs?)\/|[.-](test|spec)\.[cm]?[jt]sx?$|\.test\./i.test(filePath));
+    const walk = await walkFiles(this.root, this.root, await this.rootRealPath, 8, 500).catch((): WalkResult => ({ files: [], truncated: false }));
+    const testFiles = walk.files.filter((filePath) => /(^|\/)(__tests__|tests?|specs?)\/|[.-](test|spec)\.[cm]?[jt]sx?$|\.test\./i.test(filePath));
 
     return {
       ok: true,
@@ -1381,7 +1467,8 @@ export class WorkspaceTools {
         scripts.map(([name, command]) => `${name}: ${command}`).join("\n") || "No test-related scripts found.",
         "",
         "test files:",
-        testFiles.slice(0, 120).join("\n") || "No likely test files found."
+        testFiles.slice(0, 120).join("\n") || "No likely test files found.",
+        ...(walk.truncated ? [`Only the first ${walk.files.length} files were scanned; list a subfolder with find_files to look further.`] : [])
       ].join("\n"),
       tool: "test_list",
       category: toolSpecs.test_list.category
@@ -1437,15 +1524,67 @@ export class WorkspaceTools {
       }
     }
 
-    const output = await runGitApply(patchContent, this.root, this.timeoutMs, this.signal);
-    return {
-      ok: output.exitCode === 0,
-      summary: output.exitCode === 0 ? "applied patch" : `git apply exited ${output.exitCode}`,
-      content: clip(output.output || (output.exitCode === 0 ? "Patch applied." : "Patch failed."), 20_000),
-      tool: "apply_patch",
-      category: toolSpecs.apply_patch.category,
-      preview: previewPatch(patchContent)
-    };
+    const targets = extractPatchTargetPaths(patchContent).map((target) => this.resolveInsideWorkspace(target));
+    return await this.coordinated(targets, "apply_patch", async () => {
+      const output = await runGitApply(patchContent, this.root, this.timeoutMs, this.signal);
+      return {
+        ok: output.exitCode === 0,
+        summary: output.exitCode === 0 ? "applied patch" : `git apply exited ${output.exitCode}`,
+        content: clip(output.output || (output.exitCode === 0 ? "Patch applied." : "Patch failed."), 20_000),
+        tool: "apply_patch",
+        category: toolSpecs.apply_patch.category,
+        preview: previewPatch(patchContent)
+      };
+    });
+  }
+
+  private async coordinated(absolutePaths: string[], tool: AgentToolName, perform: () => Promise<ToolResult>): Promise<ToolResult> {
+    if (!this.coordinator) {
+      return await perform();
+    }
+
+    const keys = await Promise.all(absolutePaths.map(canonicalPath));
+    const labels = new Map(keys.map((key, index) => [key, normalizeRelative(this.root, absolutePaths[index] as string)]));
+    const outcome = await this.coordinator.withWrite(this.agentKey, keys, perform, {
+      display: (key) => labels.get(key) ?? key,
+      committed: (result) => result.ok
+    });
+    return outcome.ok ? outcome.value : denied(outcome.refusal, tool);
+  }
+
+  private async readSeenText(absolutePath: string): Promise<string> {
+    if (!this.coordinator) {
+      return await readFile(absolutePath, "utf8");
+    }
+
+    const key = await canonicalPath(absolutePath);
+    const bytes = await readFile(absolutePath);
+    this.coordinator.recordSeen(this.agentKey, key, hashBytes(bytes));
+    return bytes.toString("utf8");
+  }
+
+  private async resolveTrackedReadPath(requestedPath: string): Promise<string> {
+    try {
+      return await this.resolveReadPath(requestedPath);
+    } catch (error) {
+      if (this.coordinator) {
+        await this.noteMissingRead(requestedPath);
+      }
+      throw error;
+    }
+  }
+
+  /** A read that finds the file gone is how an agent learns of a deletion and gets to recreate it. */
+  private async noteMissingRead(requestedPath: string): Promise<void> {
+    try {
+      const absolutePath = this.resolveInsideWorkspace(requestedPath);
+      if (await lstat(absolutePath).then(() => true, () => false)) {
+        return;
+      }
+      this.coordinator?.recordSeen(this.agentKey, await canonicalPath(absolutePath), MISSING_FILE_HASH);
+    } catch {
+      // The original error is what the caller reports.
+    }
   }
 
   private async runScript(scriptName: string): Promise<ToolResult> {
@@ -1613,6 +1752,12 @@ export class WorkspaceTools {
     const resolvedPath = await realpath(absolutePath).catch((error: unknown) => {
       throw new Error(`file not found or unreadable: ${requestedPath} (${error instanceof Error ? error.message : String(error)})`);
     });
+    // Envelopes point the parent at these. Checked on the real path, so a link
+    // planted in that folder cannot reach anything else, and only reads get here.
+    const relativePath = normalizeSlashPath(path.relative(await this.rootRealPath, resolvedPath));
+    if (relativePath.startsWith(".patchpilot/subagents/") && relativePath.endsWith(".md") && !isSensitivePath(relativePath)) {
+      return resolvedPath;
+    }
     await this.assertSafeResolvedWorkspacePath(resolvedPath, requestedPath);
     return resolvedPath;
   }
@@ -1745,17 +1890,20 @@ export class WorkspaceTools {
   }
 }
 
+type WalkResult = { files: string[]; truncated: boolean };
+
 async function walkFiles(
   startPath: string,
   workspaceRoot: string,
   workspaceRealRoot: string,
   maxDepth: number,
   maxEntries: number
-): Promise<string[]> {
+): Promise<WalkResult> {
   const results: string[] = [];
+  let truncated = false;
 
   async function visit(currentPath: string, depth: number): Promise<void> {
-    if (results.length >= maxEntries || depth > maxDepth) {
+    if (truncated || depth > maxDepth) {
       return;
     }
 
@@ -1765,6 +1913,10 @@ async function walkFiles(
     }
 
     if (currentStat.isFile()) {
+      if (results.length >= maxEntries) {
+        truncated = true;
+        return;
+      }
       results.push(normalizeRelative(workspaceRoot, currentPath));
       return;
     }
@@ -1776,8 +1928,11 @@ async function walkFiles(
     await assertInsideWorkspace(workspaceRealRoot, await realpath(currentPath), normalizeRelative(workspaceRoot, currentPath));
 
     const entries = await readdir(currentPath, { withFileTypes: true });
-    for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
-      if (results.length >= maxEntries) {
+    // Hidden folders such as .claude can hold tens of thousands of files and
+    // would spend the whole budget before any source folder is reached.
+    entries.sort((left, right) => Number(left.name.startsWith(".")) - Number(right.name.startsWith(".")) || left.name.localeCompare(right.name));
+    for (const entry of entries) {
+      if (truncated) {
         return;
       }
 
@@ -1795,7 +1950,53 @@ async function walkFiles(
 
   await access(startPath, constants.R_OK);
   await visit(startPath, 0);
-  return results;
+  return { files: results, truncated };
+}
+
+type LiteralPrefix = { kind: "none" } | { kind: "folder"; path: string } | { kind: "missing"; folder: string; parent: string; siblings: string[] };
+
+/**
+ * Queries are lowercased but folders on disk are not, so this finds the real
+ * directory for the literal folder prefix of an anchored glob. A prefix that
+ * does not exist can match nothing, and a model that guessed a folder name
+ * needs the real names: walking the whole workspace only cost it a slow "0".
+ */
+async function resolveLiteralPrefix(root: string, query: string): Promise<LiteralPrefix> {
+  const none: LiteralPrefix = { kind: "none" };
+  const pattern = query.replace(/^\.\//, "");
+  const firstGlob = pattern.search(/[*?[{]/);
+  if (firstGlob === -1 || !pattern.includes("/")) {
+    return none;
+  }
+
+  const prefixEnd = pattern.lastIndexOf("/", firstGlob);
+  if (prefixEnd < 1) {
+    return none;
+  }
+
+  const segments = pattern.slice(0, prefixEnd).split("/");
+  if (segments.some((segment) => !segment || segment === "." || segment === ".." || isSensitivePath(segment) || ignoredDirectories.has(segment))) {
+    return none;
+  }
+
+  let current = root;
+  for (const segment of segments) {
+    const entries = await readdir(current, { withFileTypes: true }).catch(() => []);
+    const directories = entries.filter((entry) => entry.isDirectory() && !isSensitivePath(entry.name) && !ignoredDirectories.has(entry.name));
+    const named = directories.filter((entry) => entry.name.toLowerCase() === segment);
+    const match = named.find((entry) => entry.name === segment) ?? named[0];
+    if (!match) {
+      const parent = normalizeRelative(root, current) || ".";
+      return {
+        kind: "missing",
+        folder: parent === "." ? segment : `${parent}/${segment}`,
+        parent: parent === "." ? "the workspace root" : parent,
+        siblings: directories.map((entry) => entry.name).sort((left, right) => left.localeCompare(right))
+      };
+    }
+    current = path.join(current, match.name);
+  }
+  return { kind: "folder", path: current };
 }
 
 async function searchTextWithRipgrep(workspaceRoot: string, query: string, timeoutMs: number, signal?: AbortSignal): Promise<ToolResult | null> {
@@ -1927,6 +2128,17 @@ function assertNotSensitiveResolvedPath(workspaceRealRoot: string, candidatePath
   if (isSensitivePath(relativePath) || relativePath === ".patchpilot" || relativePath.startsWith(".patchpilot/")) {
     throw new Error(`Path resolves to sensitive workspace path: ${requestedPath}`);
   }
+}
+
+async function canonicalPath(absolutePath: string): Promise<string> {
+  const real = await realpath(absolutePath).catch(() => null);
+  if (real) {
+    return real;
+  }
+
+  const parent = await findNearestExistingParent(absolutePath);
+  const realParent = await realpath(parent).catch(() => parent);
+  return path.join(realParent, path.relative(parent, absolutePath));
 }
 
 async function findNearestExistingParent(absolutePath: string): Promise<string> {
@@ -2139,6 +2351,31 @@ function readStringArray(value: unknown): string[] {
 function isPlaceholderPath(value: string): boolean {
   const normalizedValue = value.trim().toLowerCase().replaceAll("\\", "/");
   return ["relative/path", "path/to/file", "file/path", "<path>", "<file>", "filename"].includes(normalizedValue);
+}
+
+/** Tells the model what a full rewrite actually changed, so it learns to edit. */
+function describeRewrite(before: string, after: string): string {
+  const oldLines = before.split(/\r?\n/);
+  const newLines = after.split(/\r?\n/);
+  const remaining = new Map<string, number>();
+  for (const line of oldLines) {
+    remaining.set(line, (remaining.get(line) ?? 0) + 1);
+  }
+  let unchanged = 0;
+  for (const line of newLines) {
+    const count = remaining.get(line) ?? 0;
+    if (count > 0) {
+      unchanged += 1;
+      remaining.set(line, count - 1);
+    }
+  }
+  const changed = newLines.length - unchanged;
+  if (before === after) {
+    return "The new content is identical to what was already on disk; nothing changed. Do not write it again.";
+  }
+  return changed * 5 < newLines.length
+    ? `This replaced an existing file but changed only ${changed} of ${newLines.length} lines; use edit for a change that size.`
+    : "This replaced an existing file.";
 }
 
 export function isSensitivePath(value: string): boolean {
@@ -3381,4 +3618,54 @@ function readStringRecord(value: unknown): Record<string, string> {
 
 function stripQuotes(value: string): string {
   return value.replace(/^['"]|['"]$/g, "");
+}
+
+/**
+ * The glob tool promises patterns like `**\/*.java`; a plain substring test
+ * matched none of them, so a model searching for a file type found nothing
+ * and fell back to the shell. A query without glob characters still matches
+ * as a substring, and a pattern without a slash matches the file name at any
+ * depth, which is what `*.java` almost always means.
+ */
+export function fileQueryMatcher(query: string): (filePath: string) => boolean {
+  const pattern = query.replace(/^\.\//, "");
+  if (!/[*?[{]/.test(pattern)) {
+    return (filePath) => filePath.includes(pattern);
+  }
+  const regex = globToRegExp(pattern);
+  return pattern.includes("/") ? (filePath) => regex.test(filePath) : (filePath) => regex.test(filePath.slice(filePath.lastIndexOf("/") + 1));
+}
+
+function globToRegExp(pattern: string): RegExp {
+  let source = "";
+  for (let index = 0; index < pattern.length; index += 1) {
+    const char = pattern[index] as string;
+    if (char === "*") {
+      if (pattern[index + 1] === "*") {
+        // `**/` spans zero or more directories; a bare `**` anything at all.
+        const slash = pattern[index + 2] === "/";
+        source += slash ? "(?:.*/)?" : ".*";
+        index += slash ? 2 : 1;
+      } else {
+        source += "[^/]*";
+      }
+    } else if (char === "?") {
+      source += "[^/]";
+    } else if (char === "{") {
+      const end = pattern.indexOf("}", index);
+      if (end === -1) {
+        source += "\\{";
+        continue;
+      }
+      source += `(?:${pattern.slice(index + 1, end).split(",").map((part) => part.replace(/[.+^$()|\\]/g, "\\$&").replaceAll("*", "[^/]*")).join("|")})`;
+      index = end;
+    } else if (char === "[") {
+      const end = pattern.indexOf("]", index);
+      source += end === -1 ? "\\[" : pattern.slice(index, end + 1);
+      index = end === -1 ? index : end;
+    } else {
+      source += char.replace(/[.+^$()|\\]/g, "\\$&");
+    }
+  }
+  return new RegExp(`^${source}$`);
 }

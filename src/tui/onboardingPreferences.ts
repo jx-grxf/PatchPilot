@@ -10,7 +10,7 @@ export type OnboardingPreferences = {
   subagents: boolean;
 };
 
-export const defaultOnboardingPreferences: OnboardingPreferences = {
+const defaultOnboardingPreferences: OnboardingPreferences = {
   mode: "build",
   subagents: false,
 };

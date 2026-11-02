@@ -60,22 +60,18 @@ describe("LocalOpenAIClient configuration", () => {
       .spyOn(globalThis, "fetch")
       .mockImplementation(async () => new Response(JSON.stringify({ data: [] }), { status: 200 }));
 
-    await new LocalOpenAIClient(undefined, { apiKey: "", maxTokens: 100, temperature: 0.1 }).listModels();
+    await new LocalOpenAIClient(undefined, { apiKey: "", maxTokens: 100, env: {} }).listModels();
     expect(fetchMock.mock.calls[0]?.[1]?.headers).not.toHaveProperty("Authorization");
 
-    await new LocalOpenAIClient(undefined, { apiKey: "secret", maxTokens: 100, temperature: 0.1 }).listModels();
+    await new LocalOpenAIClient(undefined, { apiKey: "secret", maxTokens: 100, env: {} }).listModels();
     expect(fetchMock.mock.calls[1]?.[1]?.headers).toMatchObject({ Authorization: "Bearer secret" });
   });
 
   it("shares the generation budget with the Ollama client's env vars", () => {
-    const options = readLocalOpenAIRuntimeOptions({ PATCHPILOT_NUM_PREDICT: "4096", PATCHPILOT_TEMPERATURE: "0.7" });
+    const options = readLocalOpenAIRuntimeOptions({ PATCHPILOT_NUM_PREDICT: "4096" });
     expect(options.maxTokens).toBe(4096);
-    expect(options.temperature).toBe(0.7);
   });
 
-  it("uses the same documented temperature default as the settings registry", () => {
-    expect(readLocalOpenAIRuntimeOptions({}).temperature).toBe(0.2);
-  });
 });
 
 describe("LocalOpenAIClient streaming", () => {
@@ -142,7 +138,7 @@ describe("LocalOpenAIClient streaming", () => {
       model: "gemma-4-12b",
       messages: [{ role: "user", content: "write it" }],
       onDelta: (delta) => {
-        if (delta.toolCall) progress.push(delta.toolCall);
+        if (delta.toolCall) progress.push({ name: delta.toolCall.name, argumentChars: delta.toolCall.argumentChars });
       }
     });
 
@@ -224,18 +220,17 @@ describe("LocalOpenAIClient streaming", () => {
     expect(buffered.stream_options).toBeUndefined();
   });
 
-  it("reports truncation by max_tokens rather than returning a partial answer", async () => {
+  it("flags a reply cut off by max_tokens so the loop can ask for smaller steps", async () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
       sse([{ choices: [{ delta: { content: "half" } }] }, { choices: [{ delta: {}, finish_reason: "length" }] }])
     );
 
-    await expect(
-      new LocalOpenAIClient().chat({
-        model: "m",
-        messages: [{ role: "user", content: "hi" }],
-        onDelta: () => undefined
-      })
-    ).rejects.toThrow(/truncated by max_tokens/);
+    const result = await new LocalOpenAIClient().chat({
+      model: "m",
+      messages: [{ role: "user", content: "hi" }],
+      onDelta: () => undefined
+    });
+    expect(result).toMatchObject({ content: "half", truncated: true });
   });
 
   it("skips malformed frames instead of losing the response", async () => {

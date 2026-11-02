@@ -1,6 +1,10 @@
 import React, { useEffect, useRef, useState } from "react";
+import type { ChildAgentSnapshot } from "../../core/agentSupervisor.js";
+import { agentDisplayName, isAgentActive, maxVisibleAgentRows } from "../agentView.js";
+import { AgentList, AgentsDock, type MainAgentRow } from "./AgentsDock.js";
 import { Box, Text, useInput } from "ink";
-import type { AgentTodoItem, AgentWorkState, ApprovalRequest, ModelProvider, SessionTelemetry } from "../../core/types.js";
+import type { AgentTodoItem, AgentToolName, AgentWorkState, ApprovalRequest, ModelProvider, SessionTelemetry } from "../../core/types.js";
+import { formatToolHeading, toolVerb } from "../toolDisplay.js";
 import type { CommandSuggestionItem } from "./CommandPalette.js";
 import { formatCompactTokens, shortenMiddle } from "../format.js";
 import type { OllamaHostDetails } from "../hosts.js";
@@ -14,13 +18,12 @@ import type { BannerInfo } from "./Banner.js";
 import { composerView, deleteComposerText, insertComposerText } from "./composer.js";
 import { shouldRecallForward, shouldRecallHistory } from "../promptHistory.js";
 import { CommandPalette } from "./CommandPalette.js";
-import { estimateCloudEquivalentCost, formatSavedCost } from "./savings.js";
 import type { ContextUsageView } from "../App.js";
 import type { StreamProgress } from "../transcriptEvents.js";
 import { clipboardImageHint } from "../../core/clipboard.js";
 import { resolveLocalOpenAIBaseUrl } from "../../core/localOpenAI.js";
 import { Markdown } from "../components/Markdown.js";
-import { FlowShell } from "./FlowShell.js";
+import { estimateTranscriptRows, FlowShell } from "./FlowShell.js";
 import { readGitBranch } from "../gitBranch.js";
 import { symbols } from "./theme.js";
 import { motionEnabled, pressureColor, sparkline, trackedBar } from "../motion.js";
@@ -47,6 +50,13 @@ export type ShellProps = {
   sessionTelemetry: SessionTelemetry;
   lines: LogLine[];
   todos: AgentTodoItem[];
+  /** Every child of this session, for the list under the status bar. */
+  agents: ChildAgentSnapshot[];
+  /** The children of the current delegation, for the tree above the composer. */
+  agentTree: ChildAgentSnapshot[];
+  /** The child being viewed; null shows the main agent. */
+  viewedAgent: ChildAgentSnapshot | null;
+  mainAgent: MainAgentRow;
   todoFrame: number;
   /** An image is in the OS clipboard; the footer offers ctrl+v. */
   clipboardImage?: boolean;
@@ -90,29 +100,47 @@ export function Shell(props: ShellProps): React.ReactElement {
   const hostLabel = describeHost(props);
   const [branch] = useState(() => readGitBranch(props.workspace));
   const [banner] = useState<BannerInfo>(() => ({ version: props.version, model: props.model, host: hostLabel, workspace: props.workspace, columns: width }));
+  const viewed = props.viewedAgent;
+  const viewedRunning = viewed ? isAgentActive(viewed.state) : props.isRunning;
+  const streamingText = viewed ? (viewed.streaming?.content ?? "") : props.streamingText;
+  const streamProgress: StreamProgress | null = viewed
+    ? viewed.streaming
+      ? { phase: viewed.streaming.phase, elapsedMs: viewed.durationMs, tokens: viewed.streaming.tokens, tokensPerSecond: viewed.streaming.tokensPerSecond, writing: viewed.streaming.writing as StreamProgress["writing"] }
+      : null
+    : props.streamProgress;
+  const todos = viewed ? [] : props.todos;
+  const listRows = props.agents.length > 0 ? Math.min(props.agents.length, maxVisibleAgentRows) + 4 : 0;
+  const treeRows = props.agentTree.length > 0 ? props.agentTree.length * 2 + 2 : 0;
   // The streamed answer can outgrow the screen long before it is complete;
   // only its tail is shown live, the full text lands in scrollback at the end.
-  const streamingRows = Math.max(3, props.rows - 12 - (props.todos.length > 0 ? Math.min(props.todos.length, 7) + 2 : 0));
+  const streamingRows = Math.max(3, props.rows - 12 - (todos.length > 0 ? Math.min(todos.length, 7) + 2 : 0) - listRows - treeRows);
+  // The composer stays on the bottom edge while the window is not full yet. The live region claims the rest of the window and stacks its
+  // content at the bottom; a minimum height rather than a measured spacer, so
+  // a growing run line can never push the frame past the window for a frame.
+  const liveMinRows = Math.max(0, props.rows - estimateTranscriptRows(props.lines, width, !viewed) - 1);
 
   return (
     <>
       {/* Static must be the first child and outside any height-bounded box. */}
-      <FlowShell lines={props.lines} transcriptEpoch={props.transcriptEpoch} columns={width} banner={banner} />
-      {/* The live region follows the transcript directly, as in Claude Code.
-          Padding it to the bottom of the window left a gap that read as lost
-          output while the transcript was short. */}
-      <Box flexDirection="column">
-        {props.streamingText ? (
+      <FlowShell lines={props.lines} transcriptEpoch={props.transcriptEpoch} view={viewed?.id ?? null} columns={width} banner={banner} />
+      {/* The live region follows the transcript and fills the rest of the
+          window, so the composer sits on the bottom edge (see liveMinRows). */}
+      <Box flexDirection="column" minHeight={liveMinRows} justifyContent="flex-end">
+        {streamingText ? (
           <Box marginTop={1}>
             <Box width={2} flexShrink={0}>
               <Text color="white">{symbols.assistant}</Text>
             </Box>
-            <Box flexDirection="column" flexGrow={1}>
-              <Markdown text={tailLines(props.streamingText, streamingRows)} width={width - 4} />
+            <Box flexDirection="column" width={width - 4}>
+              <Markdown text={tailLines(streamingText, streamingRows)} width={width - 4} />
             </Box>
           </Box>
         ) : null}
-        {props.todos.length > 0 ? <TodoDock todos={props.todos} todoFrame={props.todoFrame} width={width} /> : null}
+        {streamProgress?.writing && (streamProgress.writing.path || streamProgress.writing.preview) ? (
+          <WritingPreview writing={streamProgress.writing} width={width} />
+        ) : null}
+        {props.agentTree.length > 0 ? <AgentsDock agents={props.agentTree} width={width} /> : null}
+        {todos.length > 0 ? <TodoDock todos={todos} todoFrame={props.todoFrame} width={width} /> : null}
         {props.updatePrompt || props.updateBusy ? (
           <UpdatePrompt prompt={props.updatePrompt} busy={props.updateBusy} />
         ) : approvalActive ? (
@@ -121,14 +149,16 @@ export function Shell(props: ShellProps): React.ReactElement {
         {props.panel}
         <Composer
           input={props.input}
-          isRunning={props.isRunning}
-          streamProgress={props.streamProgress}
-          ultramaxxRun={props.ultramaxxRun}
+          isRunning={viewedRunning}
+          runElapsedMs={viewed?.durationMs}
+          placeholder={composerPlaceholder(viewed, props.isRunning)}
+          streamProgress={streamProgress}
+          ultramaxxRun={viewed ? false : props.ultramaxxRun}
           approvalActive={approvalActive}
           inputLocked={props.inputLocked}
           paletteOpen={props.paletteItems.length > 0}
-          workState={props.workState}
-          status={props.status}
+          workState={viewed ? "inspecting" : props.workState}
+          status={viewed ? viewed.description : props.status}
           width={width}
           onAttach={props.onAttach}
           onChange={props.onChange}
@@ -141,15 +171,58 @@ export function Shell(props: ShellProps): React.ReactElement {
         ) : (
           <StatusBar {...props} width={width} hostLabel={hostLabel} branch={branch} approvalActive={approvalActive} />
         )}
+        {props.agents.length > 0 && props.paletteItems.length === 0 ? (
+          <AgentList agents={props.agents} selected={viewed?.id ?? null} main={props.mainAgent} width={width} />
+        ) : null}
       </Box>
     </>
   );
 }
 
+function composerPlaceholder(viewed: ChildAgentSnapshot | null, mainRunning: boolean): string {
+  if (viewed) {
+    return `Message ${agentDisplayName(viewed)}…`;
+  }
+  return mainRunning ? "Message the agent, it reads this after the current step" : "Describe a task, or type / for commands";
+}
+
 function describeHost(props: Pick<ShellProps, "provider" | "activeHost">): string {
   // Naming the provider twice tells the user nothing; the endpoint does.
-  return props.provider === "ollama" ? props.activeHost?.host.deviceName ?? "ollama" : readEndpointLabel(resolveLocalOpenAIBaseUrl());
+  if (props.provider === "ollama") {
+    return props.activeHost?.host.deviceName ?? "ollama";
+  }
+  const endpoint = readEndpointLabel(resolveLocalOpenAIBaseUrl());
+  const runtime = process.env.PATCHPILOT_RUNTIME_LABEL;
+  return runtime ? `${runtime} ${endpoint}` : endpoint;
 }
+
+/**
+ * The file a call is writing, shown as it streams. Without it a long write is
+ * minutes of a counter; with it you can see whether it is going the right way.
+ */
+function WritingPreview(props: { writing: NonNullable<StreamProgress["writing"]>; width: number }): React.ReactElement {
+  const tool = props.writing.tool;
+  const heading = formatToolHeading(surfaceToolNames[tool], tool.charAt(0).toUpperCase() + tool.slice(1), props.writing.path);
+  const lines = props.writing.preview ? props.writing.preview.split("\n") : [];
+  return (
+    <Box flexDirection="column" marginTop={1}>
+      <Text wrap="truncate">
+        <Text color="cyan">{symbols.tool} </Text>
+        <Text bold>{heading}</Text>
+      </Text>
+      {lines.map((line, index) => (
+        <Box key={index} paddingLeft={2}>
+          <Text color="gray" wrap="truncate">
+            {index === 0 ? `${symbols.result}  ` : "   "}
+            {line.replace(/\t/g, "  ").slice(0, props.width - 6) || " "}
+          </Text>
+        </Box>
+      ))}
+    </Box>
+  );
+}
+
+const surfaceToolNames: Record<string, AgentToolName> = { write: "write_file", edit: "edit_file", bash: "run_shell", read: "read_file" };
 
 function tailLines(text: string, maxLines: number): string {
   const lines = text.split("\n");
@@ -212,7 +285,7 @@ function ApprovalPrompt(props: { request: ApprovalRequest | null; bypassConfirma
     <Box borderStyle="round" borderColor="yellow" flexDirection="column" paddingX={1} marginTop={1}>
       <Box justifyContent="space-between">
         <Text color="yellow" bold>
-          {symbols.approval} Allow {request.tool}?
+          {symbols.approval} {request.agent ? `${request.agent}: ` : ""}Allow {toolVerb(request.tool)}?
         </Text>
         <Text color="gray">
           {request.permission} · {request.risk} risk
@@ -301,6 +374,9 @@ function useSpinnerFrame(active: boolean, intervalMs = spinnerFrameMs): number {
 function Composer(props: {
   input: string;
   isRunning: boolean;
+  /** Set when showing a child, whose time this component did not see start. */
+  runElapsedMs?: number;
+  placeholder: string;
   streamProgress: StreamProgress | null;
   ultramaxxRun: boolean;
   approvalActive: boolean;
@@ -331,7 +407,7 @@ function Composer(props: {
     setCursor((current) => Math.min(current, props.input.length));
   }, [props.input]);
 
-  const typingActive = !props.isRunning && !props.approvalActive && !props.inputLocked;
+  const typingActive = !props.approvalActive && !props.inputLocked;
   useInput(
     (value, key) => {
       const safeCursor = Math.max(0, Math.min(cursor, props.input.length));
@@ -450,15 +526,15 @@ function Composer(props: {
   if (!typingActive) {
     rows.push(
       <Text key="locked" color="gray" wrap="truncate">
-        {symbols.user} {props.inputLocked ?? (props.approvalActive ? "Answer the prompt above to continue" : "Working — esc to interrupt")}
+        {symbols.user} {props.inputLocked ?? "Answer the prompt above to continue"}
       </Text>
     );
   } else if (props.input.length === 0) {
     rows.push(
       <Box key="placeholder">
         <Text color="white">{symbols.user} </Text>
-        <Text inverse>D</Text>
-        <Text color="gray">escribe a task, or type / for commands</Text>
+        <Text inverse>{props.placeholder.charAt(0)}</Text>
+        <Text color="gray">{props.placeholder.slice(1)}</Text>
       </Box>
     );
   } else {
@@ -479,7 +555,7 @@ function Composer(props: {
       {props.isRunning ? (
         <RunLine
           frame={frame}
-          elapsedMs={runningSince ? Date.now() - runningSince : 0}
+          elapsedMs={props.runElapsedMs ?? (runningSince ? Date.now() - runningSince : 0)}
           workState={props.workState}
           status={props.status}
           progress={props.streamProgress}
@@ -590,38 +666,45 @@ function ComposerCursorRow(props: { text: string; cursorCol: number; frame: numb
 }
 
 const modeStyles: Record<AgentMode, { glyph: string; label: string; color: "green" | "yellow" | "red" }> = {
-  plan: { glyph: "⏸", label: "plan mode (read-only)", color: "green" },
-  build: { glyph: "▸", label: "build mode (asks before changes)", color: "yellow" },
-  bypass: { glyph: "▸▸", label: "bypass on (no prompts)", color: "red" }
+  plan: { glyph: "⏸", label: "plan", color: "green" },
+  build: { glyph: "▸", label: "build", color: "yellow" },
+  bypass: { glyph: "▸▸", label: "bypass", color: "red" }
 };
 
-/** Under the composer: where the session runs, then the mode and what keys do now. */
+const modeExplanations: Record<AgentMode, string> = {
+  plan: "read-only",
+  build: "asks before changes",
+  bypass: "no prompts"
+};
+
+/**
+ * Under the composer. The first line is what changes while you work — mode,
+ * model, context, tokens — the second says what the keys do right now.
+ */
 function StatusBar(props: ShellProps & { width: number; hostLabel: string; branch: string | null; approvalActive: boolean }): React.ReactElement {
   const mode = modeStyles[props.agentMode];
   const session = props.sessionTelemetry;
   const promptTokens = useTween(session.promptTokens);
   const responseTokens = useTween(session.responseTokens);
   const flash = useFlash(props.agentMode);
-  const savedUsd = estimateCloudEquivalentCost(session.promptTokens, session.responseTokens, session.cachedPromptTokens);
   // The CLI's --apply/--allow-shell flags grant more than the mode says; that
   // is worth the width, defaults are not.
   const overrides = props.agentMode === "bypass" ? [] : [props.allowWrite ? "write" : "", props.allowShell ? "shell" : ""].filter(Boolean);
-  const hint = props.isRunning ? "esc to interrupt" : props.approvalActive ? "" : props.clipboardImage ? clipboardImageHint() : "/ for commands";
-  const separator = <Text color="gray"> │ </Text>;
+  const hint = props.isRunning ? "esc to interrupt" : props.approvalActive ? "" : props.clipboardImage ? clipboardImageHint() : "/ commands";
+  const separator = <Text color="gray"> · </Text>;
+  const cachedShare = session.promptTokens > 0 ? session.cachedPromptTokens / session.promptTokens : 0;
 
   return (
     <Box flexDirection="column" paddingX={1}>
       <Text wrap="truncate">
-        <Text bold>{shortenMiddle(projectName(props.workspace), 28)}</Text>
+        <Text color={mode.color} inverse={flash} bold>
+          {flash ? " " : ""}
+          {mode.glyph} {mode.label}
+          {flash ? " " : ""}
+        </Text>
+        {overrides.length > 0 ? <Text color="red"> {overrides.join("+")} always on</Text> : null}
         {separator}
-        <Text>{shortenMiddle(props.model, 32)}</Text>
-        <Text color="gray"> on {shortenMiddle(props.hostLabel, 22)}</Text>
-        {props.branch ? (
-          <>
-            {separator}
-            <Text color="gray">{shortenMiddle(props.branch, 32)}</Text>
-          </>
-        ) : null}
+        <Text>{shortenMiddle(displayModelName(props.model), 34)}</Text>
         {props.contextUsage ? (
           <>
             {separator}
@@ -632,22 +715,17 @@ function StatusBar(props: ShellProps & { width: number; hostLabel: string; branc
           <>
             {separator}
             <Text color="gray">
-              {formatCompactTokens(Math.round(promptTokens))} in · {formatCompactTokens(Math.round(responseTokens))} out
-              {savedUsd !== null && savedUsd >= 0.01 ? ` · ${formatSavedCost(savedUsd)} saved` : ""}
+              {formatCompactTokens(Math.round(promptTokens))} in
+              {cachedShare >= 0.05 ? ` (${Math.round(cachedShare * 100)}% cached)` : ""} · {formatCompactTokens(Math.round(responseTokens))} out
             </Text>
           </>
         ) : null}
       </Text>
       <Box justifyContent="space-between">
         <Box flexShrink={1}>
-          <Text wrap="truncate">
-            <Text color={mode.color} inverse={flash} bold={flash}>
-              {flash ? " " : ""}
-              {mode.glyph} {mode.label}
-              {flash ? " " : ""}
-            </Text>
-            {overrides.length > 0 ? <Text color="red"> · {overrides.join(" + ")} always on</Text> : null}
-            <Text color="gray"> · tab to cycle</Text>
+          <Text color="gray" wrap="truncate">
+            {modeExplanations[props.agentMode]} · tab to switch · {shortenMiddle(projectName(props.workspace), 24)}
+            {props.branch ? ` on ${shortenMiddle(props.branch, 28)}` : ""} · {shortenMiddle(props.hostLabel, 22)}
           </Text>
         </Box>
         {hint ? (
@@ -658,6 +736,11 @@ function StatusBar(props: ShellProps & { width: number; hostLabel: string; branc
       </Box>
     </Box>
   );
+}
+
+/** Hugging Face repo ids carry the publisher; the model name is what matters. */
+function displayModelName(model: string): string {
+  return model.includes("/") ? model.slice(model.lastIndexOf("/") + 1) : model;
 }
 
 /**

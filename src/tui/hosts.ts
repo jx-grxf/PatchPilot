@@ -20,7 +20,7 @@ type TailscaleStatusResponse = {
 };
 
 export type OllamaHostKind = "local" | "lan" | "tailscale" | "manual";
-export type OllamaHostSource = "default" | "env" | "current" | "discovered" | "tailscale" | "manual";
+type OllamaHostSource = "default" | "env" | "current" | "discovered" | "tailscale" | "manual";
 
 export type OllamaHost = {
   label: string;

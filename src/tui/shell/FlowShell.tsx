@@ -24,15 +24,17 @@ import type { LogLine } from "../types.js";
  *
  *   1. Items are rendered once and never revisited, so a row must be complete
  *      before it is appended. Nothing here may depend on later state.
- *   2. Clearing the transcript cannot un-print what the terminal already has.
- *      `/clear` remounts this component with a new epoch key, which starts a
- *      fresh Static region rather than pretending the old rows are gone.
+ *   2. Static cannot un-print what the terminal already has. `/clear` and a
+ *      view switch erase the terminal first, then change the key, which starts
+ *      a fresh Static region.
  */
 
 export type FlowShellProps = {
   lines: LogLine[];
   /** Bumped by /clear and /new to start a fresh static region. */
   transcriptEpoch: number;
+  /** The agent whose history is shown. Changing it reprints the region, so the caller clears the terminal first. */
+  view?: string | null;
   columns: number;
   /** Printed once, ahead of the first entry. */
   banner?: BannerInfo;
@@ -50,10 +52,13 @@ export function FlowShell(props: FlowShellProps): React.ReactElement {
   // Captured on first render: Static never revisits an item, so the banner
   // shows the session as it was launched.
   const [bannerItem] = React.useState<BannerItem | null>(() => (props.banner ? { id: -1, banner: props.banner } : null));
-  const items: Array<LogLine | BannerItem> = bannerItem && props.transcriptEpoch === 0 ? [bannerItem, ...props.lines] : props.lines;
+  // Also after /clear: a static region with nothing new to print would leave the
+  // erased screen blank, because Ink skips a frame identical to the last one.
+  const showBanner = bannerItem && !props.view;
+  const items: Array<LogLine | BannerItem> = showBanner ? [bannerItem, ...props.lines] : props.lines;
 
   return (
-    <Static key={props.transcriptEpoch} items={items}>
+    <Static key={`${props.transcriptEpoch}:${props.view ?? "main"}`} items={items}>
       {(item) =>
         item.id === -1 ? (
           <Banner key="banner" {...(item as BannerItem).banner} />
@@ -70,6 +75,11 @@ export function FlowShell(props: FlowShellProps): React.ReactElement {
  * spacing rather than relying on a parent to lay entries out relative to one
  * another.
  */
+function languageFromPath(target: string | undefined): string | undefined {
+  const extension = target?.match(/\.([a-z0-9]+)$/i)?.[1];
+  return extension?.toLowerCase();
+}
+
 function TranscriptEntry(props: { line: LogLine; columns: number }): React.ReactElement {
   const { line } = props;
   const bodyWidth = props.columns - 4;
@@ -92,7 +102,9 @@ function TranscriptEntry(props: { line: LogLine; columns: number }): React.React
           <Box width={2} flexShrink={0}>
             <Text color={line.workState === "error" ? "yellow" : "white"}>{symbols.assistant}</Text>
           </Box>
-          <Box flexDirection="column" flexGrow={1}>
+          {/* An explicit width: without it Ink wraps against the terminal
+              edge and the gutter pushes the last word past it. */}
+          <Box flexDirection="column" width={bodyWidth}>
             <Markdown text={line.text} width={bodyWidth} />
             {line.detail ? <Markdown text={line.detail} width={bodyWidth} dim /> : null}
           </Box>
@@ -115,7 +127,10 @@ function TranscriptEntry(props: { line: LogLine; columns: number }): React.React
 
     case "tool": {
       const failed = line.tone === "danger" || line.tone === "warning";
-      const failure = failed && line.detail ? firstLines(line.detail, 3, bodyWidth - 4) : null;
+      const failure = failed && line.detail && line.detail.trim() !== line.text.trim() ? firstLines(line.detail, 3, bodyWidth - 4) : null;
+      const output = !failed && line.detail && (line.category === "shell" || line.category === "test") ? firstLines(line.detail, 4, bodyWidth - 5) : null;
+      // A subagent's answer is what the user waited for; show its start.
+      const agentAnswer = !failed && line.detail && line.agent ? firstLines(line.detail, 3, bodyWidth - 5) : null;
       return (
         <Box flexDirection="column" marginTop={1}>
           <Text wrap="truncate">
@@ -124,12 +139,17 @@ function TranscriptEntry(props: { line: LogLine; columns: number }): React.React
           </Text>
           <Box paddingLeft={2}>
             <Text color={failed ? "red" : "gray"} wrap="truncate">
-              {symbols.result}  {collapse(line.text, bodyWidth - 4)}
+              {symbols.result}  {output ?? collapse(line.text, bodyWidth - 4)}
             </Text>
           </Box>
-          {failure ? (
+          {failure ?? agentAnswer ? (
             <Box paddingLeft={5}>
-              <Text color="gray">{failure}</Text>
+              <Text color="gray">{failure ?? agentAnswer}</Text>
+            </Box>
+          ) : null}
+          {line.diff ? (
+            <Box paddingLeft={3}>
+              <DiffBlock lines={line.diff.split("\n")} width={bodyWidth - 3} language={languageFromPath(line.target)} />
             </Box>
           ) : null}
         </Box>
@@ -168,10 +188,10 @@ function TranscriptEntry(props: { line: LogLine; columns: number }): React.React
 
     case "status":
       // The closing line of a run reads like Claude Code's "Cooked for 3m".
-      if (line.label === "done" || line.label === "failed" || line.label === "stopped") {
+      if (line.label === "done" || line.label === "failed" || line.label === "stopped" || line.label === "compacted") {
         return (
           <Box marginTop={1}>
-            <Text color={line.label === "done" ? "gray" : "yellow"}>✻ {line.text}</Text>
+            <Text color={line.label === "done" || line.label === "compacted" ? "gray" : "yellow"}>✻ {line.text}</Text>
           </Box>
         );
       }
@@ -194,4 +214,44 @@ function collapse(value: string, maxLength: number): string {
   const normalized = value.replace(/\s+/g, " ").trim();
   const limit = Math.max(20, maxLength);
   return normalized.length <= limit ? normalized : `${normalized.slice(0, limit - 1)}…`;
+}
+
+/**
+ * Roughly how many terminal rows the printed transcript takes. Used only to
+ * keep the composer at the bottom of a window that is not full yet, so it
+ * errs high: an overestimate leaves the composer a row or two above the
+ * edge, an underestimate would scroll the header away.
+ */
+export function estimateTranscriptRows(lines: LogLine[], columns: number, withBanner: boolean): number {
+  const bodyWidth = Math.max(10, columns - 4);
+  const wrapped = (text: string, width = bodyWidth): number =>
+    text.split("\n").reduce((rows, row) => rows + Math.max(1, Math.ceil(row.length / width)), 0);
+
+  let rows = withBanner ? 4 : 0;
+  for (const line of lines) {
+    switch (line.kind) {
+      case "user":
+        rows += 1 + wrapped(line.text);
+        break;
+      case "assistant":
+      case "final":
+        rows += 1 + wrapped(line.text) + (line.detail ? wrapped(line.detail) : 0) + 1;
+        break;
+      case "tool":
+        rows += 3 + (line.diff ? line.diff.split("\n").length : 0) + (line.detail ? 5 : 0);
+        break;
+      case "diff":
+        rows += 1 + (line.detail ?? line.text).split("\n").length;
+        break;
+      case "thinking":
+        rows += 1 + Math.min(3, wrapped(line.text));
+        break;
+      case "error":
+        rows += 1 + wrapped(line.text) + (line.detail ? wrapped(line.detail) : 0);
+        break;
+      default:
+        rows += 2;
+    }
+  }
+  return rows;
 }

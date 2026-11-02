@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   applyCompaction,
   buildCompactionPrompt,
+  changedFiles,
   measureContext,
   planCompaction,
   pruneToolResults,
@@ -143,10 +144,14 @@ describe("conversation compaction", () => {
   it("asks for the facts a resumed run actually needs", () => {
     const prompt = buildCompactionPrompt([{ role: "assistant", content: "edited src/a.ts" }]);
 
-    expect(prompt[0]?.content).toContain("files were touched");
-    expect(prompt[0]?.content).toContain("next steps");
-    expect(prompt[0]?.content).toContain("verbatim");
+    expect(prompt[0]?.content).toContain("Files:");
+    expect(prompt[0]?.content).toContain("Next step:");
+    expect(prompt[0]?.content).toContain("exactly as written");
     expect(prompt[1]?.content).toContain("edited src/a.ts");
+  });
+
+  it("passes a /compact focus to the summariser", () => {
+    expect(buildCompactionPrompt([], "the parser")[0]?.content).toContain("Pay particular attention to: the parser");
   });
 
   it("splices the summary in ahead of the kept tail", () => {
@@ -154,13 +159,46 @@ describe("conversation compaction", () => {
     const result = applyCompaction(plan, "Refactored the parser.");
 
     expect(result[0]?.role).toBe("system");
-    expect(result[1]?.content).toContain("Refactored the parser.");
+    // The user's request survives word for word, ahead of the summary.
+    expect(result[1]?.content).toBe("old task");
+    expect(result[2]?.content).toContain("Refactored the parser.");
     expect(result.at(-1)?.content).toBe("most recent step");
     expect(totalTokens(result)).toBeLessThan(totalTokens(conversation));
+  });
+
+  it("re-attaches state and names the files changed", () => {
+    const stale: ChatMessage[] = [{ role: "assistant", content: "", toolCalls: [{ id: "1", name: "write", arguments: { path: "src/a.ts", content: "x" } }] }];
+    expect(changedFiles(stale)).toEqual(["src/a.ts"]);
+    const plan = planCompaction(conversation, { keepTailTokens: 500 });
+    expect(applyCompaction(plan, "s", "Files changed so far: src/a.ts").some((message) => message.content.includes("Files changed so far"))).toBe(true);
   });
 
   it("returns the conversation untouched when there was nothing stale", () => {
     const plan = planCompaction(conversation, { keepTailTokens: 100_000 });
     expect(applyCompaction(plan, "unused")).toBe(conversation);
+  });
+});
+
+describe("compaction keeps tool calls with their results", () => {
+  it("never starts the kept tail on a tool result", () => {
+    const messages: ChatMessage[] = [
+      { role: "system", content: "s" },
+      { role: "user", content: "old ".repeat(400) },
+      { role: "assistant", content: "", toolCalls: [{ id: "a", name: "read", arguments: { path: "x" } }] },
+      { role: "tool", toolCallId: "a", toolName: "read", content: "x".repeat(400) },
+      { role: "tool", toolCallId: "b", toolName: "read", content: "y".repeat(40) }
+    ];
+    const request = planCompaction(messages, { keepTailTokens: 5 });
+    const tail = request.kept.filter((message) => message.role !== "system");
+    expect(tail[0]?.role).not.toBe("tool");
+  });
+});
+
+describe("pruning old file bodies", () => {
+  it("replaces the content of an old write call but keeps the two newest", () => {
+    const write = (id: string): ChatMessage => ({ role: "assistant", content: "", toolCalls: [{ id, name: "write", arguments: { path: `${id}.txt`, content: "z".repeat(5000) } }] });
+    const result = pruneToolResults([write("a"), write("b"), write("c")]);
+    expect(result.messages[0]?.toolCalls?.[0]?.arguments.content).toContain("5000 characters");
+    expect(result.messages[2]?.toolCalls?.[0]?.arguments.content).toHaveLength(5000);
   });
 });

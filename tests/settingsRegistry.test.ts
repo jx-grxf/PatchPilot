@@ -50,11 +50,11 @@ describe("hiding what would do nothing", () => {
     expect(settingsForProvider("ollama").map((s) => s.key)).not.toContain("PATCHPILOT_LOCAL_URL");
   });
 
-  it("hides Ollama-only sampling controls from local-openai", () => {
+  it("hides Ollama-only controls from local-openai", () => {
     const localKeys = settingsForProvider("local-openai").map((setting) => setting.key);
     expect(localKeys).not.toContain("PATCHPILOT_NUM_CTX");
-    expect(localKeys).not.toContain("PATCHPILOT_TOP_P");
-    expect(localKeys).not.toContain("PATCHPILOT_TOP_K");
+    expect(localKeys).toContain("PATCHPILOT_TOP_P");
+    expect(localKeys).toContain("PATCHPILOT_TOP_K");
     expect(localKeys).not.toContain("PATCHPILOT_REPEAT_PENALTY");
   });
 });

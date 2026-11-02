@@ -65,7 +65,6 @@ function runner(client: ModelClient, signal: AbortSignal): AgentRunner {
     allowWrite: false,
     allowShell: false,
     maxSteps: 8,
-    thinkingMode: "fixed",
     thinking: "auto",
     subagents: false,
     signal,

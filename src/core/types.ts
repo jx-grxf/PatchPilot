@@ -1,8 +1,20 @@
-export type ChatRole = "system" | "user" | "assistant";
+type ChatRole = "system" | "user" | "assistant" | "tool";
+
+/** A call the assistant made, kept in history in the shape the chat template expects. */
+type ChatToolCall = {
+  id: string;
+  name: string;
+  arguments: Record<string, unknown>;
+};
 
 export type ChatMessage = {
   role: ChatRole;
   content: string;
+  /** Assistant turns that called tools. */
+  toolCalls?: ChatToolCall[];
+  /** Tool results: which call this answers. */
+  toolCallId?: string;
+  toolName?: string;
 };
 
 export type ModelProvider = "ollama" | "local-openai";
@@ -20,7 +32,7 @@ export type ModelStreamDelta = {
    * an argument produces no visible content for minutes; without this the user
    * sees a rising counter and nothing else.
    */
-  toolCall?: { name: string; argumentChars: number };
+  toolCall?: { name: string; argumentChars: number; argumentsText?: string };
 };
 
 /** A tool advertised to the runtime, in the shape both providers accept. */
@@ -54,7 +66,7 @@ export type ModelChatOptions = {
   onDelta?: (delta: ModelStreamDelta) => void;
 };
 
-export type ModelFileAnalysisOptions = {
+type ModelFileAnalysisOptions = {
   model: string;
   path: string;
   prompt: string;
@@ -68,6 +80,8 @@ export type ModelChatResult = {
   telemetry: ModelTelemetry;
   /** Provider-side notice worth surfacing (e.g. model fallback, cookie retry). */
   warning?: string;
+  /** Generation stopped at the output-token limit, so the reply is incomplete. */
+  truncated?: boolean;
 };
 
 export type ModelDescriptor = {
@@ -169,6 +183,10 @@ export type ApprovalRequest = {
   preview: string;
   arguments: Record<string, unknown>;
   bypassable?: boolean;
+  /** Which background agent asks; absent for the main agent. */
+  agent?: string;
+  /** The asking agent's own signal, so a stopped agent's prompt is denied instead of shown. */
+  signal?: AbortSignal;
 };
 
 export type AgentResponse =
@@ -183,7 +201,7 @@ export type AgentResponse =
     };
 
 
-export type AgentTodoStatus = "pending" | "in_progress" | "completed";
+type AgentTodoStatus = "pending" | "in_progress" | "completed";
 
 export type AgentTodoItem = {
   id: string;
@@ -225,14 +243,36 @@ export type AgentEvent =
        */
       content: string;
       tokensPerSecond: number | null;
-      /** What the model is assembling, when it is writing a tool call. */
-      writing?: { tool: string; chars: number };
+      /**
+       * What the model is assembling, when it is writing a tool call: the file
+       * it targets and the tail of what it has written so far.
+       */
+      writing?: { tool: string; chars: number; path?: string; preview?: string };
       workState: AgentWorkState;
     }
   /** Reasoning text, where the runtime reports it apart from the answer. */
   | {
       type: "thinking";
       message: string;
+      workState: AgentWorkState;
+    }
+  /** A subagent started, made progress, or finished. Live only; the result is a tool event. */
+  | {
+      type: "subagent";
+      id: string;
+      agentType: "explore" | "general";
+      description: string;
+      state: "running" | "ok" | "failed" | "aborted" | "incomplete";
+      toolCalls: number;
+      /** The call the child is on, for a `Read(src/Main.java)` line. */
+      activity?: { name: AgentEventToolName; arguments: Record<string, unknown> };
+      workState: AgentWorkState;
+    }
+  /** The conversation was condensed to make room. */
+  | {
+      type: "compacted";
+      beforeTokens: number;
+      afterTokens: number;
       workState: AgentWorkState;
     }
   /** How much of the model's real context window the conversation occupies. */
@@ -274,6 +314,8 @@ export type AgentEvent =
       type: "final";
       message: string;
       workState: AgentWorkState;
+      /** Set when the loop ended on its step cap rather than on an answer. */
+      stoppedBy?: "step_limit";
     }
   | {
       type: "error";

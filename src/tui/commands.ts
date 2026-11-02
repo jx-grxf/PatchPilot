@@ -41,13 +41,13 @@ const slashCommands: SlashCommand[] = [
   {
     name: "onboarding",
     usage: "/onboarding",
-    description: "Choose a local runtime, endpoint, and model.",
+    description: "Run setup again: runtime, model, defaults and a tool-call check.",
     category: "model"
   },
   {
     name: "new",
     usage: "/new",
-    description: "Start a fresh PatchPilot session and clear the current context.",
+    description: "Start a fresh session: clears the screen and everything the model knows from this chat.",
     category: "session",
     detail: "Clears the visible transcript, telemetry, todos, approvals, and starts a new session file. Provider, model, mode, and permissions stay unchanged."
   },
@@ -304,7 +304,7 @@ const slashCommands: SlashCommand[] = [
   {
     name: "clear",
     usage: "/clear",
-    description: "Clear the current transcript.",
+    description: "Start a fresh session: clears the screen and everything the model knows from this chat.",
     category: "utility"
   },
   {

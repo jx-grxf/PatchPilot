@@ -1,6 +1,7 @@
-import type { AgentEvent } from "../core/types.js";
+import type { AgentEvent, AgentEventToolName, PermissionDecision } from "../core/types.js";
 import { formatTokens } from "./format.js";
-import { describeToolTarget } from "./toolDisplay.js";
+import { describeToolTarget, toolVerb } from "./toolDisplay.js";
+import { formatCompactTokens } from "./format.js";
 import type { LogLineInput } from "./types.js";
 
 /**
@@ -34,7 +35,7 @@ export type StreamProgress = {
   tokens: number;
   tokensPerSecond: number | null;
   /** Set while the model is writing a tool call rather than prose. */
-  writing?: { tool: string; chars: number } | null;
+  writing?: { tool: string; chars: number; path?: string; preview?: string } | null;
 };
 
 /**
@@ -75,11 +76,16 @@ function formatDuration(elapsedMs: number): string {
  * stay out of scrollback unless PATCHPILOT_DEBUG is set. Todo updates already
  * show in the plan dock, so their tool entry would say the same thing twice.
  */
+export function describeApproval(tool: AgentEventToolName, decision: PermissionDecision): string {
+  const verb = toolVerb(tool);
+  return decision === "deny" ? `Denied ${verb}` : decision === "allow_session" ? `Allowed ${verb} for this session` : `Allowed ${verb} once`;
+}
+
 export function belongsInTranscript(event: AgentEvent, debug = Boolean(process.env.PATCHPILOT_DEBUG && process.env.PATCHPILOT_DEBUG !== "0")): boolean {
   if (debug) {
     return true;
   }
-  if (event.type === "status") {
+  if (event.type === "status" || event.type === "subagent") {
     return false;
   }
   return !(event.type === "tool" && event.name === "update_todo");
@@ -87,6 +93,16 @@ export function belongsInTranscript(event: AgentEvent, debug = Boolean(process.e
 
 export function eventToLine(event: AgentEvent): LogLineInput {
   switch (event.type) {
+    case "subagent":
+      return { kind: "status", tone: "muted", label: "subagent", text: `${event.agentType} agent ${event.state}: ${event.description}`, workState: event.workState };
+    case "compacted":
+      return {
+        kind: "status",
+        tone: "muted",
+        label: "compacted",
+        text: `Compacted conversation (${formatCompactTokens(event.beforeTokens)} → ${formatCompactTokens(event.afterTokens)} tokens)`,
+        workState: event.workState
+      };
     case "status":
       return {
         kind: "status",
@@ -130,7 +146,28 @@ export function eventToLine(event: AgentEvent): LogLineInput {
         workState: event.workState
       };
     case "tool": {
+      if (event.metadata?.background === true) {
+        return backgroundTaskLine(event);
+      }
       const subagentType = typeof event.metadata?.subagent === "string" ? event.metadata.subagent : null;
+      if (subagentType) {
+        const calls = Number(event.metadata?.toolCalls ?? 0);
+        const seconds = Math.round(Number(event.metadata?.durationMs ?? 0) / 1000);
+        const incomplete = event.metadata?.status === "incomplete";
+        const stopped = event.metadata?.status === "aborted";
+        return {
+          kind: "tool",
+          tone: event.ok && !incomplete ? "success" : "warning",
+          label: subagentType === "explore" ? "Explore" : "Agent",
+          text: `${stopped ? "Stopped" : incomplete ? "Step limit reached" : event.ok ? "Done" : "Failed"} · ${calls === 1 ? "1 tool call" : `${calls} tool calls`} · ${seconds}s`,
+          detail: stopped ? undefined : typeof event.metadata?.summary === "string" ? event.metadata.summary : event.content,
+          workState: event.workState,
+          toolCallId: event.toolCallId,
+          category: "state",
+          agent: true,
+          target: typeof event.metadata?.description === "string" ? event.metadata.description : undefined
+        };
+      }
       return {
         kind: event.name === "git_diff" ? "diff" : "tool",
         tone: event.ok ? "success" : "warning",
@@ -142,7 +179,8 @@ export function eventToLine(event: AgentEvent): LogLineInput {
         toolCallId: event.toolCallId,
         category: event.category,
         preview: event.preview,
-        target: describeToolTarget(event.arguments)
+        target: describeToolTarget(event.arguments),
+        ...(event.ok && typeof event.metadata?.diff === "string" && event.metadata.diff ? { diff: event.metadata.diff } : {})
       };
     }
     case "todo":
@@ -158,7 +196,7 @@ export function eventToLine(event: AgentEvent): LogLineInput {
         kind: "approval",
         tone: event.decision === "deny" ? "warning" : "success",
         label: "approval",
-        text: `${event.request.tool} ${event.decision.replace("_", " ")}`,
+        text: describeApproval(event.request.tool, event.decision),
         detail: event.request.preview,
         workState: event.workState,
         tool: event.request.tool,
@@ -191,6 +229,26 @@ export function eventToLine(event: AgentEvent): LogLineInput {
   }
 }
 
+function backgroundTaskLine(event: Extract<AgentEvent, { type: "tool" }>): LogLineInput {
+  const agent = typeof event.metadata?.agent === "string" ? event.metadata.agent : undefined;
+  const shared = { kind: "tool" as const, tone: event.ok ? ("success" as const) : ("warning" as const), workState: event.workState, toolCallId: event.toolCallId, category: "state" as const, detail: event.ok ? undefined : event.content };
+  switch (event.metadata?.action) {
+    case "start":
+      return {
+        ...shared,
+        label: event.arguments?.subagent_type === "general" ? "Agent" : "Explore",
+        target: describeToolTarget(event.arguments),
+        text: event.ok ? `Running in the background · ${agent ?? ""}` : event.summary
+      };
+    case "message":
+      return { ...shared, label: "Message", target: agent, text: event.summary };
+    case "stop":
+      return { ...shared, label: "Stop", target: agent, text: event.summary };
+    default:
+      return { ...shared, label: "Status", target: agent, text: event.summary };
+  }
+}
+
 function previewToolContent(content: string | undefined): string | undefined {
   const value = content?.trim();
   if (!value) {
@@ -216,6 +274,10 @@ export function eventToStatus(event: AgentEvent): string {
     return "thinking";
   }
 
+  if (event.type === "subagent") {
+    return `${event.agentType} agent: ${event.description}`;
+  }
+
   if (event.type === "tool") {
     return `${event.name}: ${event.summary}`;
   }
@@ -225,7 +287,7 @@ export function eventToStatus(event: AgentEvent): string {
   }
 
   if (event.type === "approval") {
-    return `${event.request.tool}: ${event.decision.replace("_", " ")}`;
+    return describeApproval(event.request.tool, event.decision);
   }
 
   return event.type;

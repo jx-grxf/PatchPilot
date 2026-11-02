@@ -1,16 +1,22 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useApp, useInput, useStdout } from "ink";
+import path from "node:path";
 import { AgentRunner, type AgentRunnerOptions } from "../core/agent.js";
 import { cleanupPatchPilot, readCleanupTarget } from "../core/cleanup.js";
 import { ContextStore } from "../core/contextStore.js";
 import { runDoctor } from "../core/doctor.js";
 import { savePatchPilotEnvValues } from "../core/env.js";
 import { defaultLocalOpenAIModel, resolveLocalOpenAIBaseUrl } from "../core/localOpenAI.js";
-import { resolveRuntimeAlias } from "../core/localRuntimes.js";
+import { supportsMlx } from "../core/localRuntimes.js";
+import { defaultOllamaModel } from "../core/ollama.js";
+import { defaultMlxModel, findMlxServerBinary, startMlxServer } from "../core/autostart.js";
+import { probeModelCapabilities } from "../core/capability.js";
+import { discoverModels } from "../core/modelCatalog.js";
+import { createModelClient } from "../core/modelClient.js";
 import { ensurePatchPilotGitignore, patchPilotInitPrompt } from "../core/projectInit.js";
 import { buildSessionRecap, buildSessionResumeContext, listWorkspaceSessions, loadSessionSummary, SessionStore } from "../core/session.js";
 import { addTelemetryToSession, emptySessionTelemetry, estimateTokens } from "../core/tokenAccounting.js";
-import type { AgentTodoItem, AgentToolName, AgentWorkState, ApprovalRequest, ModelProvider, ModelTelemetry, PermissionDecision, SessionTelemetry } from "../core/types.js";
+import type { AgentTodoItem, AgentToolName, AgentWorkState, ApprovalRequest, ChatMessage, ModelProvider, ModelTelemetry, PermissionDecision, SessionTelemetry } from "../core/types.js";
 import { checkForPatchPilotUpdate, installPatchPilotUpdate, type UpdateCheckResult } from "../core/updateCheck.js";
 import { getToolSpec, WorkspaceTools } from "../core/workspace.js";
 import { clipboardHasImage, readClipboardImage } from "../core/clipboard.js";
@@ -24,7 +30,7 @@ import {
   formatUsageDetail,
   formatUsageSummary
 } from "./sessionStats.js";
-import { attachmentLimitWarning, formatAttachedDocuments, formatAttachmentDigestPath } from "./attachmentLimits.js";
+import { attachmentLimitWarning, formatAttachedDocuments } from "./attachmentLimits.js";
 import {
   loadAvailableModels,
   loadKnownOrAvailableModels,
@@ -41,10 +47,17 @@ import { formatModelDescription, formatModelLabel, formatModelOptions } from "./
 import { cacheModelList } from "./modelRuntime.js";
 import {
   belongsInTranscript,
+  describeApproval,
   eventToLine,
   eventToStatus,
   type StreamProgress
 } from "./transcriptEvents.js";
+import { AgentSupervisor } from "../core/agentSupervisor.js";
+import { createChildSpawner } from "../core/agent.js";
+import { readAgentEvents } from "../core/session.js";
+import { serializeApprovals, WriteCoordinator } from "../core/writeCoordinator.js";
+import { agentTranscriptLines, clearTerminalSequence, isAgentActive, moveSelection, orderAgents } from "./agentView.js";
+import { useAgents } from "./useAgents.js";
 import { ConfigPanel, visibleSettings } from "./components/ConfigPanel.js";
 import { ModelPicker, type ModelPickerState } from "./components/ModelPicker.js";
 import {
@@ -54,14 +67,14 @@ import {
   validateSettingValue
 } from "./settingsRegistry.js";
 import { needsArgument, resolveSlashSubmission, type PaletteSuggestion } from "./slashCommands.js";
-import { runContextSlashCommand } from "./contextCommands.js";
+import { totalTokens } from "../core/contextWindow.js";
 import { Shell } from "./shell/Shell.js";
 import { type Artifact, attachmentKindForPath, attachmentLabel, attachmentTypeForPath, formatSessionArtifactContext } from "./shell/attachments.js";
 import { describeUltraModes, parseUltraModes } from "./shell/ultraModes.js";
 import { formatCompletionSummary, type RunOutcome } from "./runStatus.js";
 import { OnboardingPanel, type OnboardingState } from "./components/OnboardingPanel.js";
 import { filterSlashCommands, formatCommandDetail, formatCommandHelp } from "./commands.js";
-import { normalizeModelAlias, readToggle, stripTerminalControls } from "./format.js";
+import { formatCompactTokens, normalizeModelAlias, readToggle, stripTerminalControls } from "./format.js";
 import { checkOllamaHost, discoverOllamaHosts, normalizeOllamaUrl, readOllamaHostDetails, startLocalOllamaAppAndWait, type OllamaHost, type OllamaHostDetails } from "./hosts.js";
 import { motionEnabled } from "./motion.js";
 import { prewarmHighlighter } from "./highlight.js";
@@ -74,7 +87,12 @@ import {
   preferencesEnvValues,
   readOnboardingPreferences
 } from "./onboardingPreferences.js";
+import { installGuide, runtimeChoices } from "./onboardingSetup.js";
+import { toolVerb } from "./toolDisplay.js";
 import { type AgentMode, type LogLine, type LogLineInput, type ToolTelemetry } from "./types.js";
+
+const maxWakeRoundsPerPrompt = 3;
+const approvalKeyDelayMs = 800;
 
 export type PatchPilotAppProps = AgentRunnerOptions & {
   initialTask?: string;
@@ -110,11 +128,50 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   const activeHostSyncInFlightRef = useRef(false);
   const autoLoadKeysRef = useRef(new Set<string>());
   const usedOllamaModelsRef = useRef(new Set<string>());
-  // Rolling session memory: short digests of earlier turns so a later prompt
-  // ("now do X") still knows what the user asked for and where.
-  const conversationTurnsRef = useRef<string[]>([]);
+  // The session's full conversation, handed to every run so a follow-up sees
+  // what earlier turns read and changed. Reset by /clear and /new.
+  const conversationRef = useRef<ChatMessage[]>([]);
   const [lines, setLines] = useState<LogLine[]>([]);
   const [todos, setTodos] = useState<AgentTodoItem[]>([]);
+  const treeSinceRef = useRef(0);
+  const [supervisor] = useState(
+    () =>
+      new AgentSupervisor({
+        transcriptDir: path.join(props.workspace, ".patchpilot", "subagents"),
+        persist: (event) => void sessionStoreRef.current.append(event).catch(() => undefined)
+      })
+  );
+  const agents = useAgents(supervisor);
+  const [writeCoordinator] = useState(() => new WriteCoordinator());
+  const [viewAgentId, setViewAgentId] = useState<string | null>(null);
+  const viewedAgent = agents.find((agent) => agent.id === viewAgentId) ?? null;
+  const viewedEntryCount = viewedAgent?.entries.length ?? 0;
+  const viewedLines = useMemo(
+    () => (viewedAgent ? agentTranscriptLines(viewedAgent) : []),
+    // Only new entries change the lines; every other snapshot is live progress.
+    [viewedAgent?.id, viewedEntryCount]
+  );
+  const agentTree = agents.some((agent) => isAgentActive(agent.state))
+    ? orderAgents(agents.filter((agent) => isAgentActive(agent.state) || agent.startedAt >= treeSinceRef.current)).slice(0, 5)
+    : [];
+  const showAgent = (next: string | null): void => {
+    if (next === viewAgentId) {
+      return;
+    }
+    // Has to reach the terminal before Ink prints the other history.
+    stdout.write(clearTerminalSequence);
+    setViewAgentId(next);
+  };
+  // What the user typed to the main agent during a run; it reads this between steps.
+  const mainInboxRef = useRef<string[]>([]);
+  const approvalImplRef = useRef<NonNullable<AgentRunnerOptions["approvalHandler"]>>(() => Promise.resolve("deny"));
+  const [approvalQueue] = useState(() => serializeApprovals((request) => approvalImplRef.current(request)));
+  // Set when an automatic wake did not finish, so a failing runtime cannot restart itself forever.
+  const wakeBlockedRef = useRef(false);
+  const wakeRoundsRef = useRef(0);
+  const approvalShownAtRef = useRef(0);
+  const mainRunRef = useRef({ startedAt: 0, durationMs: 0 });
+  const stopChordAtRef = useRef(0);
   const [todoFrame, setTodoFrame] = useState(0);
   const [isRunning, setIsRunning] = useState(false);
   const [status, setStatus] = useState("idle");
@@ -177,7 +234,6 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
     allowWrite: props.allowWrite,
     allowShell: props.allowShell,
     maxSteps: props.maxSteps,
-    thinkingMode: props.thinkingMode,
     thinking: props.thinking,
     subagents: props.subagents
   });
@@ -365,14 +421,13 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       approvalResolverRef.current(decision);
       approvalResolverRef.current = null;
       const nextWorkState = decision === "deny" ? "error" : workStateForApprovalTool(pendingApproval.tool);
-      setInput("");
-      setStatus(decision === "deny" ? `${pendingApproval.tool} denied` : `${pendingApproval.tool} approved; running`);
+      setStatus(decision === "deny" ? `${toolVerb(pendingApproval.tool)} denied` : `Running ${toolVerb(pendingApproval.tool)}`);
       setWorkState(nextWorkState);
       appendLine({
         kind: "approval",
         tone: decision === "deny" ? "warning" : "success",
         label: "approval",
-        text: `${pendingApproval.tool} ${decision.replace("_", " ")}`,
+        text: `${pendingApproval.agent ? `${pendingApproval.agent}: ` : ""}${describeApproval(pendingApproval.tool, decision)}`,
         detail: pendingApproval.preview,
         workState: nextWorkState,
         tool: pendingApproval.tool
@@ -674,9 +729,9 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
             tone: "warning",
             text:
               provider === "ollama"
-                ? "No Ollama models found on that host."
-                : "No models served by that local endpoint. Load one in your local server, then retry.",
-            detail: "Use the back key to choose another provider or retry after fixing the provider setup."
+                ? `No models on this Ollama yet. Run: ollama pull ${defaultOllamaModel}`
+                : "This server has no model loaded. Load one in the server, then retry.",
+            detail: "Press enter to check again, or esc to pick another runtime."
           });
           return;
         }
@@ -709,6 +764,24 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
     setOnboardingNotice(null);
   }, []);
 
+  const detectRuntimes = useCallback(async (): Promise<void> => {
+    setOnboarding({ step: "entry", choices: null });
+    setOnboardingIndex(0);
+    setOnboardingInput("");
+    setOnboardingBusyMessage("Looking for model runtimes on this machine...");
+    try {
+      const [catalog, mlxBinary] = await Promise.all([
+        discoverModels(),
+        supportsMlx() ? findMlxServerBinary() : Promise.resolve(null)
+      ]);
+      setOnboarding((current) =>
+        current?.step === "entry" ? { step: "entry", choices: runtimeChoices(catalog, { mlxInstalled: Boolean(mlxBinary) }) } : current
+      );
+    } finally {
+      setOnboardingBusyMessage(null);
+    }
+  }, []);
+
   const goBackOnboarding = useCallback(() => {
     if (!onboarding) {
       return;
@@ -729,13 +802,13 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         });
         return;
       case "entry":
+      case "ready":
         setOnboarding(null);
         return;
       case "host":
       case "local-url":
-        setOnboarding({
-          step: "entry"
-        });
+      case "install":
+        void detectRuntimes();
         return;
       case "host-input":
         setOnboarding({
@@ -755,18 +828,9 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           return;
         }
 
-        if (onboarding.provider === "local-openai") {
-          setOnboarding({
-            step: "local-url"
-          });
-          return;
-        }
-
-        setOnboarding({
-          step: "entry"
-        });
+        void detectRuntimes();
     }
-  }, [activeHost?.host.kind, hostOptions, onboarding, openModelSelection]);
+  }, [activeHost?.host.kind, detectRuntimes, hostOptions, onboarding, openModelSelection]);
 
   const handleOnboardingSubmit = useCallback(
     async (value: string): Promise<void> => {
@@ -803,48 +867,33 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           PATCHPILOT_DISCLAIMER_ACCEPTED: "2026-05-22"
         });
         process.env.PATCHPILOT_DISCLAIMER_ACCEPTED = "2026-05-22";
-        setOnboarding({
-          step: "entry"
-        });
-        setOnboardingIndex(0);
+        await detectRuntimes();
+        return;
+      }
+
+      if (onboarding.step === "install") {
+        await detectRuntimes();
+        return;
+      }
+
+      if (onboarding.step === "ready") {
+        closeOnboarding();
         return;
       }
 
       if (onboarding.step === "entry") {
-        const selection = readEntrySelection(value, onboardingIndex);
-        if (!selection) {
+        const selectionIndex = readIndexedSelection(value, onboardingIndex);
+        const choice = selectionIndex === null ? undefined : onboarding.choices?.[selectionIndex];
+        if (!choice) {
           return;
         }
 
-        if (selection === "local") {
-          setOnboardingBusyMessage("Checking local Ollama...");
-          let details = await connectToHost("local", {
-            announce: false
-          });
-          if (!details && process.platform === "darwin") {
-            setOnboardingBusyMessage("Starting Ollama.app and waiting for the local server...");
-            const startedHost = await startLocalOllamaAppAndWait();
-            details = startedHost ? await connectToHost(startedHost, { announce: false }) : null;
-          }
-
-          if (!details) {
-            setOnboardingBusyMessage(null);
-            setOnboardingNotice({
-              tone: "warning",
-              text: "Local Ollama is not reachable.",
-              detail: "Start Ollama.app or run `ollama serve`, then press Enter to retry."
-            });
-            return;
-          }
-
-          await openModelSelection("ollama", {
-            deviceName: details.host.deviceName,
-            ollamaUrl: details.host.url
-          });
+        if (choice.kind === "install") {
+          setOnboarding({ step: "install", guide: installGuide() });
           return;
         }
 
-        if (selection === "host") {
+        if (choice.kind === "remote-ollama") {
           setOnboardingBusyMessage("Scanning LAN and Tailscale for Ollama hosts...");
           try {
             const hosts = await loadHostSuggestions(true, false);
@@ -859,8 +908,79 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           return;
         }
 
-        setOnboarding({
-          step: "local-url"
+        if (choice.kind === "custom-url") {
+          setOnboarding({
+            step: "local-url"
+          });
+          return;
+        }
+
+        if (choice.kind === "openai-local") {
+          selectLocalServer(choice.baseUrl);
+          await openModelSelection("local-openai", { currentModel: defaultLocalOpenAIModel });
+          return;
+        }
+
+        if (choice.kind === "mlx-autostart") {
+          const binary = await findMlxServerBinary();
+          if (!binary) {
+            setOnboardingNotice({ tone: "warning", text: "mlx_lm.server is no longer on the PATH.", detail: "Install it with: pip install mlx-lm" });
+            return;
+          }
+
+          setOnboardingBusyMessage(`Starting MLX with ${defaultMlxModel}...`);
+          try {
+            const server = await startMlxServer({
+              binary,
+              model: defaultMlxModel,
+              onProgress: (line) => setOnboardingBusyMessage(`Starting MLX: ${line.slice(0, 120)}`)
+            });
+            // Not saved: the next launch starts its own server on whatever port is free.
+            process.env.PATCHPILOT_PROVIDER = "local-openai";
+            process.env.PATCHPILOT_LOCAL_URL = server.baseUrl;
+            process.env.PATCHPILOT_RUNTIME_LABEL = "MLX";
+            setOnboarding({
+              step: "preferences",
+              provider: "local-openai",
+              model: defaultMlxModel,
+              preferences: readOnboardingPreferences()
+            });
+            setOnboardingIndex(preferenceRows.length);
+          } catch (error) {
+            setOnboardingNotice({
+              tone: "danger",
+              text: "MLX did not start.",
+              detail: error instanceof Error ? error.message : String(error)
+            });
+          } finally {
+            setOnboardingBusyMessage(null);
+          }
+          return;
+        }
+
+        setOnboardingBusyMessage("Checking local Ollama...");
+        let details = await connectToHost("local", {
+          announce: false
+        });
+        if (!details && process.platform === "darwin") {
+          setOnboardingBusyMessage("Starting Ollama.app and waiting for the local server...");
+          const startedHost = await startLocalOllamaAppAndWait();
+          details = startedHost ? await connectToHost(startedHost, { announce: false }) : null;
+        }
+
+        if (!details) {
+          setOnboardingBusyMessage(null);
+          setOnboardingNotice({
+            tone: "warning",
+            text: "Ollama is not reachable on this device.",
+            detail: "Start it (Ollama app or `ollama serve`) and press enter to retry, or pick Install a runtime."
+          });
+          return;
+        }
+
+        await openModelSelection("ollama", {
+          deviceName: details.host.deviceName,
+          ollamaUrl: details.host.url
         });
         return;
       }
@@ -942,12 +1062,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
 
       if (onboarding.step === "local-url") {
         const url = value.trim() || resolveLocalOpenAIBaseUrl();
-        process.env.PATCHPILOT_PROVIDER = "local-openai";
-        process.env.PATCHPILOT_LOCAL_URL = url;
-        savePatchPilotEnvValues({
-          PATCHPILOT_PROVIDER: "local-openai",
-          PATCHPILOT_LOCAL_URL: url
-        });
+        selectLocalServer(url);
         setOnboardingNotice({
           tone: "success",
           text: `Using the local model server at ${url}.`,
@@ -992,7 +1107,16 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           text: `ready: ${onboarding.provider} using ${onboarding.model}`,
           detail: `mode ${prefs.mode} · subagents ${prefs.subagents ? "on" : "off"}`
         });
-        closeOnboarding();
+        setOnboarding({ step: "ready", provider: onboarding.provider, model: onboarding.model, probe: null });
+        setOnboardingIndex(0);
+        const client = createModelClient({
+          provider: onboarding.provider,
+          ollamaUrl: activeHost?.host.url ?? settings.ollamaUrl,
+          localUrl: resolveLocalOpenAIBaseUrl()
+        });
+        void probeModelCapabilities({ client, provider: onboarding.provider, model: onboarding.model }).then((probe) =>
+          setOnboarding((current) => (current?.step === "ready" && current.model === onboarding.model ? { ...current, probe } : current))
+        );
         return;
       }
 
@@ -1017,12 +1141,15 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       setOnboardingInput("");
       setOnboardingIndex(preferenceRows.length);
     },
-    [activeHost?.host.url, appendLine, closeOnboarding, connectToHost, loadHostSuggestions, onboarding, onboardingBusyMessage, onboardingIndex, openModelSelection, settings.ollamaUrl]
+    [activeHost?.host.url, appendLine, closeOnboarding, connectToHost, detectRuntimes, loadHostSuggestions, onboarding, onboardingBusyMessage, onboardingIndex, openModelSelection, settings.ollamaUrl]
   );
 
   const runTask = useCallback(
-    async (task: string, overrides: { mode?: AgentMode } = {}) => {
-      if (!task.trim() || isRunning) {
+    async (task: string, overrides: { mode?: AgentMode; wake?: boolean; alreadyShown?: boolean } = {}) => {
+      const wake = overrides.wake === true;
+      // Neither a wake nor text queued during the last run is a fresh prompt, and the user may be typing one.
+      const fresh = !wake && !overrides.alreadyShown;
+      if ((!wake && !task.trim()) || isRunning) {
         return;
       }
 
@@ -1070,22 +1197,30 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       const runStartedAt = Date.now();
       softStopRequestedRef.current = false;
       lastEscapeStopAtRef.current = 0;
-      setInput("");
-      setTodos([]);
+      mainRunRef.current = { startedAt: runStartedAt, durationMs: 0 };
+      if (fresh) {
+        setInput("");
+        setTodos([]);
+        wakeBlockedRef.current = false;
+        wakeRoundsRef.current = 0;
+        treeSinceRef.current = runStartedAt;
+      }
       setWorkState("idle");
       setStatus("starting");
       setUltramaxxRun(ultramaxx);
       setIsRunning(true);
-      appendLine({
-        kind: "user",
-        tone: "normal",
-        label: "you",
-        text: task
-      });
+      if (fresh) {
+        appendLine({
+          kind: "user",
+          tone: "normal",
+          label: "you",
+          text: task
+        });
+      }
       if (ultra.modes.length > 0) {
         const engagedDetail: string[] = [];
         if (ultramaxx) {
-          engagedDetail.push("ultramaxx: thinking on, expanded step budget, child agents on.");
+          engagedDetail.push("ultramaxx: thinking on, child agents on.");
         }
         if (ultracheap) {
           engagedDetail.push("ultracheap: terse output, thinking and child agents off.");
@@ -1097,7 +1232,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           engagedDetail.push(`ultrafocus: the agent stays inside ${ultra.focusPath}.`);
         }
         if (ultraloop) {
-          engagedDetail.push("ultraloop: expanded budget with explicit final self-check before finishing.");
+          engagedDetail.push("ultraloop: explicit final self-check before finishing.");
         }
         appendLine({
           tone: "accent",
@@ -1110,6 +1245,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       let finalMessage = "";
       let turnAttachmentPaths: string[] = [];
       let outcome: RunOutcome = "done";
+      let runSignal: AbortSignal | undefined;
       try {
         const runnableSettings = await resolveRunnableSettings(settings, modelOptions, appendLine, setModelOptions, (message) => {
         });
@@ -1120,14 +1256,8 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
 
         const abortController = new AbortController();
         abortControllerRef.current = abortController;
+        runSignal = abortController.signal;
         const effectiveMode = overrides.mode ?? agentMode;
-        // Carry earlier-turn context forward so a follow-up prompt still knows
-        // what the user was doing and where. Advisory only — it never changes
-        // the workspace root or restricts the agent.
-        const sessionMemory =
-          conversationTurnsRef.current.length > 0
-            ? `Earlier in this PatchPilot session (most recent last), for continuity only — the request below still takes priority and is not restricted to these paths:\n${conversationTurnsRef.current.join("\n")}`
-            : "";
         const artifactContext = formatSessionArtifactContext(artifactsRef.current);
         const persistedContext = await contextStoreRef.current
           .buildContextBlock({
@@ -1158,30 +1288,17 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
             "ULTRAFAST is active. Optimise for speed: minimal reasoning, the fewest tool calls that still get it right, no exploratory detours. Answer as directly as possible."
           );
         }
-        const effectiveResumeContext = [resumeContext, sessionMemory, artifactContext, persistedContext, ultraInstructions.join("\n\n")]
+        // Session-level context only opens a conversation; after that the
+        // conversation itself carries it, and repeating it every turn would
+        // bloat the prompt and break the runtime's prefix cache.
+        const opensConversation = conversationRef.current.length === 0;
+        const effectiveResumeContext = [
+          ...(opensConversation ? [resumeContext, artifactContext, persistedContext] : []),
+          ultraInstructions.join("\n\n")
+        ]
           .filter(Boolean)
           .join("\n\n");
-        const taskRunner = new AgentRunner({
-          ...runnableSettings,
-          maxSteps: ultraloop
-            ? Math.max(runnableSettings.maxSteps, 60)
-            : ultramaxx
-              ? Math.max(runnableSettings.maxSteps, 40)
-              : ultraLean
-                ? Math.min(runnableSettings.maxSteps, 12)
-                : runnableSettings.maxSteps,
-          thinking: ultramaxx ? "on" : ultraLean ? "off" : runnableSettings.thinking,
-          subagents: ultramaxx || ultraloop ? true : ultraLean ? false : runnableSettings.subagents,
-          ultramaxx,
-          allowExternalFileAnalysis: experimentalFlags.fileAnalysis,
-          allowShellMetacharacters: experimentalFlags.shellMetacharacters,
-          memoryEnabled: experimentalFlags.memory,
-          mode: effectiveMode,
-          signal: abortController.signal,
-          shouldStopAfterStep: () => softStopRequestedRef.current,
-          sessionStore: sessionStoreRef.current,
-          resumeContext: effectiveResumeContext,
-          approvalHandler: (request) =>
+        approvalImplRef.current = (request) =>
             new Promise<PermissionDecision>((resolve) => {
               if (effectiveMode === "plan") {
                 appendLine({
@@ -1211,32 +1328,46 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
                 return;
               }
 
+              approvalShownAtRef.current = Date.now();
               setPendingApproval(request);
               setWorkState("waiting_approval");
-              setStatus(`approval needed for ${request.tool}`);
-              appendLine({
-                kind: "approval",
-                tone: "warning",
-                label: "approval",
-                text: `${request.tool} needs ${request.permission} approval`,
-                detail: `${request.preview}  Press y once, a session, or n deny.`,
-                workState: "waiting_approval",
-                tool: request.tool,
-                preview: request.preview
-              });
+              // The prompt box asks; scrollback only records the answer.
+              setStatus(`approval needed for ${toolVerb(request.tool)}`);
               approvalResolverRef.current = resolve;
-            })
+            });
+        const taskRunner = new AgentRunner({
+          ...runnableSettings,
+          maxSteps: runnableSettings.maxSteps,
+          thinking: ultramaxx ? "on" : ultraLean ? "off" : runnableSettings.thinking,
+          subagents: ultramaxx || ultraloop ? true : ultraLean ? false : runnableSettings.subagents,
+          ultramaxx,
+          allowExternalFileAnalysis: experimentalFlags.fileAnalysis,
+          allowShellMetacharacters: experimentalFlags.shellMetacharacters,
+          memoryEnabled: experimentalFlags.memory,
+          mode: effectiveMode,
+          signal: abortController.signal,
+          shouldStopAfterStep: () => softStopRequestedRef.current,
+          sessionStore: sessionStoreRef.current,
+          resumeContext: effectiveResumeContext,
+          conversation: conversationRef.current,
+          supervisor,
+          writeCoordinator,
+          agentKey: "main",
+          inbox: () => mainInboxRef.current.splice(0),
+          approvalHandler: approvalQueue
         });
         // Hand any documents the user attached this turn to the agent so it
         // can read/analyse them with its file tools.
-        const pendingAttachments = pendingAttachmentsRef.current;
+        const pendingAttachments = wake ? [] : pendingAttachmentsRef.current;
         turnAttachmentPaths = pendingAttachments;
-        pendingAttachmentsRef.current = [];
+        if (!wake) {
+          pendingAttachmentsRef.current = [];
+        }
         const taskWithAttachments =
           pendingAttachments.length > 0
             ? `${effectiveTask}\n\n[Attached documents for this task — read or analyse them as needed with inspect_document. Paths are JSON-escaped and may contain spaces:\n${formatAttachedDocuments(pendingAttachments)}\n]`
             : effectiveTask;
-        for await (const event of taskRunner.run(taskWithAttachments)) {
+        for await (const event of taskRunner.run(wake ? "Background agent finished" : taskWithAttachments, wake ? { wake: true } : undefined)) {
           setWorkState(event.workState);
           if (event.type === "metrics") {
             if (runnableSettings.provider === "ollama") {
@@ -1251,6 +1382,10 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
             setTodos(event.items);
             setStatus(event.summary);
             setToolTelemetry((currentTools) => addToolTelemetry(currentTools, "update_todo", true));
+            continue;
+          }
+
+          if (event.type === "subagent") {
             continue;
           }
 
@@ -1338,30 +1473,32 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         });
       } finally {
         abortControllerRef.current = null;
+        mainRunRef.current = { startedAt: 0, durationMs: Date.now() - runStartedAt };
         setIsRunning(false);
         setUltramaxxRun(false);
-        // Record a short digest of this turn for cross-run continuity.
-        conversationTurnsRef.current = [
-          ...conversationTurnsRef.current,
-          `- Asked: "${task.replace(/\s+/g, " ").trim().slice(0, 220)}"${
-            turnAttachmentPaths.length > 0 ? ` attachments: ${turnAttachmentPaths.map(formatAttachmentDigestPath).join(", ")}` : ""
-          }${
-            finalMessage ? ` → outcome: ${finalMessage.replace(/\s+/g, " ").trim().slice(0, 220)}` : ""
-          }`
-        ].slice(-6);
-        void contextStoreRef.current.append({
-          kind: "turn",
-          source: "user",
-          label: task.replace(/\s+/g, " ").trim().slice(0, 120) || "PatchPilot turn",
-          text: [
-            `Asked: ${task.replace(/\s+/g, " ").trim()}`,
-            turnAttachmentPaths.length > 0 ? `Attachments: ${turnAttachmentPaths.join(", ")}` : "",
-            finalMessage ? `Outcome: ${finalMessage.replace(/\s+/g, " ").trim().slice(0, 500)}` : ""
-          ]
-            .filter(Boolean)
-            .join("\n"),
-          priority: turnAttachmentPaths.length > 0 ? 65 : 35
-        }).catch(() => undefined);
+        if (!wake) {
+          void contextStoreRef.current.append({
+            kind: "turn",
+            source: "user",
+            label: task.replace(/\s+/g, " ").trim().slice(0, 120) || "PatchPilot turn",
+            text: [
+              `Asked: ${task.replace(/\s+/g, " ").trim()}`,
+              turnAttachmentPaths.length > 0 ? `Attachments: ${turnAttachmentPaths.join(", ")}` : "",
+              finalMessage ? `Outcome: ${finalMessage.replace(/\s+/g, " ").trim().slice(0, 500)}` : ""
+            ]
+              .filter(Boolean)
+              .join("\n"),
+            priority: turnAttachmentPaths.length > 0 ? 65 : 35
+          }).catch(() => undefined);
+        }
+        // The loop reports a stop as a normal end; the closing line should
+        // still say the user stopped it, not that it finished.
+        if (outcome === "done" && runSignal?.aborted) {
+          outcome = "stopped";
+        }
+        if (wake && outcome !== "done") {
+          wakeBlockedRef.current = true;
+        }
         appendLine({
           kind: "status",
           tone: outcome === "done" ? "muted" : "warning",
@@ -1371,7 +1508,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
         });
       }
     },
-    [agentMode, appendLine, experimentalFlags, isRunning, modelOptions, registerCreatedArtifact, resumeContext, settings]
+    [agentMode, appendLine, approvalQueue, experimentalFlags, isRunning, modelOptions, registerCreatedArtifact, resumeContext, settings, supervisor, writeCoordinator]
   );
 
   const handleSlashCommand = useCallback(
@@ -1727,18 +1864,51 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           return;
         }
         case "context":
-        case "ctx":
-        case "compact":
-        case "compress":
-          appendLine(
-            await runContextSlashCommand({
-              workspace: settings.workspace,
-              sessionId: sessionStoreRef.current.sessionId,
-              command: command === "compact" || command === "compress" ? "compact" : "context",
-              args
-            })
-          );
+        case "ctx": {
+          const messages = conversationRef.current;
+          const tokens = totalTokens(messages);
+          appendLine({
+            kind: "status",
+            tone: "accent",
+            label: "context",
+            text:
+              messages.length === 0
+                ? "The conversation is empty."
+                : `${messages.length} messages · ~${formatCompactTokens(tokens)} tokens` +
+                  (contextUsage ? ` · ${Math.round(contextUsage.ratio * 100)}% of ${formatCompactTokens(contextUsage.limitTokens)}` : "") +
+                  " · /compact to condense it"
+          });
           return;
+        }
+        case "compact":
+        case "compress": {
+          // Condenses the conversation the model actually sees; args become
+          // the focus of the summary.
+          if (isRunning) {
+            appendLine({ kind: "status", tone: "warning", label: "compact", text: "Wait for the current run to finish, then /compact." });
+            return;
+          }
+          if (conversationRef.current.length === 0) {
+            appendLine({ kind: "status", tone: "muted", label: "compact", text: "Nothing to compact yet." });
+            return;
+          }
+          setIsRunning(true);
+          setStatus("compacting the conversation");
+          try {
+            const runner = new AgentRunner({ ...settings, conversation: conversationRef.current });
+            for await (const event of runner.compact(args.join(" "))) {
+              if (event.type === "compacted" || (event.type === "status" && event.workState === "done")) {
+                appendLine(eventToLine(event));
+              }
+            }
+          } catch (error) {
+            appendLine({ kind: "error", tone: "danger", label: "compact", text: error instanceof Error ? error.message : String(error) });
+          } finally {
+            setIsRunning(false);
+            setStatus("idle");
+          }
+          return;
+        }
         case "sessions": {
           const sessions = await listWorkspaceSessions(settings.workspace);
           appendLine({
@@ -1754,9 +1924,16 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           return;
         }
         case "resume": {
+          if (isRunning) {
+            appendLine({ kind: "status", tone: "warning", label: "resume", text: "Wait for the current run to finish, then /resume." });
+            return;
+          }
           const sessionId = args[0] ?? "";
           const sessions = await listWorkspaceSessions(settings.workspace);
-          const selectedSession = sessionId ? await loadSessionSummary(settings.workspace, sessionId) : sessions[0] ?? null;
+          // The newest session is this launch's own, which has nothing to resume.
+          const selectedSession = sessionId
+            ? await loadSessionSummary(settings.workspace, sessionId)
+            : sessions.find((session) => session.sessionId !== sessionStoreRef.current.sessionId) ?? null;
           if (selectedSession) {
             sessionStoreRef.current = new SessionStore({
               workspace: settings.workspace,
@@ -1774,6 +1951,9 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
               resumedAt: new Date().toISOString()
             });
             setResumeContext(await buildSessionResumeContext(settings.workspace, selectedSession.sessionId));
+            supervisor.clear();
+            setViewAgentId(null);
+            supervisor.restore(await readAgentEvents(SessionStore.workspaceSessionPath(settings.workspace, selectedSession.sessionId)));
             setSessionTelemetry(emptySessionTelemetry());
             setTelemetry(null);
           }
@@ -1930,6 +2110,10 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           return;
         }
         case "cleanup": {
+          if (isRunning) {
+            appendLine({ kind: "status", tone: "warning", label: "cleanup", text: "Wait for the current run to finish, then /cleanup." });
+            return;
+          }
           const target = readCleanupTarget(args[0]);
           if (!target) {
             appendLine({
@@ -2022,27 +2206,19 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
           return;
         }
         case "clear":
-          setTranscriptEpoch((epoch) => epoch + 1);
-          setLines([]);
-          setTodos([]);
-          setTelemetry(null);
-          setResumeContext("");
-          setSessionTelemetry(emptySessionTelemetry());
-          setToolTelemetry(emptyToolTelemetry());
-          conversationTurnsRef.current = [];
-          artifactsRef.current = [];
-          pendingAttachmentsRef.current = [];
-          return;
         case "new":
           if (isRunning) {
             appendLine({
+              kind: "status",
               tone: "warning",
-              label: "new",
-              text: "Cannot start a new session while a run is active.",
-              detail: "Stop the current run first, then use /new again."
+              label: command,
+              text: `Wait for the current run to finish, then /${command}.`
             });
             return;
           }
+          // A new session, not only a new transcript: the context store feeds
+          // every opening turn, so keeping it would hand the old chat back to
+          // the model. The old session stays on disk for /resume.
           sessionStoreRef.current = new SessionStore({
             workspace: settings.workspace
           });
@@ -2051,23 +2227,30 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
             sessionId: sessionStoreRef.current.sessionId
           });
           await sessionStoreRef.current.create();
+          supervisor.clear();
+          setViewAgentId(null);
+          mainInboxRef.current = [];
+          mainRunRef.current = { startedAt: 0, durationMs: 0 };
+          stdout.write(clearTerminalSequence);
           setTranscriptEpoch((epoch) => epoch + 1);
           setLines([]);
           setTodos([]);
           setTelemetry(null);
+          setContextUsage(null);
+          setResumeContext("");
           setSessionTelemetry(emptySessionTelemetry());
           setToolTelemetry(emptyToolTelemetry());
-          setPendingApproval(null);
+          // A stopped child's prompt must be answered, or the approval queue waits on it forever.
+          approvalResolverRef.current?.("deny");
           approvalResolverRef.current = null;
+          setPendingApproval(null);
           setBypassConfirmation(false);
           setInput("");
           setStatus("idle");
           setWorkState("idle");
-          conversationTurnsRef.current = [];
+          conversationRef.current = [];
           artifactsRef.current = [];
           pendingAttachmentsRef.current = [];
-          // Leave the transcript empty so the startup banner shows again,
-          // exactly like a fresh launch.
           return;
         case "exit":
         case "quit":
@@ -2117,12 +2300,22 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       // least as common as re-running a prompt.
       promptHistoryRef.current = rememberPrompt(promptHistoryRef.current, nextValue);
 
-      if (isRunning && nextValue.startsWith("/")) {
-        await handleSlashCommand(nextValue);
+      if (viewAgentId && !nextValue.startsWith("/")) {
+        setInput("");
+        wakeBlockedRef.current = false;
+        const runnable = await resolveRunnableSettings(settings, modelOptions, appendLine, setModelOptions, () => undefined);
+        if (runnable) {
+          // A child restored from an earlier session has nothing to run on until a spawner exists.
+          supervisor.setSpawner(createChildSpawner({ ...runnable, mode: agentMode, writeCoordinator, approvalHandler: approvalQueue }));
+          supervisor.send(viewAgentId, nextValue, "user");
+        }
         return;
       }
 
-      if (isRunning) {
+      if (isRunning && !nextValue.startsWith("/")) {
+        setInput("");
+        mainInboxRef.current.push(nextValue);
+        appendLine({ kind: "user", tone: "normal", label: "you", text: nextValue });
         return;
       }
 
@@ -2145,7 +2338,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
 
       await runTask(nextValue);
     },
-    [handleOnboardingSubmit, handleSlashCommand, isRunning, onboarding, paletteIndex, paletteItems, runTask]
+    [agentMode, appendLine, approvalQueue, handleOnboardingSubmit, handleSlashCommand, isRunning, modelOptions, onboarding, paletteIndex, paletteItems, runTask, settings, supervisor, viewAgentId, writeCoordinator]
   );
 
   useEffect(() => {
@@ -2187,6 +2380,29 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
     runtimeStateRef.current.isRunning = isRunning;
     runtimeStateRef.current.hasPendingApproval = Boolean(pendingApproval || bypassConfirmation || updatePrompt || updateBusy);
   }, [bypassConfirmation, isRunning, pendingApproval, updateBusy, updatePrompt]);
+
+  useEffect(() => {
+    if (isRunning || onboarding) {
+      return;
+    }
+    // Text that arrived after the run's last look at its inbox would otherwise wait for the next prompt.
+    if (mainInboxRef.current.length > 0) {
+      void runTask(mainInboxRef.current.splice(0).join("\n\n"), { alreadyShown: true });
+      return;
+    }
+    if (!wakeBlockedRef.current && supervisor.hasWakeableResult()) {
+      // A model that answers each result by starting more agents would otherwise run unattended for hours.
+      if (wakeRoundsRef.current >= maxWakeRoundsPerPrompt) {
+        wakeBlockedRef.current = true;
+        appendLine({ kind: "status", tone: "warning", label: "agents", text: "Agent results are waiting. They reach the main agent with your next message." });
+        return;
+      }
+      wakeRoundsRef.current += 1;
+      void runTask("", { wake: true });
+    }
+  }, [agents, appendLine, isRunning, onboarding, runTask, supervisor]);
+
+  useEffect(() => () => supervisor.stopAll(), [supervisor]);
 
   useEffect(() => {
     if (!props.initialTask || didRunInitialTask.current || onboarding || process.env.PATCHPILOT_ONBOARDING_COMPLETE !== "1") {
@@ -2475,6 +2691,11 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
     }
 
     if (pendingApproval) {
+      // A background agent can raise this while the user is typing, and the next
+      // letter of a sentence must not count as an answer.
+      if (Date.now() - approvalShownAtRef.current < approvalKeyDelayMs) {
+        return;
+      }
       const normalizedInput = inputValue.toLowerCase();
       if (normalizedInput === "y") {
         resolveApproval("allow_once");
@@ -2492,7 +2713,31 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       }
     }
 
-    if (isRunning && key.escape) {
+    if (key.ctrl && inputValue === "x") {
+      stopChordAtRef.current = Date.now();
+      return;
+    }
+
+    if (key.ctrl && inputValue === "k" && Date.now() - stopChordAtRef.current <= 1500) {
+      stopChordAtRef.current = 0;
+      if (supervisor.hasActive()) {
+        supervisor.stopAll();
+        setStatus("stopping all agents");
+      }
+      return;
+    }
+
+    if (viewAgentId && key.escape && paletteItems.length === 0) {
+      const viewed = supervisor.get(viewAgentId);
+      if (viewed && isAgentActive(viewed.state)) {
+        supervisor.stop(viewAgentId);
+      } else {
+        showAgent(null);
+      }
+      return;
+    }
+
+    if (isRunning && key.escape && paletteItems.length === 0) {
       const now = Date.now();
       const isDoubleEscape = now - lastEscapeStopAtRef.current <= 700;
       lastEscapeStopAtRef.current = now;
@@ -2620,6 +2865,7 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       if ((state.isRunning || state.hasPendingApproval) && now - state.lastSigintAt > 1500) {
         state.lastSigintAt = now;
         abortControllerRef.current?.abort();
+        supervisor.stopAll();
         approvalResolverRef.current?.("deny");
         approvalResolverRef.current = null;
         setPendingApproval(null);
@@ -2659,6 +2905,10 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
   return (
     <Shell
       onHistoryPrevious={(currentInput) => {
+        if (viewAgentId) {
+          showAgent(moveSelection(agents, viewAgentId, -1));
+          return null;
+        }
         const step = recallPrevious(promptHistoryRef.current, currentInput);
         promptHistoryRef.current = step.history;
         return step.input;
@@ -2666,6 +2916,9 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       onHistoryNext={() => {
         const step = recallNext(promptHistoryRef.current);
         promptHistoryRef.current = step.history;
+        if (step.input === null) {
+          showAgent(moveSelection(agents, viewAgentId, 1));
+        }
         return step.input;
       }}
       provider={settings.provider}
@@ -2684,8 +2937,18 @@ export function App(props: PatchPilotAppProps): React.ReactElement {
       transcriptEpoch={transcriptEpoch}
       ultramaxxRun={ultramaxxRun}
       sessionTelemetry={sessionTelemetry}
-      lines={lines}
+      lines={viewedAgent ? viewedLines : lines}
       todos={todos}
+      agents={agents}
+      agentTree={agentTree}
+      viewedAgent={viewedAgent}
+      mainAgent={{
+        activity: isRunning ? status : "Idle",
+        active: isRunning,
+        durationMs: mainRunRef.current.startedAt > 0 ? Date.now() - mainRunRef.current.startedAt : mainRunRef.current.durationMs,
+        promptTokens: sessionTelemetry.promptTokens,
+        outputTokens: sessionTelemetry.responseTokens
+      }}
       todoFrame={todoFrame}
       clipboardImage={clipboardImage}
       pendingApproval={pendingApproval}
@@ -2830,7 +3093,10 @@ function getOnboardingOptionCount(onboarding: OnboardingState): number {
     case "disclaimer":
       return 0;
     case "entry":
-      return 3;
+      return onboarding.choices?.length ?? 0;
+    case "install":
+    case "ready":
+      return 1;
     case "host":
       return onboarding.hosts.length + 1;
     case "local-url":
@@ -2842,37 +3108,6 @@ function getOnboardingOptionCount(onboarding: OnboardingState): number {
     default:
       return 0;
   }
-}
-
-function readEntrySelection(value: string, selectedIndex: number): "local" | "host" | "local-openai" | null {
-  const normalizedValue = value.trim().toLowerCase();
-  if (!normalizedValue) {
-    return ["local", "host", "local-openai"][selectedIndex] as "local" | "host" | "local-openai";
-  }
-
-  if (normalizedValue === "1" || normalizedValue === "local" || normalizedValue === "this device") {
-    return "local";
-  }
-
-  if (normalizedValue === "2" || normalizedValue === "host" || normalizedValue === "remote host" || normalizedValue === "remote") {
-    return "host";
-  }
-
-  const runtime = resolveRuntimeAlias(value);
-  if (runtime?.provider === "ollama") {
-    return "local";
-  }
-
-  if (
-    normalizedValue === "3" ||
-    normalizedValue === "local-openai" ||
-    normalizedValue === "local server" ||
-    runtime?.provider === "local-openai"
-  ) {
-    return "local-openai";
-  }
-
-  return null;
 }
 
 function readBooleanEnv(value: string | undefined, fallback: boolean): boolean {
@@ -2982,4 +3217,13 @@ function formatHostOptions(hosts: OllamaHost[]): string {
       return `${index + 1}. ${host.deviceName}  ${host.kind}  ${host.url}${version}`;
     })
     .join("\n");
+}
+
+function selectLocalServer(url: string): void {
+  process.env.PATCHPILOT_PROVIDER = "local-openai";
+  process.env.PATCHPILOT_LOCAL_URL = url;
+  savePatchPilotEnvValues({
+    PATCHPILOT_PROVIDER: "local-openai",
+    PATCHPILOT_LOCAL_URL: url
+  });
 }

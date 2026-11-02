@@ -1,6 +1,6 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { AgentEvent, ModelClient } from "./types.js";
+import type { AgentEvent, AgentEventToolName, ModelClient } from "./types.js";
 import type { ToolName } from "./toolSchema.js";
 
 /**
@@ -20,9 +20,20 @@ import type { ToolName } from "./toolSchema.js";
  *      The parent can read it with the tool it already has, on the rare
  *      occasion it needs detail. This costs no extra inference, unlike
  *      summarising.
- *   3. **Children run serialised.** Each one starts with a cold prefix cache;
- *      running two at once on one machine evicts the parent's cache as well.
+ *   3. **Concurrency is bounded.** Each child starts with a cold prefix cache,
+ *      so only a few run at once (`subagentConcurrency`); a local server batches
+ *      them, and further children wait their turn. Writers are kept apart by the
+ *      write coordinator rather than by running one at a time.
  */
+
+/**
+ * How many children run at once. Two is what a 24 GB Mac serves as one batch
+ * without slowing the parent's own requests noticeably.
+ */
+export function subagentConcurrency(env: NodeJS.ProcessEnv = process.env): number {
+  const configured = Number.parseInt(env.PATCHPILOT_SUBAGENT_CONCURRENCY ?? "", 10);
+  return Number.isFinite(configured) ? Math.min(4, Math.max(1, configured)) : 2;
+}
 
 /** Hard cap on what a child returns. Enforced here, never requested in prose. */
 export const maxEnvelopeChars = 1200;
@@ -36,7 +47,8 @@ export type SubagentRequest = {
 };
 
 export type SubagentEnvelope = {
-  status: "ok" | "failed" | "aborted";
+  /** `incomplete` means the child hit its step cap: the summary is partial. */
+  status: "ok" | "failed" | "aborted" | "incomplete";
   description: string;
   summary: string;
   steps: number;
@@ -70,7 +82,79 @@ export type SubagentDependencies = {
   transcriptDir: string;
   signal?: AbortSignal;
   now?: () => number;
+  /** Called on every tool call the child makes, so the UI can show it working. */
+  onProgress?: (progress: { toolCalls: number; activity: { name: AgentEventToolName; arguments: Record<string, unknown> } }) => void;
 };
+
+/**
+ * Collects one child run into an envelope. Shared by the blocking path and the
+ * supervisor, which both feed it the child's events.
+ */
+export class SubagentTrace {
+  steps = 0;
+  toolCalls = 0;
+  private finalMessage = "";
+  private status: SubagentEnvelope["status"] = "failed";
+  private readonly lines: string[];
+
+  constructor(
+    private readonly request: SubagentRequest,
+    private readonly startedAt: number
+  ) {
+    this.lines = [`# ${request.description}`, `type: ${request.type}`, "", `## Task`, request.prompt, "", "## Trace"];
+  }
+
+  record(event: AgentEvent): void {
+    switch (event.type) {
+      case "metrics":
+        this.steps += 1;
+        break;
+      case "tool":
+        this.toolCalls += 1;
+        this.lines.push(`- ${event.name} ${event.ok ? "ok" : "failed"}: ${event.summary}`);
+        if (event.content) {
+          this.lines.push("", "```", event.content, "```", "");
+        }
+        break;
+      case "assistant":
+        this.lines.push("", event.message, "");
+        break;
+      case "final":
+        this.finalMessage = event.message;
+        this.status = event.stoppedBy === "step_limit" ? "incomplete" : /^Stopped\b/i.test(event.message) ? "aborted" : "ok";
+        break;
+      case "error":
+        this.finalMessage = event.message;
+        this.status = "failed";
+        break;
+      default:
+        break;
+    }
+  }
+
+  markAborted(): void {
+    this.finalMessage = "Stopped.";
+    this.status = "aborted";
+  }
+
+  fail(error: unknown, aborted: boolean): void {
+    this.finalMessage = error instanceof Error ? error.message : String(error);
+    this.status = aborted ? "aborted" : "failed";
+  }
+
+  async finish(transcriptDir: string, now: number, label?: string): Promise<SubagentEnvelope> {
+    const transcript = await writeTranscript(transcriptDir, this.request.description, this.lines.join("\n"), label);
+    return {
+      status: this.status,
+      description: this.request.description,
+      summary: clampSummary(this.finalMessage || "The subagent produced no answer."),
+      steps: this.steps,
+      durationMs: now - this.startedAt,
+      toolCalls: this.toolCalls,
+      transcript
+    };
+  }
+}
 
 /**
  * Runs one subagent to completion and returns its bounded envelope.
@@ -82,63 +166,24 @@ export async function runSubagent(request: SubagentRequest, deps: SubagentDepend
   const now = deps.now ?? (() => Date.now());
   const startedAt = now();
   const access = subagentToolAccess[request.type];
-  const transcript: string[] = [`# ${request.description}`, `type: ${request.type}`, "", `## Task`, request.prompt, "", "## Trace"];
-
-  let steps = 0;
-  let toolCalls = 0;
-  let finalMessage = "";
-  let status: SubagentEnvelope["status"] = "failed";
+  const trace = new SubagentTrace(request, startedAt);
 
   try {
     for await (const event of deps.run({ task: request.prompt, readOnly: access.readOnly, client: deps.client })) {
       if (deps.signal?.aborted) {
-        finalMessage = "Stopped.";
-        status = "aborted";
+        trace.markAborted();
         break;
       }
-
-      switch (event.type) {
-        case "metrics":
-          steps += 1;
-          break;
-        case "tool":
-          toolCalls += 1;
-          transcript.push(`- ${event.name} ${event.ok ? "ok" : "failed"}: ${event.summary}`);
-          if (event.content) {
-            transcript.push("", "```", event.content, "```", "");
-          }
-          break;
-        case "assistant":
-          transcript.push("", event.message, "");
-          break;
-        case "final":
-          finalMessage = event.message;
-          status = /^Stopped\b/i.test(event.message) ? "aborted" : "ok";
-          break;
-        case "error":
-          finalMessage = event.message;
-          status = "failed";
-          break;
-        default:
-          break;
+      trace.record(event);
+      if (event.type === "tool") {
+        deps.onProgress?.({ toolCalls: trace.toolCalls, activity: { name: event.name, arguments: event.arguments ?? {} } });
       }
     }
   } catch (error) {
-    finalMessage = error instanceof Error ? error.message : String(error);
-    status = deps.signal?.aborted ? "aborted" : "failed";
+    trace.fail(error, Boolean(deps.signal?.aborted));
   }
 
-  const transcriptPath = await writeTranscript(deps.transcriptDir, request.description, transcript.join("\n"));
-
-  return {
-    status,
-    description: request.description,
-    summary: clampSummary(finalMessage || "The subagent produced no answer."),
-    steps,
-    durationMs: now() - startedAt,
-    toolCalls,
-    transcript: transcriptPath
-  };
+  return await trace.finish(deps.transcriptDir, now());
 }
 
 /**
@@ -152,6 +197,12 @@ export function formatEnvelope(envelope: SubagentEnvelope): string {
     envelope.summary,
     `(${envelope.steps} step${envelope.steps === 1 ? "" : "s"}, ${envelope.toolCalls} tool call${envelope.toolCalls === 1 ? "" : "s"}, ${Math.round(envelope.durationMs / 1000)}s)`
   ];
+
+  if (envelope.status === "incomplete") {
+    parts.push(
+      `This result is partial: the agent hit its step limit before finishing. Report what it found and say what is missing; do not present it as complete or fill the gaps from your own knowledge. Continue it with task action "message" only if the missing part is needed to answer.`
+    );
+  }
 
   if (envelope.transcript) {
     parts.push(`Full transcript: ${envelope.transcript} — read it only if you need detail this summary omits.`);
@@ -182,10 +233,10 @@ export function subagentToolNames(readOnly: boolean): ToolName[] {
   return readOnly ? readTools : [...readTools, "write", "edit"];
 }
 
-async function writeTranscript(directory: string, description: string, body: string): Promise<string | null> {
+async function writeTranscript(directory: string, description: string, body: string, label?: string): Promise<string | null> {
   try {
     await mkdir(directory, { recursive: true });
-    const file = path.join(directory, `${slug(description)}-${Date.now()}.md`);
+    const file = path.join(directory, `${label ? `${label}-` : ""}${slug(description)}-${Date.now()}.md`);
     await writeFile(file, `${body}\n`, "utf8");
     return file;
   } catch {

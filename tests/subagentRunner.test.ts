@@ -131,6 +131,28 @@ describe("subagent envelope", () => {
     expect(envelope.summary).toContain("no answer");
   });
 
+  it("reports a child that hit its step cap as incomplete, from the structured signal", async () => {
+    const capped = await runSubagent(
+      { type: "explore", description: "cap", prompt: "x" },
+      {
+        client: stubClient,
+        transcriptDir: await scratchDir(),
+        run: events(metricsEvent, { type: "final", message: "Found A. B missing.", workState: "done", stoppedBy: "step_limit" })
+      }
+    );
+    expect(capped).toMatchObject({ status: "incomplete", summary: "Found A. B missing." });
+
+    const textOnly = await runSubagent(
+      { type: "explore", description: "cap", prompt: "x" },
+      {
+        client: stubClient,
+        transcriptDir: await scratchDir(),
+        run: events({ type: "final", message: 'Paused after 25 steps. Say "continue"', workState: "error" })
+      }
+    );
+    expect(textOnly.status).toBe("ok");
+  });
+
   it("classifies a stopped child as aborted instead of successful", async () => {
     const envelope = await runSubagent(
       { type: "explore", description: "stop", prompt: "x" },
@@ -197,6 +219,16 @@ describe("envelope formatting", () => {
     expect(text).toContain("3 steps, 5 tool calls, 4s");
     expect(text).toContain("/tmp/x.md");
     expect(text.length).toBeLessThan(maxEnvelopeChars + 200);
+  });
+
+  it("marks an incomplete result as partial and says how to continue it", () => {
+    const text = formatEnvelope({ ...envelope, status: "incomplete" });
+    expect(text).toContain("[incomplete] find auth");
+    expect(text).toContain("partial");
+    expect(text).toContain("do not present it as complete");
+    expect(text).toContain("fill the gaps from your own knowledge");
+    expect(text).toContain('action "message"');
+    expect(formatEnvelope(envelope)).not.toContain("partial");
   });
 
   it("omits the transcript line when there is none", () => {

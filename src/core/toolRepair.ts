@@ -109,7 +109,17 @@ const argumentAliases: Partial<Record<ToolName, Record<string, string>>> = {
   bash: { cmd: "command", script: "command", shell: "command", run: "command", desc: "description" },
   fetch_url: { link: "url", href: "url", address: "url", limit: "max_chars" },
   todo: { todos: "items", list: "items", tasks: "items" },
-  task: { instruction: "prompt", task: "prompt", type: "subagent_type", agent: "subagent_type" }
+  task: {
+    instruction: "prompt",
+    task: "prompt",
+    message: "prompt",
+    text: "prompt",
+    type: "subagent_type",
+    agent: "subagent_type",
+    agent_id: "id",
+    op: "action",
+    operation: "action"
+  }
 };
 
 /** L3 — resolves a model-supplied tool name to a real one. */
@@ -164,6 +174,36 @@ export function extractStringifiedToolCalls(content: string): Array<{ name: unkn
       : [parsed];
 
   return candidates.map(readCallShape).filter((call): call is { name: unknown; arguments: unknown } => call !== null);
+}
+
+/**
+ * Calls the model wrote as `<tool_call>` blocks, which is what arrives when
+ * the runtime streams raw text and leaves parsing to the harness (PatchPilot
+ * starts MLX that way so a file can be shown while it is written). Covers the
+ * Qwen3-Coder XML form and the Hermes JSON form.
+ */
+export function extractTaggedToolCalls(content: string): Array<{ name: unknown; arguments: unknown }> {
+  const calls: Array<{ name: unknown; arguments: unknown }> = [];
+  // The XML form is matched on <function=…> alone: some tokenizers treat
+  // <tool_call> as a special token the runtime drops when it detokenizes, so
+  // only the closing tag survives.
+  for (const match of content.matchAll(/<function=([\w.-]+)>([\s\S]*?)<\/function>/g)) {
+    const args: Record<string, unknown> = {};
+    for (const parameter of (match[2] ?? "").matchAll(/<parameter=([\w.-]+)>\n?([\s\S]*?)\n?<\/parameter>/g)) {
+      args[parameter[1] ?? ""] = parameter[2] ?? "";
+    }
+    calls.push({ name: match[1], arguments: args });
+  }
+  if (calls.length > 0) {
+    return calls;
+  }
+  for (const match of content.matchAll(/<tool_call>([\s\S]*?)<\/tool_call>/g)) {
+    const call = readCallShape(parseLooseJson((match[1] ?? "").trim()));
+    if (call) {
+      calls.push(call);
+    }
+  }
+  return calls;
 }
 
 /**
@@ -262,13 +302,83 @@ export function repairToolCall(raw: { name: unknown; arguments: unknown }): Repa
     };
   }
 
-  const args = applyArgumentAliases(resolved.name, rawArgs, repairs);
+  const aliased = applyArgumentAliases(resolved.name, rawArgs, repairs);
+  const args = resolved.name === "task" ? inferTaskAction(aliased, repairs) : aliased;
   const validation = validateArguments(definition, args, repairs);
   if ("message" in validation) {
     return validation;
   }
+  if (resolved.name === "task") {
+    const problem = validateTaskArguments(validation.arguments);
+    if (problem) {
+      return problem;
+    }
+  }
 
   return { name: resolved.name, arguments: validation.arguments, repairs };
+}
+
+const taskActionSynonyms: Record<string, string> = {
+  spawn: "start",
+  run: "start",
+  create: "start",
+  launch: "start",
+  new: "start",
+  send: "message",
+  tell: "message",
+  reply: "message",
+  kill: "stop",
+  cancel: "stop",
+  abort: "stop",
+  list: "status",
+  check: "status",
+  info: "status"
+};
+
+const taskStartExample = 'task({"action":"start","description":"<description>","prompt":"<prompt>","subagent_type":"explore"})';
+
+/**
+ * L3 — a task call without an action is the old, single-purpose call, and a
+ * prompt is what makes it a start. Old habits and the blocking path keep working.
+ */
+function inferTaskAction(args: Record<string, unknown>, repairs: string[]): Record<string, unknown> {
+  const raw = typeof args.action === "string" ? args.action.trim().toLowerCase() : "";
+  if (raw) {
+    const synonym = taskActionSynonyms[raw];
+    if (synonym) {
+      repairs.push(`action ${raw} -> ${synonym}`);
+      return { ...args, action: synonym };
+    }
+    return raw === args.action ? args : { ...args, action: raw };
+  }
+  if (typeof args.prompt === "string" && args.prompt.trim()) {
+    repairs.push("action defaulted to start");
+    return { ...args, action: "start" };
+  }
+  return args;
+}
+
+/** L4 — what each task action needs beyond `action`, named with a call to copy. */
+function validateTaskArguments(args: Record<string, unknown>): ToolCallProblem | null {
+  const has = (key: string) => typeof args[key] === "string" && String(args[key]).trim() !== "";
+  switch (args.action) {
+    case "start": {
+      const missing = ["description", "prompt"].filter((key) => !has(key));
+      return missing.length > 0
+        ? { message: `Tool task with action "start" needs ${missing.map((key) => `"${key}"`).join(" and ")}. Call it again like ${taskStartExample}` }
+        : null;
+    }
+    case "message":
+      return has("id") && has("prompt")
+        ? null
+        : { message: 'Tool task with action "message" needs "id" (an agent id such as agent-1; task with action "status" lists them) and "prompt" (the text to send). Call it again like task({"action":"message","id":"agent-1","prompt":"<text>"})' };
+    case "stop":
+      return has("id")
+        ? null
+        : { message: 'Tool task with action "stop" needs "id" (an agent id such as agent-1; task with action "status" lists them). Call it again like task({"action":"stop","id":"agent-1"})' };
+    default:
+      return null;
+  }
 }
 
 /**
@@ -469,6 +579,9 @@ function describeType(property: JsonSchemaProperty): string {
 
 /** A concrete example beats a schema dump for a model that just got it wrong. */
 function exampleCall(definition: ToolDefinition): string {
+  if (definition.name === "task") {
+    return taskStartExample;
+  }
   const example: Record<string, unknown> = {};
   for (const key of definition.inputSchema.required ?? []) {
     const property = definition.inputSchema.properties[key];
