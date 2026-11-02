@@ -569,8 +569,26 @@ function coerceValue(value: unknown, property: JsonSchemaProperty): unknown {
       }
       return undefined;
     case "array":
-      return Array.isArray(value) ? value : undefined;
+      return Array.isArray(value) ? value : parseStringifiedArray(value);
   }
+}
+
+/** Small models often send an array argument as its JSON text. */
+function parseStringifiedArray(value: unknown): unknown[] | undefined {
+  if (typeof value !== "string" || !value.trim().startsWith("[")) {
+    return undefined;
+  }
+  for (const candidate of [value, quoteNormalized(stripTrailingCommas(value))]) {
+    try {
+      const parsed: unknown = JSON.parse(candidate);
+      if (Array.isArray(parsed)) {
+        return parsed;
+      }
+    } catch {
+      // try the normalised form next
+    }
+  }
+  return undefined;
 }
 
 function describeType(property: JsonSchemaProperty): string {

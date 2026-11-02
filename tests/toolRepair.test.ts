@@ -107,6 +107,16 @@ describe("L4 — errors that say what to do next", () => {
     expect(problem("todo", { items: "not-an-array" })).toContain("an array");
   });
 
+  it("parses an array the model sent as JSON text", () => {
+    const items = '[{"title": "Read docs", "status": "in_progress"}, {"title": "Summarize", "status": "pending"},]';
+    expect(repaired("todo", { items }).arguments).toEqual({
+      items: [
+        { title: "Read docs", status: "in_progress" },
+        { title: "Summarize", status: "pending" }
+      ]
+    });
+  });
+
   it("never emits a bare rejection", () => {
     for (const message of [problem("read", {}), problem("teleport", {}), problem("bash", {})]) {
       expect(message.toLowerCase()).not.toBe("invalid input");
