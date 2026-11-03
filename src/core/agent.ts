@@ -6,7 +6,7 @@ import type { SessionStore } from "./session.js";
 import { MAX_TOOL_CALLS_PER_RESPONSE, type AgentEvent, type AgentEventToolName, type AgentTodoItem, type AgentToolName, type AgentWorkState, type ApprovalRequest, type ChatMessage, type ModelChatResult, type ModelClient, type ModelProvider, type PermissionDecision, type ThinkingSetting, type ProviderTool, type RawToolCall, type AgentToolCall, type ToolCategory, type ToolResult } from "./types.js";
 import { StreamTimer } from "./stream.js";
 import { hasProbedModel, probeModelCapabilities } from "./capability.js";
-import { stripTemplateTokens } from "./localOpenAI.js";
+import { resolveLocalOpenAIBaseUrl, stripTemplateTokens } from "./localOpenAI.js";
 import type { AgentSupervisor, ChildAgentSnapshot, ChildSpawner, SubagentDelivery } from "./agentSupervisor.js";
 import { formatEnvelope, runSubagent, subagentConcurrency, subagentToolAccess, subagentToolNames, type SubagentDependencies, type SubagentEnvelope, type SubagentRequest } from "./subagentRunner.js";
 import type { WriteCoordinator } from "./writeCoordinator.js";
@@ -188,6 +188,7 @@ export class AgentRunner {
     sealDanglingToolCalls(messages);
     const systemPrompt = buildSystemPrompt(this.tools.root, await this.workspaceSummary(), {
       mode,
+      runtime: describeRuntime(this.options.provider, this.options.model, this.options.ollamaUrl),
       allowWrite: this.options.allowWrite,
       allowShell: this.options.allowShell,
       hasApprovalHandler: Boolean(this.options.approvalHandler),
@@ -197,7 +198,7 @@ export class AgentRunner {
       child: Boolean(this.options.closingCallOnCap)
     });
     // The system prompt is the cached prefix of every request. It only changes
-    // when the mode does, so the runtime's prompt cache survives across turns.
+    // when the mode or model does, so the runtime's prompt cache survives across turns.
     if (messages[0]?.role === "system") {
       if (messages[0].content !== systemPrompt) {
         messages[0] = { role: "system", content: systemPrompt };
@@ -1500,6 +1501,7 @@ function buildSystemPrompt(
   workspaceSummary: string,
   settings: {
     mode: "plan" | "build" | "bypass";
+    runtime: string;
     allowWrite: boolean;
     allowShell: boolean;
     hasApprovalHandler: boolean;
@@ -1524,6 +1526,7 @@ function buildSystemPrompt(
     "You are PatchPilot, a coding agent working in the user's terminal on one workspace.",
     `Workspace root: ${workspaceRoot}. All paths are relative to it.`,
     `OS: ${type()} ${release()} (${platform()}).`,
+    settings.runtime,
     modeLine,
     "",
     "How to work:",
@@ -1556,6 +1559,21 @@ function buildSystemPrompt(
   ]
     .filter((line, index, lines) => line !== "" || lines[index - 1] !== "")
     .join("\n");
+}
+
+/**
+ * Without this a model asked about local models searches the disk for itself.
+ * It changes only with /model or /connect, which reset the prompt cache anyway.
+ */
+export function describeRuntime(provider: ModelProvider, model: string, ollamaUrl: string, env: NodeJS.ProcessEnv = process.env): string {
+  const server =
+    provider === "ollama"
+      ? `Ollama at ${ollamaUrl}`
+      : `${env.PATCHPILOT_RUNTIME_LABEL ?? "a local OpenAI-compatible server"} at ${resolveLocalOpenAIBaseUrl(env)}`;
+  return [
+    `You are the model ${model}, served by ${server}.`,
+    "Local models on this machine: `patchpilot models` lists what every running runtime serves; `ollama list` for Ollama; MLX and other Hugging Face downloads sit in ~/.cache/huggingface/hub; LM Studio keeps its own in ~/.lmstudio/models."
+  ].join("\n");
 }
 
 /** For runtimes without tool calling: the same tools, spoken as JSON. */

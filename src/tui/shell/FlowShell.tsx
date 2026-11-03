@@ -131,6 +131,10 @@ function TranscriptEntry(props: { line: LogLine; columns: number }): React.React
       const output = !failed && line.detail && (line.category === "shell" || line.category === "test") ? firstLines(line.detail, 4, bodyWidth - 5) : null;
       // A subagent's answer is what the user waited for; show its start.
       const agentAnswer = !failed && line.detail && line.agent ? firstLines(line.detail, 3, bodyWidth - 5) : null;
+      // Only the first output row fits behind the result mark; the rest goes in
+      // the indented block, or it would start under the mark instead of after it.
+      const [outputHead, ...outputTail] = output ? output.split("\n") : [];
+      const continuation = failure ?? agentAnswer ?? (outputTail.length > 0 ? outputTail.join("\n") : null);
       return (
         <Box flexDirection="column" marginTop={1}>
           <Text wrap="truncate">
@@ -139,12 +143,12 @@ function TranscriptEntry(props: { line: LogLine; columns: number }): React.React
           </Text>
           <Box paddingLeft={2}>
             <Text color={failed ? "red" : "gray"} wrap="truncate">
-              {symbols.result}  {output ?? collapse(line.text, bodyWidth - 4)}
+              {symbols.result}  {outputHead ?? collapse(line.text, bodyWidth - 4)}
             </Text>
           </Box>
-          {failure ?? agentAnswer ? (
+          {continuation ? (
             <Box paddingLeft={5}>
-              <Text color="gray">{failure ?? agentAnswer}</Text>
+              <Text color="gray">{continuation}</Text>
             </Box>
           ) : null}
           {line.diff ? (
@@ -206,7 +210,8 @@ function TranscriptEntry(props: { line: LogLine; columns: number }): React.React
 function firstLines(value: string, count: number, width: number): string {
   const lines = value.trim().split(/\r?\n/);
   const shown = lines.slice(0, count).map((row) => (row.length <= width ? row : `${row.slice(0, Math.max(10, width) - 1)}…`));
-  return lines.length > count ? `${shown.join("\n")}\n… ${lines.length - count} more lines` : shown.join("\n");
+  const hidden = lines.length - count;
+  return hidden > 0 ? `${shown.join("\n")}\n… ${hidden} more ${hidden === 1 ? "line" : "lines"}` : shown.join("\n");
 }
 
 /** Collapses whitespace and clips, so one long line cannot wreck the layout. */

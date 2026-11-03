@@ -47,6 +47,19 @@ describe("FlowShell", () => {
     expect(output([lastFrame() ?? ""]).split(denied)).toHaveLength(2);
   });
 
+  it("indents every shell output row behind the result mark", () => {
+    const detail = ["drwx alpha", "drwx beta", "drwx gamma", "drwx delta", "drwx epsilon"].join("\n");
+    const tool = line("tool", "ls", { tone: "success", category: "shell", detail, label: "Bash", tool: "run_shell", target: "ls" });
+    const rows = output([render(<FlowShell lines={[tool]} transcriptEpoch={0} columns={80} />).lastFrame() ?? ""]).split("\n");
+
+    const head = rows.find((row) => row.includes("drwx alpha")) ?? "";
+    const column = head.indexOf("drwx");
+    for (const name of ["beta", "gamma", "delta"]) {
+      expect(rows.find((row) => row.includes(`drwx ${name}`))?.indexOf("drwx")).toBe(column);
+    }
+    expect(rows.find((row) => row.includes("more line"))?.trim()).toBe("… 1 more line");
+  });
+
   it("prints the banner into a fresh region after /clear, so the erased screen is not blank", () => {
     const banner = { version: "1.0.0", model: "banner-model", host: "local", workspace: "/tmp/w", columns: 80 };
     const { lastFrame, rerender } = render(<FlowShell lines={[line("status", "old entry")]} transcriptEpoch={0} banner={banner} columns={80} />);
