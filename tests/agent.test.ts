@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { compactTranscript, executeToolCallsWithReadParallelism, findRepeatedToolCall, trackWholeFileRewrites, normalizeTodoItems, recoverMalformedToolResponse, resolveToolMode, shouldEnableSubagents, readFinalMessage } from "../src/core/agent.js";
+import { compactTranscript, describeRuntime, executeToolCallsWithReadParallelism, findRepeatedToolCall, trackWholeFileRewrites, normalizeTodoItems, recoverMalformedToolResponse, resolveToolMode, shouldEnableSubagents, readFinalMessage } from "../src/core/agent.js";
 import type { AgentToolCall, ToolResult } from "../src/core/types.js";
 import type { WorkspaceTools } from "../src/core/workspace.js";
 
@@ -260,5 +260,20 @@ describe("todo item shapes", () => {
 
   it("drops items with no usable text rather than showing a blank row", () => {
     expect(normalizeTodoItems({ items: [{ status: "pending" }, { title: "  " }] })).toEqual([]);
+  });
+});
+
+describe("describeRuntime", () => {
+  it("names the model and the MLX endpoint it is served from", () => {
+    const text = describeRuntime("local-openai", "mlx-community/Qwen3.5-9B-4bit", "http://127.0.0.1:11434", {
+      PATCHPILOT_RUNTIME_LABEL: "MLX",
+      PATCHPILOT_LOCAL_URL: "http://127.0.0.1:8080/v1"
+    });
+    expect(text).toContain("You are the model mlx-community/Qwen3.5-9B-4bit, served by MLX at http://127.0.0.1:8080/v1.");
+    expect(text).toContain("~/.cache/huggingface/hub");
+  });
+
+  it("uses the Ollama URL for Ollama", () => {
+    expect(describeRuntime("ollama", "qwen3:8b", "http://127.0.0.1:11434", {})).toContain("served by Ollama at http://127.0.0.1:11434.");
   });
 });
